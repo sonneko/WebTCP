@@ -1,0 +1,30 @@
+{
+  "name": "webtcp_tunneler",
+  "version": "0.0.0",
+  "description": "a library to connect browser to WebTCP network, next generation p2p network",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "mkdir -p dist && tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sonneko/WebTCP.git"
+  },
+  "keywords": [
+    "p2p",
+    "WebRTC",
+    "Web3"
+  ],
+  "author": "sonneko",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sonneko/WebTCP/issues"
+  },
+  "homepage": "https://github.com/sonneko/WebTCP#readme",
+  "dependencies": {
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.1"
+  }
+}
