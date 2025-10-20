@@ -2,6 +2,7 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
+    "lib": ["ES2015"],
 
     "sourceMap": true,
     "declaration": true,
