@@ -49,6 +49,7 @@ export interface MinimalNodeCrypto {
         format: 'pem' | 'der';
         type: 'pkcs8';
     }): MinimalKeyObject;
+    createPublicKey(key: MinimalKeyObject): MinimalKeyObject;
     sign(algorithm: null | undefined, data: Uint8Array, key: MinimalKeyObject): ArrayBuffer;
     verify(
         algorithm: null | undefined,

@@ -145,8 +145,6 @@ export class KeyDirectory implements IPublicKeyResolver {
                 cleanup();
                 resolve(null);
             }, timeoutMs);
-            // タイマーが Node.js のイベントループを不要に保持しないようにする
-            (timer as { unref?: () => void }).unref?.();
 
             const set = this.waiters.get(nodeId) ?? new Set();
             set.add(onKey);

@@ -96,9 +96,10 @@ export class NodeKeyManager implements Ed25519KeyManager {
             privateKeyPem = String(pair.privateKey.export({ format: 'pem', type: 'pkcs8' }));
         }
 
-        // SPKI の末尾 32 バイトが生の Ed25519 公開鍵である
+        // 公開鍵は秘密鍵から導出し、SPKI の末尾 32 バイト（生の Ed25519 公開鍵）を取り出す
+        const publicKeyObject = crypto.createPublicKey(privateKey);
         const spki = new Uint8Array(
-            privateKey.export({ format: 'der', type: 'spki' }) as ArrayBuffer,
+            publicKeyObject.export({ format: 'der', type: 'spki' }) as ArrayBuffer,
         );
         const publicKey = spki.slice(spki.byteLength - ED25519_PUBLIC_KEY_BYTES);
 

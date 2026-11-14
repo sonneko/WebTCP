@@ -139,6 +139,11 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
         this.keyWaitTimeoutMs = Math.max(0, options.keyWaitTimeoutMs ?? 5000);
     }
 
+    /** 公開鍵ディレクトリが設定されているか。 */
+    public get hasKeyDirectory(): boolean {
+        return this.directory !== null;
+    }
+
     /** 送信パケットへ Ed25519 署名を付与する。 */
     public async signPacket(packet: WebTCPPacket): Promise<WebTCPPacket> {
         const signingInput = this.signatureInputFor(packet);

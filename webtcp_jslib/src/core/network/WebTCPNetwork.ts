@@ -329,7 +329,9 @@ export class WebTCPNetwork extends EventEmitter {
         const candidate =
             options.nodeId ??
             options.keyManager?.nodeId ??
-            options.signaling?.getLocalNodeId() ??
+            (options.verifier instanceof Ed25519PacketVerifier
+                ? undefined
+                : options.signaling?.getLocalNodeId()) ??
             generateNodeId();
 
         if (options.keyManager && candidate !== options.keyManager.nodeId) {
@@ -355,7 +357,22 @@ export class WebTCPNetwork extends EventEmitter {
     }
 
     private resolveVerifier(options: WebTCPNetworkOptions): IPacketVerifier {
-        if (options.verifier) return options.verifier;
+        if (options.verifier) {
+            // `Ed25519PacketVerifier` にディレクトリが無い場合は、ネットワークの
+            // ディレクトリ（RT_UPDATE / シグナリングで学習）を共有する
+            if (
+                options.verifier instanceof Ed25519PacketVerifier &&
+                !options.verifier.hasKeyDirectory &&
+                this.keyDirectory &&
+                options.keyManager
+            ) {
+                return new Ed25519PacketVerifier({
+                    keyManager: options.keyManager,
+                    keyDirectory: this.keyDirectory,
+                });
+            }
+            return options.verifier;
+        }
         if (options.keyManager) {
             return new Ed25519PacketVerifier({
                 keyManager: options.keyManager,

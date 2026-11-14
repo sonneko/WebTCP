@@ -118,6 +118,10 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
                 void this.handleIncomingPacket(packet, fromId, rawBytes);
             },
         );
+        // RT_UPDATE で配布された公開鍵をディレクトリへ登録する（§10.4.2）
+        this.manager.onPublicKey = (senderId, publicKeyBase64Url) => {
+            void this.learnPublicKey(senderId, publicKeyBase64Url);
+        };
         this.linkManager.on('neighbor-connected', (peerId: NodeId) => {
             this.manager.handleNeighborUp(peerId);
         });
@@ -149,6 +153,19 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     /** 公開鍵ディレクトリ（読み取り用）。 */
     public getKeyDirectory(): KeyDirectory | null {
         return this.keyDirectory;
+    }
+
+    /** RT_UPDATE で受信した公開鍵を学習する。 */
+    private async learnPublicKey(nodeId: NodeId, publicKeyBase64Url: string): Promise<void> {
+        if (!this.keyDirectory) return;
+        try {
+            const accepted = await this.keyDirectory.addPublicKey(nodeId, publicKeyBase64Url);
+            if (accepted) {
+                this.logger.debug(`Learned Ed25519 public key for ${nodeId} from RT_UPDATE`);
+            }
+        } catch (error) {
+            this.logger.warn(`Failed to register public key for ${nodeId}:`, error);
+        }
     }
 
     // =================================================================
