@@ -1,3 +1,3 @@
-export * from "./IChannel";
-export * from "./ISignalingAdapter";
-export * from "./LinkManager";
+export * from './IChannel.js';
+export * from './ISignalingAdapter.js';
+export * from './LinkManager.js';

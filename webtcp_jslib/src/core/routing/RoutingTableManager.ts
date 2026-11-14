@@ -1,246 +1,263 @@
-import { NodeId } from '../types/protocol';
-import { IChannel } from '../link/IChannel';
-import { RoutingTable, ForwardingEntry } from './RoutingTable';
+import { NodeId } from '../types/protocol.js';
+import { RoutingTable } from './RoutingTable.js';
 
-// WebTCP上でルーティング情報を交換するためのパケット構造
-interface RoutingInfoPacket {
-    // パケットを送信したノードID
+/**
+ * ルーティング情報パケット（RT_UPDATE）のペイロード（specification.md §7.4）。
+ */
+export interface RoutingInfoPacket {
+    /** パケットを送信したノードID。 */
     senderId: NodeId;
-    // 送信元ノードが知っているルーティングエントリのリスト
+    /** 送信元ノードが知っているルーティングエントリ。 */
     entries: {
         destinationId: NodeId;
         cost: number;
     }[];
+    /** 到達不能になった宛先（経路の撤回）。 */
+    withdrawals?: NodeId[];
 }
 
 /**
- * ルーティングテーブルの動的な管理、更新、エイジング、トポロジー情報交換を担うクラス。
+ * ルーティング情報の送信に必要な機能を RoutingLayer から注入するためのフック。
+ * これにより RoutingTableManager はリンク層に直接依存しない。
+ */
+export interface RoutingUpdateTransport {
+    /** 現在の隣接ノード一覧。 */
+    getNeighbors(): NodeId[];
+    /** 指定隣接ノードへルーティング情報を送る。 */
+    sendRoutingUpdate(neighborId: NodeId, info: RoutingInfoPacket): Promise<boolean>;
+}
+
+export interface RoutingTableManagerOptions {
+    /** メンテナンス周期（ms）。既定 30000。 */
+    maintenancePeriodMs?: number;
+    /** エントリの寿命（ms）。既定 60000。 */
+    ageThresholdMs?: number;
+}
+
+/**
+ * ルーティングテーブルの動的管理を担う。
+ *
+ * - 隣接の接続/切断に応じたエントリの追加・無効化
+ * - 距離ベクトル方式による経路更新
+ * - 定期的なエイジングとブロードキャスト
  */
 export class RoutingTableManager {
-    private table: RoutingTable;
-    private channel: IChannel; // IChannel (隣接ノード管理) に依存
-    private maintenanceInterval: NodeJS.Timeout | null = null;
+    private readonly localNodeId: NodeId;
+    private readonly table: RoutingTable;
+    private readonly transport: RoutingUpdateTransport;
+    private readonly maintenancePeriodMs: number;
+    private readonly ageThresholdMs: number;
 
-    // 設定値
-    private readonly MAINTENANCE_PERIOD_MS = 30000; // 30秒ごとにメンテナンス実行
-    private readonly AGE_THRESHOLD_MS = 60000;      // 60秒以上更新がないエントリを削除
+    private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 
-    /**
-     * @param table 管理対象のRoutingTableインスタンス。
-     * @param channel P2Pリンク層のインターフェース。
-     * @param localNodeId ローカルノードのID。
-     */
-    constructor(table: RoutingTable, channel: IChannel, localNodeId: NodeId) {
+    constructor(
+        localNodeId: NodeId,
+        table: RoutingTable,
+        transport: RoutingUpdateTransport,
+        options: RoutingTableManagerOptions = {},
+    ) {
+        this.localNodeId = localNodeId;
         this.table = table;
-        this.channel = channel;
-
-        // 隣接ノードの接続/切断イベントを購読
-        this.channel.on('connection-status', this.handleConnectionStatusChange.bind(this));
+        this.transport = transport;
+        this.maintenancePeriodMs = options.maintenancePeriodMs ?? 30_000;
+        this.ageThresholdMs = options.ageThresholdMs ?? 60_000;
     }
 
-    /**
-     * ルーティングマネージャーの実行を開始し、定期的なメンテナンスをセットアップする。
-     */
+    /** 定期メンテナンスを開始する（冪等）。 */
     public start(): void {
-        if (this.maintenanceInterval) {
-            clearInterval(this.maintenanceInterval);
-        }
-        this.maintenanceInterval = setInterval(() => {
+        if (this.maintenanceTimer !== null) return;
+        this.maintenanceTimer = setInterval(() => {
             this.runMaintenance();
-        }, this.MAINTENANCE_PERIOD_MS);
-
-        console.log('[RTM] Routing Table Manager started.');
+        }, this.maintenancePeriodMs);
     }
 
-    /**
-     * ルーティングマネージャーを停止する。
-     */
+    /** 定期メンテナンスを停止する。 */
     public stop(): void {
-        if (this.maintenanceInterval) {
-            clearInterval(this.maintenanceInterval);
-            this.maintenanceInterval = null;
-        }
-        console.log('[RTM] Routing Table Manager stopped.');
-    }
-
-    // ===============================================
-    // 1. 隣接ノード管理 (IChannel連携)
-    // ===============================================
-
-    /**
-     * 隣接ノードの接続状態が変更された際に呼び出される。
-     */
-    private handleConnectionStatusChange(peerId: NodeId, isConnected: boolean): void {
-        if (isConnected) {
-            // 新しい隣接ノードが接続された場合、コスト1としてテーブルを更新
-            // このノードを介して自分自身に到達できる（ネクストホップが自分自身）
-            this.table.updateEntry(peerId, { cost: 1, nextHopId: peerId });
-            console.log(`[RTM] New neighbor connected: ${peerId}. Cost 1 set.`);
-            
-            // 全エントリを新しい隣接ノードに送信し、情報交換を開始
-            this.sendRoutingUpdate(peerId);
-
-        } else {
-            // 隣接ノードが切断された場合、そのノードを介した全経路を無効化（削除）
-            this.invalidateRoutesThroughPeer(peerId);
-            console.log(`[RTM] Neighbor disconnected: ${peerId}. Routes invalidated.`);
+        if (this.maintenanceTimer !== null) {
+            clearInterval(this.maintenanceTimer);
+            this.maintenanceTimer = null;
         }
     }
 
-    /**
-     * 特定の隣接ノードがダウンした場合、そのノードをネクストホップとする全経路を削除する。
-     */
+    // ===============================================
+    // 隣接ノードの増減
+    // ===============================================
+
+    /** 隣接ノードが接続した。コスト1の経路を登録して情報交換を始める。 */
+    public handleNeighborUp(peerId: NodeId): void {
+        this.table.updateEntry(peerId, { cost: 1, nextHopId: peerId });
+        void this.sendRoutingUpdate(peerId);
+        this.broadcastRoutingUpdate();
+    }
+
+    /** 隣接ノードが切断した。そのノード経由の経路をすべて削除する。 */
+    public handleNeighborDown(peerId: NodeId): void {
+        this.invalidateRoutesThroughPeer(peerId);
+    }
+
     private invalidateRoutesThroughPeer(peerId: NodeId): void {
         const entriesToDelete: NodeId[] = [];
-        
-        // 自身のノードIDは削除しないため、 getAllEntries() を使用
         this.table.getAllEntries().forEach((entry, destinationId) => {
-            if (entry.nextHopId === peerId) {
+            if (destinationId !== this.localNodeId && entry.nextHopId === peerId) {
                 entriesToDelete.push(destinationId);
             }
         });
+        entriesToDelete.forEach((id) => this.table.deleteEntry(id));
 
-        entriesToDelete.forEach(id => this.table.deleteEntry(id));
-        // テーブル変更後、隣接ノードに更新情報をブロードキャストすべき（ポイズンリバースなど、より高度なロジックが必要）
-        this.broadcastRoutingUpdate(); 
+        if (entriesToDelete.length > 0) {
+            this.broadcastRoutingUpdate(entriesToDelete);
+        }
     }
 
     // ===============================================
-    // 2. パケット受信時の処理
+    // 受信
     // ===============================================
 
     /**
-     * RoutingLayerからルーティング情報パケットを受信した際に呼び出される。
-     * 受信した情報に基づき、最短経路を更新する。
-     * @param senderId 情報の送信元ノードID (隣接ノード)。
-     * @param packet 受信したRoutingInfoPacket。
+     * RT_UPDATE のペイロード（UTF-8 JSON）を処理する。
+     * 不正なペイロードは警告して無視する。
      */
-    public handleRoutingInfo(senderId: NodeId, packet: RoutingInfoPacket): void {
-        this.updateTableFromPeer(senderId, packet.entries);
+    public handleRoutingInfoPayload(senderId: NodeId, payload: Uint8Array): void {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(new TextDecoder().decode(payload));
+        } catch (error) {
+            console.warn(`[RTM] Dropping RT_UPDATE from ${senderId}: invalid JSON`, error);
+            return;
+        }
+
+        const info = this.validateRoutingInfo(parsed);
+        if (!info) {
+            console.warn(`[RTM] Dropping RT_UPDATE from ${senderId}: invalid structure`);
+            return;
+        }
+
+        this.updateTableFromPeer(senderId, info.entries, info.withdrawals ?? []);
     }
 
     /**
-     * 受信したエントリに基づいてルーティングテーブルを更新する（ディスタンスベクタアルゴリズム）。
-     * @param peerId 情報の送信元（隣接ノード）。
-     * @param peerEntries 隣接ノードが知っているエントリ。
+     * 受信したエントリに基づいてルーティングテーブルを更新する（距離ベクトル）。
      */
-    private updateTableFromPeer(peerId: NodeId, peerEntries: RoutingInfoPacket['entries']): void {
+    private updateTableFromPeer(
+        peerId: NodeId,
+        peerEntries: RoutingInfoPacket['entries'],
+        withdrawals: NodeId[] = [],
+    ): void {
         let tableChanged = false;
 
-        for (const { destinationId, cost: peerCost } of peerEntries) {
-            // 隣接ノードを介したこの宛先への新しいコスト
-            const newCost = peerCost + 1; // 隣接ノードへのコストは1ホップとする
-
-            // 現在のテーブルエントリを取得
-            const currentEntry = this.table.getEntry(destinationId);
-
-            if (destinationId === this.table.getAllEntries().keys().next().value) {
-                // 自身へのエントリは無視
-                continue;
-            }
-
-            if (!currentEntry || newCost < currentEntry.cost) {
-                // 1. エントリが存在しない、または 2. 新しい経路の方がコストが低い場合
-                this.table.updateEntry(destinationId, {
-                    cost: newCost,
-                    nextHopId: peerId // 送信元をネクストホップとする
-                });
+        // 経路の撤回: 送信元をネクストホップとしていた経路のみ削除する
+        for (const destinationId of withdrawals) {
+            if (destinationId === this.localNodeId) continue;
+            const current = this.table.getEntry(destinationId);
+            if (current && current.nextHopId === peerId) {
+                this.table.deleteEntry(destinationId);
                 tableChanged = true;
-                // console.log(`[RTM] Updated: ${destinationId} via ${peerId}, Cost ${newCost}`);
-
-            } else if (currentEntry.nextHopId === peerId) {
-                // 現在の経路と同じネクストホップから情報を受信した場合（コストが変動しなかった or 増加した場合）
-                if (newCost !== currentEntry.cost) {
-                    this.table.updateEntry(destinationId, {
-                        cost: newCost,
-                        nextHopId: peerId
-                    });
-                    tableChanged = true;
-                    // console.log(`[RTM] Cost updated for ${destinationId} via ${peerId}, New Cost ${newCost}`);
-                }
             }
         }
-        
-        // テーブルが更新された場合、隣接ノードにその変更を伝播させる
+
+        for (const { destinationId, cost: peerCost } of peerEntries) {
+            if (destinationId === this.localNodeId || destinationId === peerId) continue;
+
+            const newCost = peerCost + 1;
+            const currentEntry = this.table.getEntry(destinationId);
+
+            if (!currentEntry || newCost < currentEntry.cost) {
+                this.table.updateEntry(destinationId, { cost: newCost, nextHopId: peerId });
+                tableChanged = true;
+            } else if (currentEntry.nextHopId === peerId && newCost !== currentEntry.cost) {
+                // 同じネクストホップからの更新（コスト増減の反映）
+                this.table.updateEntry(destinationId, { cost: newCost, nextHopId: peerId });
+                tableChanged = true;
+            }
+        }
+
         if (tableChanged) {
             this.broadcastRoutingUpdate();
         }
     }
 
     // ===============================================
-    // 3. メンテナンスとブロードキャスト
+    // 送信
     // ===============================================
 
-    /**
-     * 定期的に実行されるメンテナンス処理。
-     */
+    /** 現在のテーブルから送信用の情報を組み立てる（自身のエントリは含めない）。 */
+    public createRoutingInfoPacket(withdrawals: NodeId[] = []): RoutingInfoPacket {
+        const entries: RoutingInfoPacket['entries'] = [];
+        this.table.getAllEntries().forEach((entry, destinationId) => {
+            if (destinationId === this.localNodeId) return;
+            entries.push({ destinationId, cost: entry.cost });
+        });
+        return { senderId: this.localNodeId, entries, withdrawals };
+    }
+
+    private async sendRoutingUpdate(neighborId: NodeId): Promise<boolean> {
+        return this.transport.sendRoutingUpdate(neighborId, this.createRoutingInfoPacket());
+    }
+
+    /** 全隣接ノードへ現在のテーブルを送る。 */
+    private broadcastRoutingUpdate(withdrawals: NodeId[] = []): void {
+        const info = this.createRoutingInfoPacket(withdrawals);
+        for (const neighborId of this.transport.getNeighbors()) {
+            void this.transport.sendRoutingUpdate(neighborId, info).catch((error) => {
+                console.warn(`[RTM] Failed to send routing update to ${neighborId}:`, error);
+            });
+        }
+    }
+
+    // ===============================================
+    // メンテナンス
+    // ===============================================
+
     private runMaintenance(): void {
         this.performAging();
         this.broadcastRoutingUpdate();
     }
 
-    /**
-     * エイジング処理を実行し、古くなったエントリを削除する。
-     */
     private performAging(): void {
         const now = Date.now();
         const staleEntries: NodeId[] = [];
 
         this.table.getAllEntries().forEach((entry, destinationId) => {
-            if (entry.cost > 0 && (now - entry.lastSeen > this.AGE_THRESHOLD_MS)) {
+            if (
+                destinationId !== this.localNodeId &&
+                entry.cost > 0 &&
+                now - entry.lastSeen > this.ageThresholdMs
+            ) {
                 staleEntries.push(destinationId);
             }
         });
 
-        staleEntries.forEach(id => {
-            this.table.deleteEntry(id);
-            console.log(`[RTM] Aged out stale entry for ${id}`);
-        });
-
-        // テーブルからエントリが削除された場合、その情報を伝播させる
+        staleEntries.forEach((id) => this.table.deleteEntry(id));
         if (staleEntries.length > 0) {
-            this.broadcastRoutingUpdate();
+            this.broadcastRoutingUpdate(staleEntries);
         }
     }
 
-    /**
-     * 全隣接ノードに対して現在のルーティングテーブル情報をブロードキャストする。
-     */
-    private broadcastRoutingUpdate(): void {
-        const routingPacket = this.createRoutingInfoPacket();
-        const data = new TextEncoder().encode(JSON.stringify(routingPacket));
+    private validateRoutingInfo(value: unknown): RoutingInfoPacket | null {
+        if (typeof value !== 'object' || value === null) return null;
+        const candidate = value as Partial<RoutingInfoPacket>;
+        if (typeof candidate.senderId !== 'string' || !Array.isArray(candidate.entries)) {
+            return null;
+        }
 
-        // 接続されているすべての隣接ノードに対してパケットを送信
-        this.channel.connectedPeers.forEach((isConnected, peerId) => {
-            if (isConnected) {
-                // IChannelを通じて生データを送信。実際のパケットヘッダー付与はRoutingLayerが行う想定だが、
-                // ここではIChannelから直接送れるシンプルなプロトコルとして扱う。
-                this.channel.send(peerId, data).catch(err => {
-                    console.error(`[RTM] Failed to send update to ${peerId}: ${err}`);
-                });
-            }
-        });
-    }
-
-    /**
-     * 現在のルーティングテーブルから送信用の RoutingInfoPacket を作成する。
-     */
-    private createRoutingInfoPacket(): RoutingInfoPacket {
         const entries: RoutingInfoPacket['entries'] = [];
-        
-        // 自身のノードIDのエントリは送信しない（ブロードキャストプロトコルでは通常行わない）
-        this.table.getAllEntries().forEach((entry, destinationId) => {
-            if (destinationId !== this.table.getAllEntries().keys().next().value) {
-                 entries.push({
-                    destinationId: destinationId,
-                    cost: entry.cost
-                });
-            }
-        });
+        for (const entry of candidate.entries) {
+            if (typeof entry !== 'object' || entry === null) return null;
+            const { destinationId, cost } = entry as { destinationId?: unknown; cost?: unknown };
+            if (typeof destinationId !== 'string' || typeof cost !== 'number') return null;
+            if (!Number.isFinite(cost) || cost < 0) return null;
+            entries.push({ destinationId, cost });
+        }
 
-        return {
-            senderId: this.table.getAllEntries().keys().next().value, // 仮に最初のキーをローカルIDとする
-            entries: entries
-        };
+        const withdrawals: NodeId[] = [];
+        if (candidate.withdrawals !== undefined) {
+            if (!Array.isArray(candidate.withdrawals)) return null;
+            for (const destinationId of candidate.withdrawals) {
+                if (typeof destinationId !== 'string') return null;
+                withdrawals.push(destinationId);
+            }
+        }
+
+        return { senderId: candidate.senderId, entries, withdrawals };
     }
 }

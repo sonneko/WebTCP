@@ -1,1 +1,1 @@
-export * from "./WebRTCNetwork";
+export * from './WebTCPNetwork.js';

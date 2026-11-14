@@ -1,234 +1,140 @@
-import { EventEmitter } from 'events';
-import { NodeId } from '../types/protocol';
-import { WebTCPPacket } from '../types/packet';
-import { IChannel } from './IChannel';
-import { ISignalingAdapter, SignalMessage } from './ISignalingAdapter';
-
-// 鍵管理のインターフェース (WebTCPNetworkで仮定したものと整合させる)
-interface KeyManager {
-    getLocalNodeId(): NodeId;
-    // 実際には、WebRTCの接続確立に署名鍵は不要だが、NodeIdとWebTCPのID管理のために参照
-    getPublicKey(id: NodeId): string;
-}
+import { BinaryPacketSerializer, IPacketSerializer } from '../types/serializer.js';
+import { WebTCPPacket } from '../types/packet.js';
+import { NodeId } from '../types/protocol.js';
+import { EventEmitter } from '../util/EventEmitter.js';
+import { IChannel } from './IChannel.js';
 
 /**
- * WebTCPプロトコルスタックにおけるリンク層のメインコントローラー。
- * シグナリングアダプターとIChannelを統合し、ピアとの物理接続を確立・維持する。
+ * リンク層のメインコントローラー。
+ *
+ * 責務は次の2つだけである。
+ * 1. `IChannel` の接続状態を監視し、隣接ノード集合を維持する。
+ * 2. `WebTCPPacket` とバイト列の相互変換を行い、`IChannel` へ送る / から受け取る。
+ *
+ * シグナリングは `IChannel` の実装が内部で扱う。ルーティング情報も
+ * `RT_UPDATE` パケットとしてこの層を通るため、シリアライズ経路は1本になる。
+ *
+ * イベント:
+ * - `packet` (packet: WebTCPPacket, fromId: NodeId)
+ * - `neighbor-connected` (peerId: NodeId)
+ * - `neighbor-disconnected` (peerId: NodeId)
  */
 export class LinkManager extends EventEmitter {
     public readonly localNodeId: NodeId;
 
-    private signalingAdapter: ISignalingAdapter;
-    private keyManager: KeyManager;
-    
-    // キー: 隣接ノードID (remoteNodeId), 値: アクティブなWebRTC接続 (IChannel)
-    private activeChannels: Map<NodeId, IChannel>;
+    private readonly channel: IChannel;
+    private readonly serializer: IPacketSerializer;
 
-    // 接続処理を追跡するための仮のMap (オファー送信済み、アンサー待ちなど)
-    private pendingConnections: Map<NodeId, { channel: IChannel, timer: NodeJS.Timeout }>;
+    private started = false;
+    private closed = false;
 
-    /**
-     * @param localNodeId このノードのID
-     * @param adapter シグナリングに使用するアダプター
-     * @param keyManager 鍵管理サービス
-     */
-    constructor(localNodeId: NodeId, adapter: ISignalingAdapter, keyManager: KeyManager) {
+    constructor(
+        localNodeId: NodeId,
+        channel: IChannel,
+        serializer: IPacketSerializer = new BinaryPacketSerializer(),
+    ) {
         super();
         this.localNodeId = localNodeId;
-        this.signalingAdapter = adapter;
-        this.keyManager = keyManager;
-        this.activeChannels = new Map();
-        this.pendingConnections = new Map();
+        this.channel = channel;
+        this.serializer = serializer;
     }
 
     /**
-     * リンクマネージャーの処理を開始し、シグナリングの待ち受けを開始する。
+     * チャネルを開始し、受信イベントを購読する。
+     * 二重呼び出しは無視される（冪等）。
      */
     public async start(): Promise<void> {
-        console.log(`[LM] LinkManager started. Listening for signals...`);
-        // シグナリングアダプターからの受信メッセージを処理するハンドラを登録
-        await this.signalingAdapter.listen(this.handleIncomingSignal.bind(this));
+        if (this.started) return;
+        this.started = true;
+
+        this.channel.on('data', (fromId, data) => this.handleChannelData(fromId, data));
+        this.channel.on('connection-status', (peerId, isConnected) =>
+            this.handleConnectionStatus(peerId, isConnected),
+        );
+
+        await this.channel.start();
     }
 
-    /**
-     * 既知のアクティブな隣接ノードのリストを返す。
-     */
+    /** 現在接続済みの隣接ノードIDを返す。 */
     public getActiveNeighbors(): NodeId[] {
-        return Array.from(this.activeChannels.keys());
+        const neighbors: NodeId[] = [];
+        this.channel.connectedPeers.forEach((isConnected, peerId) => {
+            if (isConnected) neighbors.push(peerId);
+        });
+        return neighbors;
     }
 
-    // ===============================================
-    // データ送信 (RoutingLayer向けAPI)
-    // ===============================================
+    /** 指定ノードが直接接続された隣接ノードかどうか。 */
+    public isNeighbor(peerId: NodeId): boolean {
+        return this.channel.connectedPeers.get(peerId) === true;
+    }
 
     /**
-     * 隣接ノードにパケットを直接送信する。
-     * このメソッドはRoutingLayerから呼び出される。
-     * @param neighborId 隣接ノードID
-     * @param packet 送信するWebTCPPacket
+     * 隣接ノードへのリンク確立を要求する。
+     * すでに接続済みの場合は何もしない。
+     */
+    public async connectToNeighbor(peerId: NodeId): Promise<void> {
+        if (this.closed) {
+            throw new Error('LinkManager is closed');
+        }
+        if (peerId === this.localNodeId) {
+            throw new Error('Cannot connect to self');
+        }
+        if (this.isNeighbor(peerId)) return;
+        await this.channel.connect(peerId);
+    }
+
+    /**
+     * パケットを隣接ノードへ送信する。
+     * @returns 送信キューへ投入できたら true
      */
     public async sendPacketToNeighbor(neighborId: NodeId, packet: WebTCPPacket): Promise<boolean> {
-        const channel = this.activeChannels.get(neighborId);
-        if (channel && channel.isConnected()) {
-            try {
-                // IChannelのsendメソッドを使用してデータを送信
-                const data = JSON.stringify(packet); // 実際はPacketSerializerでバイナリに変換
-                channel.send(data);
-                return true;
-            } catch (error) {
-                console.error(`[LM] Failed to send packet to ${neighborId}:`, error);
-                this.disconnectChannel(neighborId);
-                return false;
-            }
-        }
-        console.warn(`[LM] Channel to ${neighborId} is not active or connected.`);
-        return false;
-    }
+        if (this.closed) return false;
 
-    // ===============================================
-    // 接続確立 (WebRTC)
-    // ===============================================
-
-    /**
-     * 特定のノードへのWebRTC接続を積極的に開始する (オファーを生成)。
-     * このメソッドはRoutingTableManager/RoutingLayerから呼び出される。
-     * @param remoteNodeId 接続先のノードID
-     */
-    public async initiateConnection(remoteNodeId: NodeId): Promise<void> {
-        if (this.activeChannels.has(remoteNodeId) || this.pendingConnections.has(remoteNodeId)) {
-            return; // 既に接続済みまたは接続試行中
-        }
-
-        // 1. 新しいIChannelを作成 (WebRTC PeerConnectionに相当)
-        // 仮にIChannelImplという具体的な実装があると仮定
-        const channel: IChannel = {
-             // 接続開始のダミー実装
-            init: (isInitiator: boolean) => {
-                console.log(`[IChannel] Initializing as initiator for ${remoteNodeId}`);
-                channel.on('data', this.handleChannelData.bind(this, remoteNodeId));
-                channel.on('signal', (signal) => this.sendSignalToPeer(remoteNodeId, signal));
-                channel.on('connected', () => this.handleChannelConnected(remoteNodeId));
-                channel.on('closed', () => this.disconnectChannel(remoteNodeId));
-                return Promise.resolve();
-            },
-            // 他のIChannelメソッドは省略
-            send: (data: string) => { console.log(`[IChannel] Sending data to ${remoteNodeId}`); },
-            isConnected: () => false,
-            on: (event: string, handler: any) => {},
-            close: () => {}
-        } as unknown as IChannel; // ダミー実装の型アサーション
-
-        await channel.init(true);
-
-        // 2. 接続を追跡
-        this.pendingConnections.set(remoteNodeId, { channel, timer: setTimeout(() => this.handleConnectionTimeout(remoteNodeId), 30000) });
-    }
-
-    // ===============================================
-    // シグナリング受信処理
-    // ===============================================
-
-    /**
-     * シグナリングアダプターから受信したメッセージを処理する。
-     * @param senderId シグナルを送信したノードID
-     * @param message 受信したシグナルメッセージ (Offer, Answer, ICE)
-     */
-    private async handleIncomingSignal(senderId: NodeId, message: SignalMessage): Promise<void> {
-        let channel = this.activeChannels.get(senderId);
-
-        if (!channel && (message.type === 'offer')) {
-            // 接続要求 (オファー) の受信
-            // 1. 新しいIChannelを作成 (isInitiator: false)
-            const newChannel: IChannel = { /* ... IChannelのダミー実装 (上記参照) ... */ } as unknown as IChannel;
-            await newChannel.init(false);
-            newChannel.on('data', this.handleChannelData.bind(this, senderId));
-            newChannel.on('signal', (signal) => this.sendSignalToPeer(senderId, signal));
-            newChannel.on('connected', () => this.handleChannelConnected(senderId));
-            newChannel.on('closed', () => this.disconnectChannel(senderId));
-
-            this.pendingConnections.set(senderId, { channel: newChannel, timer: setTimeout(() => this.handleConnectionTimeout(senderId), 30000) });
-            channel = newChannel;
-            
-            console.log(`[LM] Received OFFER from ${senderId}. Creating channel and processing...`);
-        }
-
-        if (channel) {
-            // 2. 既存のチャネルにシグナルを設定
-            // channel.handleSignal(message); // IChannelがSDPやICEを処理する
-        } else {
-            console.warn(`[LM] Received signal for unknown/inactive peer ${senderId}: ${message.type}. Dropping.`);
-        }
-    }
-
-    /**
-     * IChannelからのシグナルをシグナリングアダプター経由でピアに転送する。
-     */
-    private async sendSignalToPeer(recipientId: NodeId, signal: SignalMessage): Promise<void> {
-        signal.fromId = this.localNodeId;
-        await this.signalingAdapter.sendMessage(recipientId, signal);
-    }
-
-    // ===============================================
-    // IChannelからのイベント処理
-    // ===============================================
-
-    /**
-     * IChannelが接続確立状態になったときのハンドラ。
-     */
-    private handleChannelConnected(remoteNodeId: NodeId): void {
-        const pending = this.pendingConnections.get(remoteNodeId);
-        if (pending) {
-            clearTimeout(pending.timer);
-            this.activeChannels.set(remoteNodeId, pending.channel);
-            this.pendingConnections.delete(remoteNodeId);
-            
-            // 接続完了イベントをRoutingLayerに通知
-            this.emit('channel_connected', remoteNodeId);
-            console.log(`[LM] Channel ESTABLISHED with ${remoteNodeId}.`);
-        }
-    }
-
-    /**
-     * IChannelがデータを受信したときのハンドラ。
-     */
-    private handleChannelData(remoteNodeId: NodeId, data: string | ArrayBuffer): void {
+        let data: Uint8Array;
         try {
-            // 受信データをWebTCPPacketに復元
-            // 実際はPacketSerializerを使用
-            const packet: WebTCPPacket = JSON.parse(data.toString());
-
-            // RoutingLayerにパケットを渡す
-            this.emit('packet_received', remoteNodeId, packet);
+            data = this.serializer.serialize(packet);
         } catch (error) {
-            console.error(`[LM] Error processing data from ${remoteNodeId}:`, error);
+            console.error(`[LM] Failed to serialize packet for ${neighborId}:`, error);
+            return false;
+        }
+
+        try {
+            await this.channel.send(neighborId, data);
+            return true;
+        } catch (error) {
+            console.error(`[LM] Failed to send packet to ${neighborId}:`, error);
+            return false;
         }
     }
 
-    /**
-     * IChannelが切断されたときのハンドラ。
-     */
-    private disconnectChannel(remoteNodeId: NodeId): void {
-        if (this.activeChannels.has(remoteNodeId)) {
-            this.activeChannels.delete(remoteNodeId);
-            this.emit('channel_disconnected', remoteNodeId);
-            console.log(`[LM] Channel disconnected from ${remoteNodeId}.`);
-        }
-        if (this.pendingConnections.has(remoteNodeId)) {
-            const pending = this.pendingConnections.get(remoteNodeId);
-            clearTimeout(pending!.timer);
-            this.pendingConnections.delete(remoteNodeId);
+    /** チャネルを閉じる。 */
+    public close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        this.channel.close();
+        this.removeAllListeners();
+    }
+
+    private handleConnectionStatus(peerId: NodeId, isConnected: boolean): void {
+        if (isConnected) {
+            this.emit('neighbor-connected', peerId);
+        } else {
+            this.emit('neighbor-disconnected', peerId);
         }
     }
 
-    /**
-     * 接続タイムアウト処理。
-     */
-    private handleConnectionTimeout(remoteNodeId: NodeId): void {
-        console.warn(`[LM] Connection attempt to ${remoteNodeId} timed out.`);
-        const pending = this.pendingConnections.get(remoteNodeId);
-        if (pending) {
-            pending.channel.close();
-            this.pendingConnections.delete(remoteNodeId);
+    private handleChannelData(fromId: NodeId, data: Uint8Array): void {
+        if (this.closed) return;
+
+        let packet: WebTCPPacket;
+        try {
+            packet = this.serializer.deserialize(data);
+        } catch (error) {
+            console.warn(`[LM] Dropping malformed packet from ${fromId}:`, error);
+            return;
         }
+
+        this.emit('packet', packet, fromId);
     }
 }

@@ -1,213 +1,246 @@
-import { EventEmitter } from 'events';
-import { NodeId, VirtualPort, TTL } from '../types/protocol';
-import { WebTCPPacket } from '../types/packet';
-import { IChannel } from '../link/IChannel';
-import { RoutingTable } from './RoutingTable';
-import { RoutingTableManager } from './RoutingTableManager';
-import { PacketVerifier } from './PacketVerifier';
+import { WebTCPPacket } from '../types/packet.js';
+import { NodeId } from '../types/protocol.js';
+import { EventEmitter } from '../util/EventEmitter.js';
+import type { LinkManager } from '../link/LinkManager.js';
+import { IPacketVerifier, NullPacketVerifier } from './PacketVerifier.js';
+import { RoutingTable } from './RoutingTable.js';
+import { RoutingInfoPacket, RoutingTableManager, RoutingTableManagerOptions } from './RoutingTableManager.js';
 
-// 仮のPacketSerializerの型定義。実際には専用のクラスが必要。
-interface PacketSerializer {
-    serialize(packet: WebTCPPacket): Uint8Array;
-    deserialize(data: Uint8Array): WebTCPPacket;
-}
-
-// TransportLayerへパケットを渡すためのインターフェース
-interface TransportLayer {
+/**
+ * トランスポート層へパケットを渡すための抽象。
+ * 循環依存を避けるため、具象クラスではなくインターフェースに依存する。
+ */
+export interface TransportSink {
     handleIncomingPacket(packet: WebTCPPacket): void;
 }
 
-/**
- * WebTCPプロトコルのルーティング層 (L2.5/L3)。
- * パケットの転送、署名検証、TTL管理、RPFチェック、トランスポート層への振り分けを担う。
- */
-export class RoutingLayer extends EventEmitter {
-    // 依存オブジェクト
-    private localNodeId: NodeId;
-    private channel: IChannel;
-    private routingTable: RoutingTable;
-    private verifier: PacketVerifier;
-    private serializer: PacketSerializer;
-    
-    // 上位層への参照
-    private transportLayer: TransportLayer | null = null;
-    
-    // 自身が管理するRTM
-    public manager: RoutingTableManager; 
+/** トランスポート層がルーティング層へ要求するAPI。 */
+export interface IRoutingLayer {
+    sendPacket(packet: WebTCPPacket): Promise<void>;
+    setTransportLayer(sink: TransportSink): void;
+}
 
-    /**
-     * @param localNodeId このノードのID。
-     * @param channel P2Pリンク層のインターフェース。
-     * @param routingTable ルーティング情報テーブル。
-     * @param verifier パケット署名検証/付与オブジェクト。
-     * @param serializer パケットのバイナリ変換オブジェクト。
-     */
+export interface RoutingLayerOptions {
+    verifier?: IPacketVerifier;
+    routingTableManager?: RoutingTableManagerOptions;
+    /** 送信パケットの初期TTL。既定 64。 */
+    defaultTtl?: number;
+}
+
+/**
+ * WebTCPプロトコルのルーティング層（L3）。
+ *
+ * - パケットの宛先判定と転送
+ * - 署名検証（M1は NullPacketVerifier）
+ * - TTL 管理
+ * - RPF（Reverse Path Forwarding）チェック
+ * - RT_UPDATE のルーティングテーブルへの反映
+ */
+export class RoutingLayer extends EventEmitter implements IRoutingLayer {
+    public readonly manager: RoutingTableManager;
+
+    private readonly localNodeId: NodeId;
+    private readonly linkManager: LinkManager;
+    private readonly routingTable: RoutingTable;
+    private readonly verifier: IPacketVerifier;
+    private readonly defaultTtl: number;
+
+    private transportLayer: TransportSink | null = null;
+
     constructor(
         localNodeId: NodeId,
-        channel: IChannel,
+        linkManager: LinkManager,
         routingTable: RoutingTable,
-        verifier: PacketVerifier,
-        serializer: PacketSerializer
+        options: RoutingLayerOptions = {},
     ) {
         super();
         this.localNodeId = localNodeId;
-        this.channel = channel;
+        this.linkManager = linkManager;
         this.routingTable = routingTable;
-        this.verifier = verifier;
-        this.serializer = serializer;
-        
-        // RTMをインスタンス化し、ルーティング情報の交換を管理させる
-        this.manager = new RoutingTableManager(routingTable, channel, localNodeId);
+        this.verifier = options.verifier ?? new NullPacketVerifier();
+        this.defaultTtl = options.defaultTtl ?? 64;
 
-        // IChannelからのデータ受信イベントを購読
-        this.channel.on('data', this.handleIncomingData.bind(this));
-        
-        // RTMを起動
+        this.manager = new RoutingTableManager(
+            localNodeId,
+            routingTable,
+            {
+                getNeighbors: () => this.linkManager.getActiveNeighbors(),
+                sendRoutingUpdate: (neighborId, info) => this.sendRoutingUpdate(neighborId, info),
+            },
+            options.routingTableManager,
+        );
+
+        // LinkManager からのイベントを購読する
+        this.linkManager.on('packet', (packet: WebTCPPacket, fromId: NodeId) => {
+            void this.handleIncomingPacket(packet, fromId);
+        });
+        this.linkManager.on('neighbor-connected', (peerId: NodeId) => {
+            this.manager.handleNeighborUp(peerId);
+        });
+        this.linkManager.on('neighbor-disconnected', (peerId: NodeId) => {
+            this.manager.handleNeighborDown(peerId);
+        });
+    }
+
+    /** 定期メンテナンスを開始する。 */
+    public start(): void {
         this.manager.start();
     }
 
-    /**
-     * TransportLayerへの参照を設定する。
-     * @param transportLayer TransportLayerのインスタンス。
-     */
-    public setTransportLayer(transportLayer: TransportLayer): void {
+    /** 定期メンテナンスを停止する。 */
+    public stop(): void {
+        this.manager.stop();
+    }
+
+    /** 上位層（トランスポート層）を設定する。 */
+    public setTransportLayer(transportLayer: TransportSink): void {
         this.transportLayer = transportLayer;
     }
 
+    /** ルーティングテーブルへの参照（読み取り用）。 */
+    public getRoutingTable(): RoutingTable {
+        return this.routingTable;
+    }
+
     // =================================================================
-    // 1. 受信パケット処理 (IChannel -> RoutingLayer)
+    // 送信 (TransportLayer -> RoutingLayer)
     // =================================================================
 
     /**
-     * IChannel (隣接ノード) から受信した生データ (Uint8Array) を処理する。
-     * @param senderId 隣接ノードID。
-     * @param data 受信したバイナリデータ。
+     * 上位層から受け取ったパケットに署名し、宛先へ送り出す。
      */
-    private async handleIncomingData(senderId: NodeId, data: Uint8Array): Promise<void> {
-        let packet: WebTCPPacket;
-        try {
-            packet = this.serializer.deserialize(data);
-        } catch (e) {
-            console.error('[RL] Failed to deserialize packet. Dropping.', e);
+    public async sendPacket(packet: WebTCPPacket): Promise<void> {
+        const signedPacket = await this.verifier.signPacket(packet);
+
+        if (signedPacket.destinationId === this.localNodeId) {
+            this.forwardToTransportLayer(signedPacket);
             return;
         }
 
-        // --- Step 1: 署名検証 (Verification) ---
-        if (!(await this.verifier.verifyPacket(packet))) {
-            console.warn('[RL] Invalid signature or public key. Dropping packet.');
+        this.forwardPacket(signedPacket);
+    }
+
+    /**
+     * ルーティングテーブルに従って次のホップへ転送する。
+     * TTL を1減らし、0になった場合は破棄する。
+     */
+    private forwardPacket(packet: WebTCPPacket): void {
+        let nextHopId: NodeId | null = null;
+
+        const entry = this.routingTable.getEntry(packet.destinationId);
+        if (entry && entry.cost > 0) {
+            nextHopId = entry.nextHopId;
+        } else if (this.linkManager.isNeighbor(packet.destinationId)) {
+            // 経路情報が未学習でも、直接の隣接なら届けられる
+            nextHopId = packet.destinationId;
+        }
+
+        if (!nextHopId) {
+            console.warn(`[RL] No route to ${packet.destinationId}. Dropping packet.`);
+            return;
+        }
+        if (nextHopId === this.localNodeId) {
+            console.error('[RL] Routing loop detected: next hop is self.');
+            return;
+        }
+        if (packet.ttl <= 0) {
+            console.warn(`[RL] TTL expired before sending to ${packet.destinationId}. Dropping.`);
             return;
         }
 
-        // --- Step 2: RPFチェック (Reverse Path Forwarding) ---
-        // 受信したパケットが、送信元への最短経路から来たかを確認
-        if (!this.checkReversePath(packet.senderId, senderId)) {
-            console.warn(`[RL] RPF check failed: Packet from ${packet.senderId} did not arrive via shortest path from ${senderId}. Dropping.`);
-            // ルーティング情報パケットはRPFチェックをスキップする必要があるが、
-            // ここでは簡易的に全パケットに適用する。
-            return;
-        }
+        packet.ttl -= 1;
 
-        // --- Step 3: TTLチェックとデクリメント ---
-        if (packet.ttl <= 1) {
-            if (packet.destinationId !== this.localNodeId) {
-                console.warn(`[RL] TTL expired for packet to ${packet.destinationId}. Dropping.`);
-                return;
+        void this.linkManager.sendPacketToNeighbor(nextHopId, packet).then((sent) => {
+            if (!sent) {
+                console.warn(
+                    `[RL] Failed to forward packet to ${packet.destinationId} via ${nextHopId}.`,
+                );
             }
-        }
-        packet.ttl -= 1; // TTLを減らす
+        });
+    }
 
-        // --- Step 4: 宛先判定 ---
+    // =================================================================
+    // 受信 (LinkManager -> RoutingLayer)
+    // =================================================================
+
+    private async handleIncomingPacket(packet: WebTCPPacket, fromId: NodeId): Promise<void> {
+        // --- 1. 署名検証 ---
+        let verified: boolean;
+        try {
+            verified = await this.verifier.verifyPacket(packet);
+        } catch (error) {
+            console.warn('[RL] Signature verification threw. Dropping packet.', error);
+            return;
+        }
+        if (!verified) {
+            console.warn('[RL] Invalid signature. Dropping packet.');
+            return;
+        }
+
+        // --- 2. ルーティング情報は RPF / TTL の対象外 ---
+        if (packet.flags === 'RT_UPDATE') {
+            this.manager.handleRoutingInfoPayload(packet.senderId, packet.payload);
+            return;
+        }
+
+        // --- 3. RPF チェック ---
+        if (!this.checkReversePath(packet.senderId, fromId)) {
+            console.warn(
+                `[RL] RPF check failed: packet from ${packet.senderId} arrived via ${fromId}. Dropping.`,
+            );
+            return;
+        }
+
+        // --- 4. 宛先判定と転送 ---
         if (packet.destinationId === this.localNodeId) {
-            // 自身宛てのパケットは上位層へ
             this.forwardToTransportLayer(packet);
         } else {
-            // 他のノード宛てのパケットは転送
             this.forwardPacket(packet);
         }
     }
 
     /**
-     * RPFチェックロジック。送信元への最短経路のネクストホップが、実際にパケットを
-     * 送ってきた隣接ノードと一致するかを確認する。
-     * @param sourceId パケットのオリジナルの送信元ノードID。
-     * @param receivedFromId パケットを受信した隣接ノードID。
-     * @returns 最短経路から来た場合はtrue。
+     * 送信元への最短経路のネクストホップが、実際に受信した隣接と一致するか確認する。
+     * 経路が未学習の場合は、直接の隣接からの受信のみ許可する（M1の縮退動作）。
      */
     private checkReversePath(sourceId: NodeId, receivedFromId: NodeId): boolean {
         const entry = this.routingTable.getEntry(sourceId);
-        
-        // 1. エントリがない場合は最短経路が不明なため、一旦転送を許可しない (Drop)
-        if (!entry) return false;
 
-        // 2. 最短経路のネクストホップが、受信したノードと一致するか
-        return entry.nextHopId === receivedFromId;
+        if (entry) {
+            return entry.nextHopId === receivedFromId;
+        }
+        return this.linkManager.isNeighbor(receivedFromId);
     }
 
     // =================================================================
-    // 2. 送信パケット処理 (TransportLayer -> RoutingLayer)
+    // 上位層への引き渡し / ルーティング情報の送信
     // =================================================================
 
-    /**
-     * TransportLayerからのパケットを受信し、ルーティングと署名を行い、ネットワークへ送り出す。
-     * @param packet TransportLayerから渡された未署名のWebTCPPacket。
-     */
-    public async sendPacket(packet: WebTCPPacket): Promise<void> {
-        // --- Step 1: 署名付与 (Signing) ---
-        const signedPacket = await this.verifier.signPacket(packet);
-
-        // --- Step 2: 転送 ---
-        if (signedPacket.destinationId === this.localNodeId) {
-            // 自身宛てのパケットは直接TransportLayerへ（通常は応答パケットなど）
-            this.forwardToTransportLayer(signedPacket);
-        } else {
-            this.forwardPacket(signedPacket);
-        }
-    }
-
-
-    /**
-     * パケットをルーティングテーブルに基づき次のホップに転送する。
-     * @param packet 署名済みでTTLが更新されたWebTCPPacket。
-     */
-    private forwardPacket(packet: WebTCPPacket): void {
-        const entry = this.routingTable.getEntry(packet.destinationId);
-
-        if (!entry || entry.cost === 0) {
-            console.warn(`[RL] Route not found for destination ${packet.destinationId}. Dropping.`);
-            // パケットの送信元に経路が見つからない旨を通知するロジックをここに追加すべき
-            return;
-        }
-
-        const nextHopId = entry.nextHopId;
-        
-        if (nextHopId === this.localNodeId) {
-            // 自身宛のパケットはforwardToTransportLayerで処理されるはず
-            console.error('[RL] Routing loop detected or misconfigured.');
-            return;
-        }
-
-        // --- Step 3: シリアライズと送信 ---
-        const data = this.serializer.serialize(packet);
-        
-        // IChannelを通じて次のホップへデータを送信
-        this.channel.send(nextHopId, data)
-            .catch(err => console.error(`[RL] Failed to send packet to next hop ${nextHopId}: ${err}`));
-        
-        console.log(`[RL] Forwarded packet to ${packet.destinationId} via ${nextHopId}. TTL: ${packet.ttl}`);
-    }
-
-    // =================================================================
-    // 3. 上位層への引き渡し
-    // =================================================================
-    
-    /**
-     * 自身宛てのパケットをTransportLayerへ渡す。
-     */
     private forwardToTransportLayer(packet: WebTCPPacket): void {
         if (this.transportLayer) {
             this.transportLayer.handleIncomingPacket(packet);
         } else {
-            console.warn('[RL] Transport Layer not initialized. Dropping packet.');
+            console.warn('[RL] Transport layer is not attached. Dropping packet.');
         }
+    }
+
+    /**
+     * ルーティング情報を RT_UPDATE パケットとして隣接ノードへ送る。
+     */
+    public async sendRoutingUpdate(neighborId: NodeId, info: RoutingInfoPacket): Promise<boolean> {
+        const payload = new TextEncoder().encode(JSON.stringify(info));
+        const packet: WebTCPPacket = {
+            senderId: this.localNodeId,
+            destinationId: neighborId,
+            ttl: this.defaultTtl,
+            signature: new Uint8Array(0),
+            sourcePort: 0,
+            destinationPort: 0,
+            flags: 'RT_UPDATE',
+            seqNum: 0,
+            ackNum: 0,
+            payload,
+        };
+        return this.linkManager.sendPacketToNeighbor(neighborId, packet);
     }
 }
