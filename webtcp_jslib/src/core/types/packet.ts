@@ -8,13 +8,20 @@ import { NodeId, SequenceNumber, Signature, VirtualPort, WebTCPFlags } from './p
  */
 export interface WebTCPPacket {
     // === L3 (Routing Layer) ヘッダー ===
-    /** 送信元ノードID（署名検証に使用）。 */
+    /**
+     * ワイヤーフォーマットのプロトコルバージョン。
+     *
+     * 送信時は既定で `WEBTCP_PROTOCOL_VERSION`（v2）が使われ、`signature` が設定されていれば
+     * v2、空なら v1 としてシリアライズされる。受信パケットでは受信したバージョンが入る。
+     */
+    version?: number;
+    /** 送信元ノードID（= Ed25519 公開鍵の指紋。署名検証に使用）。 */
     senderId: NodeId;
     /** 最終宛先ノードID。 */
     destinationId: NodeId;
     /** Time-to-Live（中継ホップごとにデクリメント）。 */
     ttl: number;
-    /** senderId による署名。M1–M2では空。 */
+    /** senderId の秘密鍵による Ed25519 署名（v2）。v1 では空。 */
     signature: Signature;
 
     // === L4 (Transport Layer) ヘッダー ===

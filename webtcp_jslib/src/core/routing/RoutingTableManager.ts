@@ -15,6 +15,11 @@ export interface RoutingInfoPacket {
     }[];
     /** 到達不能になった宛先（経路の撤回）。 */
     withdrawals?: NodeId[];
+    /**
+     * 送信元の Ed25519 公開鍵（Base64url、任意）。
+     * プロトコル v2 では RT_UPDATE に同梱して全隣接へ配布する（specification.md §10.4.2）。
+     */
+    publicKey?: string;
 }
 
 /**
@@ -272,6 +277,12 @@ export class RoutingTableManager {
             entries.push({ destinationId, cost });
         }
 
+        let publicKey: string | undefined;
+        if (candidate.publicKey !== undefined) {
+            if (typeof candidate.publicKey !== 'string') return null;
+            publicKey = candidate.publicKey;
+        }
+
         const withdrawals: NodeId[] = [];
         if (candidate.withdrawals !== undefined) {
             if (!Array.isArray(candidate.withdrawals)) return null;
@@ -281,6 +292,8 @@ export class RoutingTableManager {
             }
         }
 
-        return { senderId: candidate.senderId, entries, withdrawals };
+        return publicKey === undefined
+            ? { senderId: candidate.senderId, entries, withdrawals }
+            : { senderId: candidate.senderId, entries, withdrawals, publicKey };
     }
 }

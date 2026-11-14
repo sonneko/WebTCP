@@ -2,6 +2,9 @@ import { BrowserWebRTCChannel } from './adapters/webrtc/BrowserWebRTCChannel.js'
 import { IceServersProvider } from './adapters/webrtc/WebRTCChannel.js';
 import { ISignalingAdapter } from './core/link/ISignalingAdapter.js';
 import { WebTCPNetwork, WebTCPNetworkOptions } from './core/network/WebTCPNetwork.js';
+import { KeyDirectory } from './core/routing/KeyDirectory.js';
+import { Ed25519PacketVerifier } from './core/routing/PacketVerifier.js';
+import { Ed25519KeyManager } from './core/routing/keys.js';
 import { NodeId } from './core/types/protocol.js';
 import { resolveLogger } from './core/util/Logger.js';
 
@@ -9,7 +12,7 @@ export interface CreateBrowserNetworkOptions
     extends Omit<WebTCPNetworkOptions, 'channel' | 'signaling' | 'nodeId'> {
     /** シグナリングアダプタ（必須）。 */
     signaling: ISignalingAdapter;
-    /** ノードID。省略時はシグナリングアダプタのIDを使う。 */
+    /** ノードID。省略時は鍵管理の指紋、またはシグナリングアダプタのIDを使う。 */
     nodeId?: NodeId;
     /** STUN/TURN サーバーの静的リスト。 */
     iceServers?: RTCIceServer[];
@@ -23,6 +26,19 @@ export interface CreateBrowserNetworkOptions
     maxIceRestarts?: number;
     /** ICE 切断状態から再起動を試みるまでの猶予時間（ms、既定 3000）。 */
     iceRestartDelayMs?: number;
+    /**
+     * ブラウザ用 Ed25519 鍵管理（任意、#28）。
+     *
+     * `BrowserKeyManager.open()` で得たインスタンスを渡すと、
+     * ・NodeId が公開鍵の指紋になる
+     * ・パケットがプロトコル v2（署名必須）になる
+     * ・ピアと公開鍵をシグナリング経由で自動交換する
+     *
+     * 省略した場合は v1（署名なし）で動作する。
+     */
+    keyManager?: Ed25519KeyManager;
+    /** 公開鍵ディレクトリ（任意。省略時は鍵管理から自動生成）。 */
+    keyDirectory?: KeyDirectory;
 }
 
 /**
@@ -32,16 +48,20 @@ export interface CreateBrowserNetworkOptions
  *
  * @example
  * ```ts
- * const signaling = new SignalingAdapterHub({ url: location.origin });
- * const network = createBrowserNetwork({
- *   signaling,
- *   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
- * });
+ * const keys = await BrowserKeyManager.open();
+ * const signaling = new SignalingAdapterHub({ url: location.origin, nodeId: keys.nodeId });
+ * const network = createBrowserNetwork({ signaling, keyManager: keys });
  * await network.start();
  * ```
  */
 export function createBrowserNetwork(options: CreateBrowserNetworkOptions): WebTCPNetwork {
     const logger = resolveLogger(options.logger, options.logLevel);
+
+    const keyDirectory =
+        options.keyDirectory ??
+        (options.keyManager || options.verifier instanceof Ed25519PacketVerifier
+            ? new KeyDirectory({ logger })
+            : undefined);
 
     const channel = new BrowserWebRTCChannel(options.signaling, {
         logger,
@@ -57,12 +77,15 @@ export function createBrowserNetwork(options: CreateBrowserNetworkOptions): WebT
         ...(options.iceRestartDelayMs !== undefined
             ? { iceRestartDelayMs: options.iceRestartDelayMs }
             : {}),
+        ...(options.keyManager ? { keyManager: options.keyManager } : {}),
+        ...(keyDirectory ? { keyDirectory } : {}),
     });
 
     return new WebTCPNetwork({
         ...options,
         logger,
         channel,
-        nodeId: options.nodeId ?? options.signaling.getLocalNodeId(),
+        nodeId: options.nodeId ?? options.keyManager?.nodeId ?? options.signaling.getLocalNodeId(),
+        ...(keyDirectory ? { keyDirectory } : {}),
     });
 }

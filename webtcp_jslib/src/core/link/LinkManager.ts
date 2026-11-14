@@ -16,7 +16,7 @@ import { IChannel } from './IChannel.js';
  * `RT_UPDATE` パケットとしてこの層を通るため、シリアライズ経路は1本になる。
  *
  * イベント:
- * - `packet` (packet: WebTCPPacket, fromId: NodeId)
+ * - `packet` (packet: WebTCPPacket, fromId: NodeId, rawBytes: Uint8Array)
  * - `neighbor-connected` (peerId: NodeId)
  * - `neighbor-disconnected` (peerId: NodeId)
  */
@@ -143,6 +143,8 @@ export class LinkManager extends EventEmitter {
             return;
         }
 
-        this.emit('packet', packet, fromId);
+        // 署名検証はシリアライズ済みバイト列（署名フィールドを除く）に対して行うため、
+        // 受信した生バイト列も一緒に上位へ渡す（#28, specification.md §10.3）。
+        this.emit('packet', packet, fromId, data);
     }
 }

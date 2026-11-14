@@ -1,9 +1,11 @@
 import { WebTCPPacket } from '../types/packet.js';
-import { NodeId } from '../types/protocol.js';
+import { WEBTCP_PROTOCOL_VERSION, WEBTCP_PROTOCOL_VERSION_V1, NodeId } from '../types/protocol.js';
 import { EventEmitter } from '../util/EventEmitter.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import type { LinkManager } from '../link/LinkManager.js';
 import { IPacketVerifier, NullPacketVerifier } from './PacketVerifier.js';
+import { KeyDirectory } from './KeyDirectory.js';
+import { encodePublicKey } from './keys.js';
 import { RoutingTable } from './RoutingTable.js';
 import {
     RoutingInfoPacket,
@@ -26,7 +28,27 @@ export interface IRoutingLayer {
 }
 
 export interface RoutingLayerOptions {
+    /**
+     * 署名検証器。
+     * 省略時は `requiredSignatures` に応じて決まる。
+     * - `false`（既定・後方互換）: `NullPacketVerifier`（v1 相当）
+     * - `true`: 例外（Ed25519 検証器の明示的な指定が必要）
+     */
     verifier?: IPacketVerifier;
+    /**
+     * 署名の必須化（プロトコル v2、#28）。
+     *
+     * `true` の場合、署名のない v1 パケットや検証に失敗したパケットを破棄する。
+     * 既定は `false`（v1 パケットも受理）で、v2 パケットは常に検証される。
+     */
+    requiredSignatures?: boolean;
+    /**
+     * ピアの公開鍵ディレクトリ（任意）。
+     * 指定すると RT_UPDATE で学習した公開鍵を `Ed25519PacketVerifier` へ共有する。
+     */
+    keyDirectory?: KeyDirectory;
+    /** 自身の公開鍵（Base64url）。RT_UPDATE に同梱して全隣接へ配布する（§10.4.2）。 */
+    localPublicKey?: Uint8Array;
     routingTableManager?: RoutingTableManagerOptions;
     /** 送信パケットの初期TTL。既定 64。 */
     defaultTtl?: number;
@@ -38,10 +60,10 @@ export interface RoutingLayerOptions {
  * WebTCPプロトコルのルーティング層（L3）。
  *
  * - パケットの宛先判定と転送
- * - 署名検証（M1–M2は NullPacketVerifier）
+ * - 署名付与（送信）・署名検証（受信）（#28, specification.md §10）
  * - TTL 管理
  * - RPF（Reverse Path Forwarding）チェック
- * - RT_UPDATE のルーティングテーブルへの反映
+ * - RT_UPDATE のルーティングテーブルへの反映と公開鍵の配布
  */
 export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     public readonly manager: RoutingTableManager;
@@ -50,6 +72,9 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     private readonly linkManager: LinkManager;
     private readonly routingTable: RoutingTable;
     private readonly verifier: IPacketVerifier;
+    private readonly keyDirectory: KeyDirectory | null;
+    private readonly requiredSignatures: boolean;
+    private readonly localPublicKey: Uint8Array | null;
     private readonly defaultTtl: number;
     private readonly logger: Logger;
 
@@ -67,6 +92,9 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         this.linkManager = linkManager;
         this.routingTable = routingTable;
         this.verifier = options.verifier ?? new NullPacketVerifier();
+        this.keyDirectory = options.keyDirectory ?? null;
+        this.requiredSignatures = options.requiredSignatures ?? false;
+        this.localPublicKey = options.localPublicKey ?? null;
         this.defaultTtl = options.defaultTtl ?? 64;
         this.logger = createScopedLogger(baseLogger, 'RL');
 
@@ -84,9 +112,12 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         );
 
         // LinkManager からのイベントを購読する
-        this.linkManager.on('packet', (packet: WebTCPPacket, fromId: NodeId) => {
-            void this.handleIncomingPacket(packet, fromId);
-        });
+        this.linkManager.on(
+            'packet',
+            (packet: WebTCPPacket, fromId: NodeId, rawBytes?: Uint8Array) => {
+                void this.handleIncomingPacket(packet, fromId, rawBytes);
+            },
+        );
         this.linkManager.on('neighbor-connected', (peerId: NodeId) => {
             this.manager.handleNeighborUp(peerId);
         });
@@ -115,15 +146,23 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         return this.routingTable;
     }
 
+    /** 公開鍵ディレクトリ（読み取り用）。 */
+    public getKeyDirectory(): KeyDirectory | null {
+        return this.keyDirectory;
+    }
+
     // =================================================================
     // 送信 (TransportLayer -> RoutingLayer)
     // =================================================================
 
     /**
      * 上位層から受け取ったパケットに署名し、宛先へ送り出す。
+     *
+     * 署名は RoutingLayer で 1 度だけ付与する。中継転送時は TTL を変更するが、
+     * TTL は署名対象外（0 に正規化）なので再署名は不要である（§10.3）。
      */
     public async sendPacket(packet: WebTCPPacket): Promise<void> {
-        const signedPacket = await this.verifier.signPacket(packet);
+        const signedPacket = await this.signPacket(packet);
 
         if (signedPacket.destinationId === this.localNodeId) {
             this.forwardToTransportLayer(signedPacket);
@@ -131,6 +170,19 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         }
 
         this.forwardPacket(signedPacket, false);
+    }
+
+    private async signPacket(packet: WebTCPPacket): Promise<WebTCPPacket> {
+        // 転送時に付与済みの署名は保持する（要件: 中継ノードは再署名しない）
+        if (packet.signature.byteLength > 0) {
+            return packet;
+        }
+        try {
+            return await this.verifier.signPacket(packet);
+        } catch (error) {
+            this.logger.warn(`Failed to sign ${packet.flags} packet; sending unsigned.`, error);
+            return { ...packet, version: WEBTCP_PROTOCOL_VERSION_V1 };
+        }
     }
 
     /**
@@ -187,17 +239,17 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     // 受信 (LinkManager -> RoutingLayer)
     // =================================================================
 
-    private async handleIncomingPacket(packet: WebTCPPacket, fromId: NodeId): Promise<void> {
-        // --- 1. 署名検証 ---
-        let verified: boolean;
-        try {
-            verified = await this.verifier.verifyPacket(packet);
-        } catch (error) {
-            this.logger.warn('Signature verification threw. Dropping packet.', error);
-            return;
-        }
-        if (!verified) {
-            this.logger.warn('Invalid signature. Dropping packet.');
+    private async handleIncomingPacket(
+        packet: WebTCPPacket,
+        fromId: NodeId,
+        rawBytes?: Uint8Array,
+    ): Promise<void> {
+        // --- 1. 署名検証（§10.2） ---
+        const verification = await this.verifyIncoming(packet, rawBytes);
+        if (!verification.ok) {
+            this.logger.warn(
+                `Dropping ${packet.flags} from ${packet.senderId}: ${verification.reason}`,
+            );
             return;
         }
 
@@ -220,6 +272,42 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
             this.forwardToTransportLayer(packet);
         } else {
             this.forwardPacket(packet, true);
+        }
+    }
+
+    /**
+     * 受信パケットの署名を検証し、結果と理由を返す。
+     *
+     * - v1（署名なし）パケットは `requiredSignatures = false` のときのみ受理する。
+     * - v2 パケットは必ず検証する。
+     */
+    private async verifyIncoming(
+        packet: WebTCPPacket,
+        rawBytes?: Uint8Array,
+    ): Promise<{ ok: boolean; reason: string }> {
+        const isV1 = (packet.version ?? WEBTCP_PROTOCOL_VERSION) === WEBTCP_PROTOCOL_VERSION_V1;
+
+        if (isV1 && packet.signature.byteLength === 0) {
+            return this.requiredSignatures
+                ? { ok: false, reason: 'signature required (protocol v2)' }
+                : { ok: true, reason: 'unsigned v1 packet accepted' };
+        }
+
+        try {
+            const verified =
+                rawBytes && this.verifier.verifyBytes
+                    ? await this.verifier.verifyBytes(packet, rawBytes)
+                    : await this.verifier.verifyPacket(packet);
+            return verified
+                ? { ok: true, reason: 'signature ok' }
+                : { ok: false, reason: 'invalid signature' };
+        } catch (error) {
+            return {
+                ok: false,
+                reason: `signature verification threw: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            };
         }
     }
 
@@ -250,10 +338,16 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
 
     /**
      * ルーティング情報を RT_UPDATE パケットとして隣接ノードへ送る。
+     *
+     * 自身の公開鍵をペイロードへ同梱し、受信側が署名検証できるようにする（§10.4.2）。
      */
     public async sendRoutingUpdate(neighborId: NodeId, info: RoutingInfoPacket): Promise<boolean> {
-        const payload = new TextEncoder().encode(JSON.stringify(info));
-        const packet: WebTCPPacket = {
+        const payloadInfo: RoutingInfoPacket = this.localPublicKey
+            ? { ...info, publicKey: encodePublicKey(this.localPublicKey) }
+            : info;
+        const payload = new TextEncoder().encode(JSON.stringify(payloadInfo));
+
+        let packet: WebTCPPacket = {
             senderId: this.localNodeId,
             destinationId: neighborId,
             ttl: this.defaultTtl,
@@ -265,6 +359,9 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
             ackNum: 0,
             payload,
         };
+
+        // RT_UPDATE も署名する（受信側は同梱公開鍵で件数を検証できる）
+        packet = await this.signPacket(packet);
         return this.linkManager.sendPacketToNeighbor(neighborId, packet);
     }
 }
