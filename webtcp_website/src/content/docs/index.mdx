@@ -1,40 +1,46 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
-template: splash # Remove or comment out this line to display the site sidebar on this page.
+title: WebTCP
+description: WebRTC データチャネル上に仮想 TCP/HTTP トンネルを構築する実験的 P2P ライブラリ
+template: splash
 hero:
-  tagline: Congrats on setting up a new Starlight project!
+  tagline: ブラウザを自己完結型の P2P サーバー実行環境へ。WebRTC DataChannel 上にバイトストリーム指向の仮想 TCP を実装する TypeScript ライブラリ。
   image:
-    file: ../../assets/houston.webp
+    file: ../../assets/webtcp-hero.svg
+    alt: WebTCP のレイヤー構成図（L4 VirtualStream / L3 RoutingLayer / L1-L2 WebRTC DataChannel）
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: クイックスタート
+      link: /guides/quickstart/
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
+    - text: プロトコル仕様を読む
+      link: /specification/protocol/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/sonneko/WebTCP
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Next steps
+## WebTCP の特徴（M2 対応済み）
 
 <CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
+	<Card title="バイトストリーム指向の仮想 TCP" icon="rocket">
+		バイト単位の Seq/Ack、ランダム ISN、60 KiB 超データの自動分割・再結合、部分読み取り（`read` / `readExact`）、Half-Close に対応します。
 	</Card>
-	<Card title="Change page layout" icon="document">
-		Delete `template: splash` in `src/content/docs/index.mdx` to display a
-		sidebar on this page.
+	<Card title="動的 RTO・輻輳制御・SACK" icon="setting">
+		RFC 6298（Jacobson / Karn）による動的 RTO、RFC 5681 の Slow Start / Congestion Avoidance、3 重複 ACK による Fast Retransmit と SACK を実装しています。
 	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
+	<Card title="単一 DataChannel 上のポート多重化" icon="random">
+		1 本の WebRTC DataChannel 上で複数の仮想ポート・セッションを多重化し、距離ベクトル型ルーティングにより 3 ノード以上のマルチホップ転送も行えます。
 	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
+	<Card title="NAT 越え・自動ブートストラップ" icon="globe">
+		`bootstrap(searcher)` による指数バックオフ付き自動接続、動的 TURN 資格情報フック（`iceServersProvider`）、接続障害時の自動 ICE 再起動を備えます。
 	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
+	<Card title="バンドラ不要・ゼロランタイム依存" icon="document">
+		コアは `Uint8Array` / `DataView` と独自 `EventEmitter` で実装され、Node.js 組み込みに非依存。`tsc` の ESM 出力をブラウザから直接 import できます。
+	</Card>
+	<Card title="レベル付きロガー注入" icon="information">
+		`debug` / `info` / `warn` / `error` / `silent` のログレベル制御に対応（既定は `warn` 以上）。カスタムロガーを `WebTCPNetwork` へ注入できます。
 	</Card>
 </CardGrid>
