@@ -43,23 +43,23 @@ function setStatus(element, text, kind = '') {
 }
 
 async function main() {
-    const signaling = new SignalingAdapterHub({
-        url: location.origin,
-        pollIntervalMs: 400,
-    });
-
-    network = createBrowserNetwork({
-        signaling,
-        // 同一ホスト・同一LANのデモなので STUN/TURN は不要。
-        // インターネット越しに試す場合は iceServers を指定する。
-        iceServers: [],
-    });
-
     try {
+        const signaling = new SignalingAdapterHub({
+            url: location.origin,
+            pollIntervalMs: 400,
+        });
+
+        network = createBrowserNetwork({
+            signaling,
+            // 同一ホスト・同一LANのデモなので STUN/TURN は不要。
+            // インターネット越しに試す場合は iceServers を指定する。
+            iceServers: [],
+        });
+
         await network.start();
     } catch (error) {
         console.error(error);
-        setStatus(els.listenStatus, 'シグナリングに接続できません', 'err');
+        setStatus(els.listenStatus, '起動に失敗しました', 'err');
         log(els.serverLog, `起動失敗: ${error.message}`);
         return;
     }
