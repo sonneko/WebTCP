@@ -1,8 +1,8 @@
-import { NodeId } from '../types/protocol';
+import { NodeId } from '../types/protocol.js';
 
 /**
- * シグナリングメッセージのペイロード構造を定義します。
- * 実際には、WebRTCのSDP (Session Description Protocol) や ICE Candidate が入ります。
+ * シグナリングメッセージのペイロード構造（specification.md §9.2）。
+ * WebRTCのSDP（Offer/Answer）やICE Candidateが入る。
  */
 export interface SignalMessage {
     type: 'offer' | 'answer' | 'candidate';
@@ -11,32 +11,31 @@ export interface SignalMessage {
 }
 
 /**
- * シグナリング層の抽象化インターフェース (ISignalingAdapter)。
- * P2P接続に必要なオファー/アンサーの交換、ICE候補の転送ロジックを担う。
- * 通信手段を抽象化する。
+ * シグナリング層の抽象化インターフェース。
+ * Offer/Answer/ICE候補の運搬のみを責務とする。
  */
 export interface ISignalingAdapter {
     /**
-     * ローカルノードのユニークなID (NodeId) を取得する。
-     * このIDは通常、永続化された秘密鍵から導出される。
+     * ローカルノードのNodeIdを取得する。
+     * `WebTCPNetwork` が使用するIDと一致しなければならない。
      */
     getLocalNodeId(): NodeId;
 
     /**
-     * シグナリングメッセージを相手ノードに送信する。
-     * このメソッドはメッセージをシグナリングバックエンドに書き込む責務を持つ。
-     * @param recipientId 宛先ノードのID。
-     * @param message 送信するシグナリングメッセージ（Offer, Answer, Candidate）。
-     * @returns {Promise<void>}
+     * シグナリングメッセージを相手ノードへ送信する。
+     * @param recipientId 宛先ノードID
+     * @param message 送信するメッセージ
      */
     sendMessage(recipientId: NodeId, message: SignalMessage): Promise<void>;
 
     /**
-     * 自身宛てのシグナリングメッセージを受信するためのリスナーを開始する。
-     * シグナリングバックエンドのリアルタイムな監視（例：FirestoreのonSnapshot）を担う。
-     * @param callback メッセージを受信した際に呼び出される関数。
-     * @returns {Promise<void>}
+     * 自身宛てのシグナリングメッセージの受信を開始する。
+     * @param callback 受信時に呼び出される関数
      */
     listen(callback: (fromId: NodeId, message: SignalMessage) => void): Promise<void>;
-    
+
+    /**
+     * 受信を停止し、リソースを解放する（任意）。
+     */
+    close?(): void;
 }

@@ -1,0 +1,14 @@
+# 依存
+node_modules/
+
+# ビルド生成物
+dist/
+*.tsbuildinfo
+
+# サイト
+.astro/
+
+# テスト・エディタ
+coverage/
+.DS_Store
+*.log

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebTCP — 最小 end-to-end デモ</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0d1117;
+            --panel: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --muted: #8b949e;
+            --accent: #58a6ff;
+            --ok: #3fb950;
+            --warn: #d29922;
+            --err: #f85149;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 24px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: ui-sans-serif, system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+            line-height: 1.6;
+        }
+        h1 { font-size: 20px; margin: 0 0 4px; }
+        h2 { font-size: 15px; margin: 0 0 12px; }
+        p.lead { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+        code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .node-id { font-size: 12px; color: var(--muted); word-break: break-all; }
+        .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+        }
+        .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+        button {
+            background: #21262d;
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 7px 12px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        button:hover:not(:disabled) { border-color: var(--accent); }
+        button:disabled { opacity: 0.45; cursor: not-allowed; }
+        button.primary { background: #1f6feb; border-color: #1f6feb; }
+        input, select {
+            background: #0d1117;
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 13px;
+            font-family: inherit;
+        }
+        input[type="text"] { flex: 1; min-width: 140px; }
+        .log {
+            margin: 0;
+            padding: 8px;
+            height: 180px;
+            overflow: auto;
+            background: #0d1117;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .status { font-size: 12px; color: var(--muted); }
+        .status.ok { color: var(--ok); }
+        .status.err { color: var(--err); }
+        .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <h1>WebTCP — 最小 end-to-end デモ</h1>
+    <p class="lead">
+        このページを2つのタブ（または2つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
+        同一オリジンのシグナリングハブを経由して WebRTC の DataChannel が確立し、その上で仮想 TCP の接続が行われます。
+    </p>
+    <div class="node-id mono">このタブの NodeId: <span id="node-id">(起動中...)</span></div>
+
+    <div class="grid" style="margin-top: 16px;">
+        <section class="panel">
+            <h2>1. サーバー（待ち受け側）</h2>
+            <div class="row">
+                <button id="listen-btn" class="primary">ポート 8080 で待ち受ける</button>
+                <span id="listen-status" class="status">未開始</span>
+            </div>
+            <pre id="server-log" class="log"></pre>
+            <div class="hint">受け取ったデータをそのまま送り返します（エコー）。</div>
+        </section>
+
+        <section class="panel">
+            <h2>2. クライアント（接続側）</h2>
+            <div class="row">
+                <button id="discover-btn">接続先を探す</button>
+                <select id="peer-select" style="flex: 1; min-width: 160px;"></select>
+                <button id="connect-btn" class="primary">接続</button>
+            </div>
+            <div class="row">
+                <span id="client-status" class="status">未接続</span>
+            </div>
+            <div class="row">
+                <input id="message-input" type="text" placeholder="送信するテキスト" value="こんにちは、WebTCP" disabled />
+                <button id="send-btn" disabled>送信</button>
+            </div>
+            <pre id="client-log" class="log"></pre>
+        </section>
+    </div>
+
+    <script type="module" src="./demo.js"></script>
+</body>
+</html>

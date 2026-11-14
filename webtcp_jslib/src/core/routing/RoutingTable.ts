@@ -1,80 +1,66 @@
-import { NodeId } from '../types/protocol'; // NodeIdの型をインポート
+import { NodeId } from '../types/protocol.js';
 
 /**
  * ルーティングテーブルのエントリ構造。
  * 特定の宛先ノードへの転送情報を保持する。
  */
 export interface ForwardingEntry {
-    /** 宛先ノードまでの推定コスト (例: ホップ数)。RPFチェックの基準。 */
+    /** 宛先ノードまでの推定コスト（ホップ数）。RPFチェックの基準。 */
     cost: number;
-    /** パケットを次に転送すべき隣接ノードのID (Next Hop)。 */
+    /** 次に転送すべき隣接ノードのID。 */
     nextHopId: NodeId;
-    /** エントリが最後に更新されたタイムスタンプ (Unix time)。 */
+    /** エントリが最後に更新されたタイムスタンプ（Unix time, ms）。 */
     lastSeen: number;
 }
 
 /**
  * WebTCPネットワークにおけるルーティングテーブル。
- * NodeIdをキーとしてForwardingEntryを管理し、パケット転送のための経路情報を提供する。
- * * NOTE: テーブルの更新ロジック（コスト計算、エイジング）は RoutingTableManager が担当する。
- * このクラスはデータの保存と検索のみに責任を持つ。
+ *
+ * データの保存と検索のみを責務とし、更新ロジック（コスト計算・エイジング）は
+ * `RoutingTableManager` が担う。
  */
 export class RoutingTable {
-    // 宛先NodeId (Destination) をキーとし、ForwardingEntryを値とするマップ
-    private table: Map<NodeId, ForwardingEntry>;
-    private localNodeId: NodeId;
+    private readonly table = new Map<NodeId, ForwardingEntry>();
+    private readonly localNodeId: NodeId;
 
     /**
-     * @param localNodeId このテーブルを所有するノードのID。
+     * @param localNodeId このテーブルを所有するノードのID
      */
     constructor(localNodeId: NodeId) {
         this.localNodeId = localNodeId;
-        this.table = new Map<NodeId, ForwardingEntry>();
-
-        // 自身のノードIDへのエントリは、コスト0、ネクストホップは自身として初期設定する
+        // 自身へのエントリはコスト0、ネクストホップは自身
         this.updateEntry(localNodeId, { cost: 0, nextHopId: localNodeId });
     }
 
+    public getLocalNodeId(): NodeId {
+        return this.localNodeId;
+    }
+
     /**
-     * テーブルに新しいエントリを追加または既存のエントリを更新する。
-     * @param destinationId 宛先ノードID。
-     * @param entry 更新/新規作成する転送情報。
+     * エントリを追加または更新する。
      */
     public updateEntry(destinationId: NodeId, entry: Omit<ForwardingEntry, 'lastSeen'>): void {
-        const fullEntry: ForwardingEntry = {
-            ...entry,
-            lastSeen: Date.now(), // 更新された日時を記録
-        };
-        this.table.set(destinationId, fullEntry);
+        this.table.set(destinationId, { ...entry, lastSeen: Date.now() });
     }
 
-    /**
-     * 指定された宛先ノードへの転送エントリを取得する。
-     * @param destinationId 宛先ノードID。
-     * @returns 転送エントリ、または見つからない場合はnull。
-     */
+    /** 宛先のエントリを取得する。存在しなければ null。 */
     public getEntry(destinationId: NodeId): ForwardingEntry | null {
-        return this.table.get(destinationId) || null;
+        return this.table.get(destinationId) ?? null;
     }
 
-    /**
-     * 指定されたノードIDのエントリをテーブルから削除する。
-     * @param destinationId 削除するノードID。
-     */
+    /** エントリを削除する。自身のエントリは削除できない。 */
     public deleteEntry(destinationId: NodeId): boolean {
-        // 自身のノードIDは削除できないように保護
-        if (destinationId === this.localNodeId) {
-            return false;
-        }
+        if (destinationId === this.localNodeId) return false;
         return this.table.delete(destinationId);
     }
 
-    /**
-     * テーブル全体のコピーを取得する（Managerが更新ロジックに使用するため）。
-     * @returns 現在のテーブルのMap形式のコピー。
-     */
+    /** テーブル全体のコピーを返す。 */
     public getAllEntries(): ReadonlyMap<NodeId, ForwardingEntry> {
-        // 外部からの直接的な変更を防ぐため、コピーを返す
         return new Map(this.table);
+    }
+
+    /** 登録エントリ数（自身を含む）。 */
+    public size(): number {
+        return this.table.size;
     }
 }

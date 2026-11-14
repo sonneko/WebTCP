@@ -1,210 +1,299 @@
-import { EventEmitter } from 'events';
-import { NodeId, VirtualPort } from '../types/protocol';
-import { WebTCPPacket } from '../types/packet';
-import { SessionManager, VirtualStream } from './SessionManager'; // VirtualStreamとSessionManagerの型定義をインポート
-// 実際のVirtualStreamの実装ファイル
-import { VirtualStream as VirtualStreamImpl } from './VirtualStream'; 
+import { NodeId, VirtualPort, WebTCPPacket } from '../types/index.js';
+import { EventEmitter } from '../util/EventEmitter.js';
+import { allocateEphemeralPort } from '../util/id.js';
+import type { IRoutingLayer } from '../routing/RoutingLayer.js';
+import { ManagedStream, SessionManager, SessionManagerOptions } from './SessionManager.js';
+import { TransportContext, VirtualStream, VirtualStreamOptions } from './VirtualStream.js';
 
-// ルーティング層への参照インターフェース
-interface RoutingLayer {
-    // パケットをネットワークに送信するAPI
-    sendPacket(packet: WebTCPPacket): Promise<void>;
-    // TransportLayerにパケットを渡すためのハンドラ登録API (実際にはRoutingLayerで実装される)
-    registerPacketHandler(handler: (packet: WebTCPPacket) => void): void;
+/** アプリケーションがポートで待ち受ける際に登録するハンドラ。 */
+export type PortHandler = (stream: VirtualStream) => void;
+
+export interface TransportLayerOptions {
+    sessionManager?: SessionManagerOptions;
+    stream?: VirtualStreamOptions;
+    /** 接続確立のタイムアウト（ms）。既定 10000。 */
+    connectTimeoutMs?: number;
+    /** 制御パケットの初期TTL。既定 64。 */
+    defaultTtl?: number;
 }
 
-// アプリケーション層がポートでリッスンする際に登録するハンドラ
-type PortHandler = (stream: VirtualStream) => void;
-
 /**
- * WebTCPプロトコルスタックのトランスポート層 (L4) を実装するクラス。
- * ポート多重化、接続開始、セッション管理（SessionManager）、パケットのセッションへの振り分けを行う。
+ * WebTCP のトランスポート層（L4）。
+ *
+ * - 仮想ポートによる多重化
+ * - 仮想ストリームの生成・破棄（SessionManager）
+ * - SYN の受付と RST の返送
  */
-export class TransportLayer extends EventEmitter {
+export class TransportLayer extends EventEmitter implements TransportContext {
     public readonly localNodeId: NodeId;
-    private routingLayer: RoutingLayer;
-    private sessionManager: SessionManager;
+    public readonly sessionManager: SessionManager;
 
-    // キー: VirtualPort, 値: PortHandler (リッスン中のアプリケーション)
-    private portHandlers: Map<VirtualPort, PortHandler>;
+    private readonly routingLayer: IRoutingLayer;
+    private readonly portHandlers = new Map<VirtualPort, PortHandler>();
+    private readonly streamOptions: VirtualStreamOptions;
+    private readonly connectTimeoutMs: number;
+    private readonly defaultTtl: number;
 
-    constructor(localNodeId: NodeId, routingLayer: RoutingLayer) {
+    private started = false;
+    private closed = false;
+
+    constructor(
+        localNodeId: NodeId,
+        routingLayer: IRoutingLayer,
+        options: TransportLayerOptions = {},
+    ) {
         super();
         this.localNodeId = localNodeId;
         this.routingLayer = routingLayer;
-        // SessionManagerのインスタンス化
-        this.sessionManager = new SessionManager(); 
-        this.portHandlers = new Map();
+        this.sessionManager = new SessionManager(options.sessionManager);
+        this.streamOptions = options.stream ?? {};
+        this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
+        this.defaultTtl = options.defaultTtl ?? 64;
 
-        // RoutingLayerにパケット受信ハンドラを登録
-        this.routingLayer.registerPacketHandler(this.handleIncomingPacket.bind(this));
+        this.routingLayer.setTransportLayer(this);
     }
 
-    /**
-     * トランスポート層の処理を開始する。
-     */
+    /** セッションのタイムアウト監視を開始する（冪等）。 */
     public start(): void {
+        if (this.started) return;
+        this.started = true;
         this.sessionManager.start();
-        console.log(`[TL] TransportLayer started on Node ID: ${this.localNodeId}`);
+    }
+
+    /** 全ストリームを閉じ、監視を停止する。 */
+    public close(): void {
+        if (this.closed) return;
+        this.closed = true;
+        this.sessionManager.closeAll();
+        this.sessionManager.stop();
+        this.portHandlers.clear();
+    }
+
+    // ===============================================
+    // アプリケーション向けAPI
+    // ===============================================
+
+    /**
+     * 能動オープン。リモートノードとの仮想接続を確立する。
+     *
+     * @param remoteNodeId 接続先ノードID
+     * @param remotePort 接続先ポート
+     * @param localPort ローカルポート（省略時は自動割り当て）
+     * @throws タイムアウト、RST、または送信失敗時
+     */
+    public async connect(
+        remoteNodeId: NodeId,
+        remotePort: VirtualPort,
+        localPort?: VirtualPort,
+    ): Promise<VirtualStream> {
+        if (this.closed) throw new Error('TransportLayer is closed');
+        this.assertPort(remotePort);
+        const local = localPort ?? allocateEphemeralPort();
+        this.assertPort(local);
+
+        const existing = this.sessionManager.getStream(remoteNodeId, local, remotePort);
+        if (existing instanceof VirtualStream) {
+            return existing;
+        }
+        if (existing) {
+            throw new Error('A non-VirtualStream session already exists for this tuple');
+        }
+
+        const stream = new VirtualStream(
+            this,
+            remoteNodeId,
+            local,
+            remotePort,
+            true,
+            this.streamOptions,
+        );
+        this.sessionManager.registerStream(stream);
+
+        const connected = new Promise<VirtualStream>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                cleanup();
+                stream.close();
+                reject(
+                    new Error(
+                        `Connection to ${remoteNodeId}:${remotePort} timed out after ${this.connectTimeoutMs}ms`,
+                    ),
+                );
+            }, this.connectTimeoutMs);
+
+            const onConnect = (): void => {
+                cleanup();
+                resolve(stream);
+            };
+            const onError = (error: Error): void => {
+                cleanup();
+                reject(error);
+            };
+            const onClose = (): void => {
+                cleanup();
+                reject(new Error('Stream closed before the connection was established'));
+            };
+
+            const cleanup = (): void => {
+                clearTimeout(timer);
+                stream.off('connect', onConnect);
+                stream.off('error', onError);
+                stream.off('close', onClose);
+            };
+
+            stream.once('connect', onConnect);
+            stream.once('error', onError);
+            stream.once('close', onClose);
+        });
+
+        try {
+            await stream.initiateConnection();
+        } catch (error) {
+            stream.close();
+            throw error;
+        }
+
+        return connected;
     }
 
     /**
-     * TransportLayer経由でRoutingLayerにパケットを送信する。
-     * VirtualStreamが再送時に使用する。
+     * パッシブオープン。指定ポートへの SYN を待ち受ける。
+     * @throws 同じポートがすでに登録されている場合
      */
+    public listen(port: VirtualPort, handler: PortHandler): void {
+        if (this.closed) throw new Error('TransportLayer is closed');
+        this.assertPort(port);
+        if (this.portHandlers.has(port)) {
+            throw new Error(`Port ${port} is already listening`);
+        }
+        this.portHandlers.set(port, handler);
+    }
+
+    /** 指定ポートの待ち受けを解除する。 */
+    public unlisten(port: VirtualPort): boolean {
+        return this.portHandlers.delete(port);
+    }
+
+    /** 待ち受け中のポート一覧。 */
+    public getListeningPorts(): VirtualPort[] {
+        return [...this.portHandlers.keys()];
+    }
+
+    // ===============================================
+    // ルーティング層とのやりとり
+    // ===============================================
+
+    /** ルーティング層へパケットを送る（VirtualStream から呼ばれる）。 */
     public async sendPacket(packet: WebTCPPacket): Promise<void> {
-        // TransportLayerで必要なヘッダー設定（Seq/AckNumはVirtualStreamが設定済み）
-        // その後、RoutingLayerに転送を依頼
         await this.routingLayer.sendPacket(packet);
     }
 
-    // ===============================================
-    // アプリケーション層向けAPI
-    // ===============================================
-
-    /**
-     * リモートノードとの新しい接続を確立する (アクティブオープン)。
-     * @param remoteNodeId 接続先ノードID。
-     * @param remotePort 接続先ポート。
-     * @param localPort 使用するローカルポート (自動割り当ても可能だが、ここでは固定)。
-     * @returns 確立されたVirtualStream。
-     */
-    public async connect(remoteNodeId: NodeId, remotePort: VirtualPort, localPort: VirtualPort): Promise<VirtualStream> {
-        // 既存のセッションがないかチェック
-        const existingStream = this.sessionManager.getStream(remoteNodeId, localPort, remotePort);
-        if (existingStream) {
-            return existingStream; // 既に接続中または接続試行中
-        }
-
-        // 新しいVirtualStreamインスタンスを作成 (isInitiator: true)
-        const stream = new VirtualStreamImpl(this, remoteNodeId, localPort, remotePort, true) as unknown as VirtualStream;
-        
-        // SessionManagerに登録
-        this.sessionManager.registerStream(stream);
-
-        // 接続を開始 (SYNパケット送信)
-        await stream.initiateConnection(); 
-
-        // 接続完了イベントを待機して返す（非同期処理の簡略化のため、ここではPromiseを返す）
-        return new Promise((resolve, reject) => {
-            stream.once('connect', () => resolve(stream));
-            stream.once('error', (err) => reject(err));
-            // TODO: タイムアウト処理などを実装
-        });
+    /** ストリームの登録を解除する（VirtualStream から呼ばれる）。 */
+    public deregisterStream(stream: ManagedStream): void {
+        this.sessionManager.deregisterStream(stream);
     }
 
     /**
-     * 指定されたポートで接続リクエスト（SYN）を待ち受ける (パッシブオープン)。
-     * @param port 待ち受けるポート番号。
-     * @param handler 接続が確立したときに実行されるコールバック関数。
+     * ルーティング層から自身宛てのパケットを受け取る。
      */
-    public listen(port: VirtualPort, handler: PortHandler): void {
-        if (this.portHandlers.has(port)) {
-            console.error(`[TL] Port ${port} is already listening.`);
-            return;
-        }
-        this.portHandlers.set(port, handler);
-        console.log(`[TL] Listening for connections on Port ${port}`);
-    }
-    
-    // ===============================================
-    // パケット処理 (Port Multiplexing)
-    // ===============================================
+    public handleIncomingPacket(packet: WebTCPPacket): void {
+        if (this.closed) return;
 
-    /**
-     * RoutingLayerから受信したパケットを処理し、適切なストリームに振り分ける。
-     */
-    private handleIncomingPacket(packet: WebTCPPacket): void {
-        const { senderId, destinationPort, sourcePort } = packet;
-        
-        // 1. 宛先が自分自身か確認（RoutingLayerで確認済みのはずだが、二重チェック）
         if (packet.destinationId !== this.localNodeId) {
             console.warn('[TL] Received packet not destined for this node. Dropping.');
             return;
         }
-        
-        const localPort = destinationPort;
-        const remotePort = sourcePort;
-        
-        // 2. 既存のVirtualStreamを検索
-        let stream = this.sessionManager.getStream(senderId, localPort, remotePort);
-        
-        const type = this.getPacketType(packet);
 
-        if (stream) {
-            // 3. 既存のセッションにパケットを渡す
+        const localPort = packet.destinationPort;
+        const remotePort = packet.sourcePort;
+
+        const stream = this.sessionManager.getStream(
+            packet.senderId,
+            localPort,
+            remotePort,
+        );
+
+        if (stream instanceof VirtualStream) {
             stream.handleIncomingPacket(packet);
-        } else {
-            // 4. セッションが存在しない場合、SYNパケットかどうかチェック
-            if (type === 'SYN') {
-                this.handleSynRequest(packet, localPort, remotePort, senderId);
-            } else {
-                // 5. SYN以外のパケットがセッションなしで到着した場合はRSTを返す
-                this.sendRst(senderId, remotePort, localPort);
-                console.warn(`[TL] Dropping non-SYN packet for non-existent session. From ${senderId}:${remotePort} to ${localPort}`);
-            }
+            return;
         }
+
+        if (packet.flags === 'SYN') {
+            this.handleSynRequest(packet, localPort, remotePort);
+            return;
+        }
+
+        console.warn(
+            `[TL] No session for ${packet.senderId}:${remotePort} -> ${localPort} (flags=${packet.flags}). Sending RST.`,
+        );
+        void this.sendRst(packet.senderId, remotePort, localPort);
     }
 
-    /**
-     * SYNパケットを受信した場合の処理 (パッシブオープン)
-     */
-    private handleSynRequest(packet: WebTCPPacket, localPort: VirtualPort, remotePort: VirtualPort, remoteNodeId: NodeId): void {
+    // ===============================================
+    // 内部処理
+    // ===============================================
+
+    private handleSynRequest(
+        packet: WebTCPPacket,
+        localPort: VirtualPort,
+        remotePort: VirtualPort,
+    ): void {
         const handler = this.portHandlers.get(localPort);
-
-        if (handler) {
-            // 接続リクエストを受け入れる
-            console.log(`[TL] SYN received on Port ${localPort}. Creating new VirtualStream.`);
-            
-            // 新しいVirtualStreamインスタンスを作成 (isInitiator: false)
-            // stateはコンストラクタ内で 'SYN_RCVD' に設定される
-            const stream = new VirtualStreamImpl(this, remoteNodeId, localPort, remotePort, false) as unknown as VirtualStream;
-            this.sessionManager.registerStream(stream);
-
-            // VirtualStreamにSYNパケットを渡し、SYN-ACK応答を促す
-            stream.handleIncomingPacket(packet);
-
-            // アプリケーション層のハンドラに新しいストリームを渡す
-            handler(stream);
-        } else {
-            // 誰もリッスンしていないポートへのSYNはRSTを返す
-            this.sendRst(remoteNodeId, remotePort, localPort);
-            console.warn(`[TL] Port ${localPort} not listening. Sent RST.`);
+        if (!handler) {
+            console.warn(`[TL] Port ${localPort} is not listening. Sending RST.`);
+            void this.sendRst(packet.senderId, remotePort, localPort);
+            return;
         }
+
+        const stream = new VirtualStream(
+            this,
+            packet.senderId,
+            localPort,
+            remotePort,
+            false,
+            this.streamOptions,
+        );
+        this.sessionManager.registerStream(stream);
+
+        // SYN を処理させ、SYN_ACK を返させる
+        stream.handleIncomingPacket(packet);
+
+        handler(stream);
     }
 
     /**
-     * RST (Reset) パケットを作成し、リモートノードに送信する。
+     * RST を返送する。
+     * @param destinationId 相手ノード
+     * @param destinationPort 相手ポート（元の sourcePort）
+     * @param sourcePort 自分ポート（元の destinationPort）
      */
-    private sendRst(destinationId: NodeId, destinationPort: VirtualPort, sourcePort: VirtualPort): void {
-        // RSTパケットを作成（seqNum/ackNumは省略またはゼロ）
-        const rstPacket: WebTCPPacket = {
+    private async sendRst(
+        destinationId: NodeId,
+        destinationPort: VirtualPort,
+        sourcePort: VirtualPort,
+    ): Promise<void> {
+        const rst: WebTCPPacket = {
             senderId: this.localNodeId,
-            destinationId: destinationId,
-            sourcePort: sourcePort,
-            destinationPort: destinationPort,
-            ttl: 64, 
-            flags: 'RST' as any,
+            destinationId,
+            sourcePort,
+            destinationPort,
+            ttl: this.defaultTtl,
+            flags: 'RST',
             seqNum: 0,
             ackNum: 0,
-            payload: Buffer.from('RST'),
-            signature: '' 
+            payload: new Uint8Array(0),
+            signature: new Uint8Array(0),
         };
-        this.routingLayer.sendPacket(rstPacket);
+
+        try {
+            await this.routingLayer.sendPacket(rst);
+        } catch (error) {
+            console.warn('[TL] Failed to send RST:', error);
+        }
     }
-    
-    /**
-     * VirtualStreamからコピーしたパケットタイプ判定ロジック。
-     * 実際には、パケットヘッダーのフラグフィールドから判定すべき。
-     */
-    private getPacketType(packet: WebTCPPacket): 'SYN' | 'ACK' | 'SYN_ACK' | 'DATA' | 'FIN' | 'RST' | 'OTHER' {
-        // 簡易フラグ判定 (VirtualStreamと同様のロジックを使用)
-        if (packet.flags === 'SYN') return 'SYN';
-        if (packet.flags === 'ACK') return 'ACK';
-        if (packet.flags === 'SYN_ACK') return 'SYN_ACK';
-        if (packet.flags === 'FIN') return 'FIN';
-        if (packet.flags === 'RST') return 'RST';
-        if (packet.payload.length > 0 && packet.flags !== 'SYN' && packet.flags !== 'FIN') return 'DATA';
-        return 'OTHER';
+
+    private assertPort(port: VirtualPort): void {
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            throw new Error(`Invalid virtual port: ${port}`);
+        }
     }
 }

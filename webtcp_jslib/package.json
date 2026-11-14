@@ -1,10 +1,26 @@
 {
-  "name": "webtcp_tunneler",
-  "version": "0.0.0",
-  "description": "a library to connect browser to WebTCP network, next generation p2p network",
-  "main": "dist/index.js",
+  "name": "@sonneko/webtcp-tunneler",
+  "version": "0.1.0",
+  "description": "Experimental virtual TCP/HTTP tunnel over WebRTC data channels",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
-    "build": "mkdir -p dist && tsc"
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "demo": "node examples/server.mjs"
   },
   "repository": {
     "type": "git",
@@ -12,8 +28,10 @@
   },
   "keywords": [
     "p2p",
-    "WebRTC",
-    "Web3"
+    "webrtc",
+    "web3",
+    "tcp",
+    "tunnel"
   ],
   "author": "sonneko",
   "license": "MIT",
@@ -21,10 +39,10 @@
     "url": "https://github.com/sonneko/WebTCP/issues"
   },
   "homepage": "https://github.com/sonneko/WebTCP#readme",
-  "dependencies": {
-    "typescript": "^5.9.3"
+  "engines": {
+    "node": ">=20"
   },
   "devDependencies": {
-    "@types/node": "^24.8.1"
+    "typescript": "^5.9.3"
   }
 }

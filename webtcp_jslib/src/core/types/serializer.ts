@@ -1,141 +1,206 @@
-import { WebTCPPacket } from '../types/packet';
-import { NodeId, VirtualPort, Signature, WebTCPFlags } from '../types/protocol';
-
-// フラグのビット定義 (実際のTCPと同様にビット単位で管理)
-const FLAG_MASKS: { [key in WebTCPFlags]: number } = {
-    'DATA': 0b00000001,
-    'SYN': 0b00000010,
-    'ACK': 0b00000100,
-    'FIN': 0b00001000,
-    'RST': 0b00010000,
-    'SYN_ACK': 0b00100000,
-    'RT_UPDATE': 0b01000000,
-};
+import { WebTCPPacket } from './packet.js';
+import {
+    WEBTCP_HEADER_SIZE,
+    WEBTCP_MAGIC,
+    WEBTCP_PROTOCOL_VERSION,
+    WebTCPFlags,
+} from './protocol.js';
 
 /**
- * WebTCPPacketとバイナリデータ (Buffer) を相互変換するためのインターフェース。
+ * フラグのビット定義（specification.md §6.3）。
  */
-export interface IPacketSerializer {
-    /**
-     * WebTCPPacketオブジェクトをネットワーク送信可能なバイナリデータに変換する。
-     * @param packet - シリアライズするパケット
-     * @returns バイナリBuffer
-     */
-    serialize(packet: WebTCPPacket): Buffer;
+export const FLAG_BITS = {
+    DATA: 0b00000001,
+    SYN: 0b00000010,
+    ACK: 0b00000100,
+    FIN: 0b00001000,
+    RST: 0b00010000,
+    SYN_ACK: 0b00100000,
+    RT_UPDATE: 0b01000000,
+} as const;
 
-    /**
-     * 受信したバイナリデータをWebTCPPacketオブジェクトに復元する。
-     * @param buffer - ネットワークから受信したバイナリBuffer
-     * @returns 復元されたWebTCPPacket
-     */
-    deserialize(buffer: Buffer): WebTCPPacket;
+/** フラグ文字列をビットマスクへ変換する。 */
+export function flagsToMask(flags: WebTCPFlags): number {
+    return FLAG_BITS[flags];
 }
 
 /**
- * WebTCPプロトコルパケットのバイナリシリアライザ実装。
- * Node.jsのBufferクラスを使用して、ネットワーク効率を考慮したバイナリ変換を行う。
+ * ビットマスクをフラグ文字列へ変換する。
+ * `SYN|ACK` の組み合わせは `SYN_ACK` として正規化する。
+ */
+export function maskToFlags(mask: number): WebTCPFlags {
+    if ((mask & FLAG_BITS.SYN_ACK) !== 0) return 'SYN_ACK';
+    if ((mask & (FLAG_BITS.SYN | FLAG_BITS.ACK)) === (FLAG_BITS.SYN | FLAG_BITS.ACK)) {
+        return 'SYN_ACK';
+    }
+    if ((mask & FLAG_BITS.RT_UPDATE) !== 0) return 'RT_UPDATE';
+    if ((mask & FLAG_BITS.RST) !== 0) return 'RST';
+    if ((mask & FLAG_BITS.FIN) !== 0) return 'FIN';
+    if ((mask & FLAG_BITS.SYN) !== 0) return 'SYN';
+    if ((mask & FLAG_BITS.DATA) !== 0) return 'DATA';
+    if ((mask & FLAG_BITS.ACK) !== 0) return 'ACK';
+    return 'DATA';
+}
+
+/**
+ * WebTCPPacketとバイナリデータを相互変換するためのインターフェース。
+ */
+export interface IPacketSerializer {
+    /**
+     * WebTCPPacketをネットワーク送信可能なバイナリに変換する。
+     * @throws フィールドが仕様の範囲外の場合
+     */
+    serialize(packet: WebTCPPacket): Uint8Array;
+
+    /**
+     * 受信したバイナリをWebTCPPacketへ復元する。
+     * @throws マジック・バージョン・長さが不正な場合
+     */
+    deserialize(buffer: Uint8Array): WebTCPPacket;
+}
+
+export interface BinaryPacketSerializerOptions {
+    /** ペイロードの最大バイト数。既定 60 KiB。 */
+    maxPayloadBytes?: number;
+}
+
+const DEFAULT_MAX_PAYLOAD_BYTES = 60 * 1024;
+const UINT32_MAX = 0xffffffff;
+
+/**
+ * プロトコルバージョン1のバイナリシリアライザ。
+ *
+ * レイアウトは specification.md §6.1 を参照。
+ * マルチバイト整数はすべてビッグエンディアン。
  */
 export class BinaryPacketSerializer implements IPacketSerializer {
+    private readonly encoder = new TextEncoder();
+    private readonly decoder = new TextDecoder();
+    private readonly maxPayloadBytes: number;
 
-    /**
-     * フラグ文字列からビットマスクを生成する。
-     */
-    private flagsToMask(flag: WebTCPFlags): number {
-        // 実際のプロトコルではフラグを組み合わせて設定するが、ここでは単一フラグを想定
-        return FLAG_MASKS[flag] || 0;
+    constructor(options: BinaryPacketSerializerOptions = {}) {
+        this.maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     }
 
-    /**
-     * ビットマスクからフラグ文字列を復元する。
-     */
-    private maskToFlags(mask: number): WebTCPFlags {
-        for (const [key, value] of Object.entries(FLAG_MASKS)) {
-            if ((mask & value) === value) {
-                return key as WebTCPFlags;
-            }
+    public serialize(packet: WebTCPPacket): Uint8Array {
+        const senderId = this.encoder.encode(packet.senderId);
+        const destinationId = this.encoder.encode(packet.destinationId);
+        const signature = packet.signature ?? new Uint8Array(0);
+        const payload = packet.payload ?? new Uint8Array(0);
+
+        if (senderId.length === 0 || senderId.length > 255) {
+            throw new Error(`senderId length must be 1..255 bytes (got ${senderId.length})`);
         }
-        return 'DATA'; // デフォルト
-    }
+        if (destinationId.length === 0 || destinationId.length > 255) {
+            throw new Error(`destinationId length must be 1..255 bytes (got ${destinationId.length})`);
+        }
+        if (signature.length > 0xffff) {
+            throw new Error(`signature too large (${signature.length} bytes)`);
+        }
+        if (payload.length > this.maxPayloadBytes) {
+            throw new Error(
+                `payload exceeds maximum of ${this.maxPayloadBytes} bytes (got ${payload.length})`,
+            );
+        }
+        this.assertUint(packet.ttl, 0xff, 'ttl');
+        this.assertUint(packet.sourcePort, 0xffff, 'sourcePort');
+        this.assertUint(packet.destinationPort, 0xffff, 'destinationPort');
+        this.assertUint(packet.seqNum, UINT32_MAX, 'seqNum');
+        this.assertUint(packet.ackNum, UINT32_MAX, 'ackNum');
 
-    /**
-     * WebTCPPacketオブジェクトをバイナリデータに変換する。
-     */
-    public serialize(packet: WebTCPPacket): Buffer {
-        const senderIdBuf = Buffer.from(packet.senderId, 'utf8');
-        const destIdBuf = Buffer.from(packet.destinationId, 'utf8');
-        const signatureBuf = Buffer.from(packet.signature, 'utf8');
-        const payloadBuf = packet.payload;
+        const totalLength =
+            WEBTCP_HEADER_SIZE +
+            senderId.length +
+            destinationId.length +
+            signature.length +
+            payload.length;
 
-        // 固定長部分: TTL(1), Flags(1), Ports(4), SeqNum(4), AckNum(4) = 14 bytes
-        const fixedHeaderSize = 14;
+        const buffer = new Uint8Array(totalLength);
+        const view = new DataView(buffer.buffer);
 
-        // 可変長フィールドの長さ情報: NodeId(x2), Signature, Payload (各1 or 4 bytes)
-        const variableHeaderSize = 
-            1 + senderIdBuf.length +
-            1 + destIdBuf.length +
-            1 + signatureBuf.length +
-            4 + payloadBuf.length; // Payload size (4 bytes) + Payload data
+        view.setUint8(0, WEBTCP_MAGIC);
+        view.setUint8(1, WEBTCP_PROTOCOL_VERSION);
+        view.setUint8(2, packet.ttl);
+        view.setUint8(3, flagsToMask(packet.flags));
+        view.setUint16(4, packet.sourcePort, false);
+        view.setUint16(6, packet.destinationPort, false);
+        view.setUint32(8, packet.seqNum, false);
+        view.setUint32(12, packet.ackNum, false);
+        view.setUint8(16, senderId.length);
+        view.setUint8(17, destinationId.length);
+        view.setUint16(18, signature.length, false);
+        view.setUint32(20, payload.length, false);
 
-        const totalLength = fixedHeaderSize + variableHeaderSize;
-        const buffer = Buffer.alloc(totalLength);
-        let offset = 0;
+        let offset = WEBTCP_HEADER_SIZE;
+        buffer.set(senderId, offset);
+        offset += senderId.length;
+        buffer.set(destinationId, offset);
+        offset += destinationId.length;
+        buffer.set(signature, offset);
+        offset += signature.length;
+        buffer.set(payload, offset);
 
-        // --- 1. Routing Header ---
-        buffer.writeUInt8(packet.ttl, offset); offset += 1;
-        
-        buffer.writeUInt8(senderIdBuf.length, offset); offset += 1; // Sender ID Length
-        senderIdBuf.copy(buffer, offset); offset += senderIdBuf.length;
-
-        buffer.writeUInt8(destIdBuf.length, offset); offset += 1; // Destination ID Length
-        destIdBuf.copy(buffer, offset); offset += destIdBuf.length;
-
-        buffer.writeUInt8(signatureBuf.length, offset); offset += 1; // Signature Length
-        signatureBuf.copy(buffer, offset); offset += signatureBuf.length;
-
-        // --- 2. Transport Header ---
-        buffer.writeUInt8(this.flagsToMask(packet.flags), offset); offset += 1; // Flags
-        buffer.writeUInt16BE(packet.sourcePort, offset); offset += 2; // Source Port
-        buffer.writeUInt16BE(packet.destinationPort, offset); offset += 2; // Destination Port
-        buffer.writeUInt32BE(packet.seqNum, offset); offset += 4; // Sequence Number
-        buffer.writeUInt32BE(packet.ackNum, offset); offset += 4; // ACK Number
-
-        // --- 3. Payload ---
-        buffer.writeUInt32BE(payloadBuf.length, offset); offset += 4; // Payload Length
-        payloadBuf.copy(buffer, offset); offset += payloadBuf.length;
-        
         return buffer;
     }
 
-    /**
-     * 受信したバイナリデータをWebTCPPacketオブジェクトに復元する。
-     */
-    public deserialize(buffer: Buffer): WebTCPPacket {
-        let offset = 0;
-        
-        // --- 1. Routing Header ---
-        const ttl = buffer.readUInt8(offset); offset += 1;
+    public deserialize(buffer: Uint8Array): WebTCPPacket {
+        if (buffer.length < WEBTCP_HEADER_SIZE) {
+            throw new Error(`packet too short: ${buffer.length} bytes`);
+        }
 
-        const senderIdSize = buffer.readUInt8(offset); offset += 1;
-        const senderId = buffer.slice(offset, offset + senderIdSize).toString('utf8'); offset += senderIdSize;
+        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-        const destIdSize = buffer.readUInt8(offset); offset += 1;
-        const destinationId = buffer.slice(offset, offset + destIdSize).toString('utf8'); offset += destIdSize;
+        const magic = view.getUint8(0);
+        if (magic !== WEBTCP_MAGIC) {
+            throw new Error(`invalid magic: 0x${magic.toString(16)}`);
+        }
+        const version = view.getUint8(1);
+        if (version !== WEBTCP_PROTOCOL_VERSION) {
+            throw new Error(`unsupported protocol version: ${version}`);
+        }
 
-        const signatureSize = buffer.readUInt8(offset); offset += 1;
-        const signature = buffer.slice(offset, offset + signatureSize).toString('utf8'); offset += signatureSize;
+        const ttl = view.getUint8(2);
+        const flags = maskToFlags(view.getUint8(3));
+        const sourcePort = view.getUint16(4, false);
+        const destinationPort = view.getUint16(6, false);
+        const seqNum = view.getUint32(8, false);
+        const ackNum = view.getUint32(12, false);
+        const senderIdLength = view.getUint8(16);
+        const destinationIdLength = view.getUint8(17);
+        const signatureLength = view.getUint16(18, false);
+        const payloadLength = view.getUint32(20, false);
 
-        // --- 2. Transport Header ---
-        const flagsMask = buffer.readUInt8(offset); offset += 1;
-        const flags = this.maskToFlags(flagsMask);
+        const expectedLength =
+            WEBTCP_HEADER_SIZE +
+            senderIdLength +
+            destinationIdLength +
+            signatureLength +
+            payloadLength;
 
-        const sourcePort = buffer.readUInt16BE(offset); offset += 2;
-        const destinationPort = buffer.readUInt16BE(offset); offset += 2;
-        const seqNum = buffer.readUInt32BE(offset); offset += 4;
-        const ackNum = buffer.readUInt32BE(offset); offset += 4;
+        if (senderIdLength === 0 || destinationIdLength === 0) {
+            throw new Error('senderId and destinationId must not be empty');
+        }
+        if (expectedLength !== buffer.length) {
+            throw new Error(
+                `length mismatch: header declares ${expectedLength} bytes but got ${buffer.length}`,
+            );
+        }
+        if (payloadLength > this.maxPayloadBytes) {
+            throw new Error(
+                `payload exceeds maximum of ${this.maxPayloadBytes} bytes (got ${payloadLength})`,
+            );
+        }
 
-        // --- 3. Payload ---
-        const payloadSize = buffer.readUInt32BE(offset); offset += 4;
-        const payload = buffer.slice(offset, offset + payloadSize);
+        let offset = WEBTCP_HEADER_SIZE;
+        const senderId = this.decoder.decode(buffer.subarray(offset, offset + senderIdLength));
+        offset += senderIdLength;
+        const destinationId = this.decoder.decode(
+            buffer.subarray(offset, offset + destinationIdLength),
+        );
+        offset += destinationIdLength;
+        const signature = buffer.slice(offset, offset + signatureLength);
+        offset += signatureLength;
+        const payload = buffer.slice(offset, offset + payloadLength);
 
         return {
             senderId,
@@ -148,6 +213,12 @@ export class BinaryPacketSerializer implements IPacketSerializer {
             seqNum,
             ackNum,
             payload,
-        } as WebTCPPacket;
+        };
+    }
+
+    private assertUint(value: number, max: number, name: string): void {
+        if (!Number.isInteger(value) || value < 0 || value > max) {
+            throw new Error(`${name} out of range: ${value}`);
+        }
     }
 }
