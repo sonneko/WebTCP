@@ -93,7 +93,7 @@
 - [x] デモに名前登録/解決/URL 接続を追加し、Playwright 検証を拡張
 - [x] README / docs/layer / webtcp_website を同期
 - [x] `npm run build` / `npm test`（webtcp_jslib、105 件通過）、`npm run build`（webtcp_website、10 ページ）
-- [ ] CI（build-and-test / build-website / browser-e2e）
+- [x] CI（build-and-test / build-website / browser-e2e）— PR #39 で全ジョブ成功
 
 **M4 スコープ外**: `domain.global` へのドメイン登録、ブロックチェーンによるドメイン所有権証明。これらは #25 を開いたまま M5 で扱う。
 
