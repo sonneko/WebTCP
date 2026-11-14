@@ -2,11 +2,11 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.3.0 |
-| 対応仕様 | `specification.md` 0.3.0 |
-| 対応設計 | `design.md` 0.3.0 |
+| 文書バージョン | 0.4.0 |
+| 対応仕様 | `specification.md` 0.4.0 |
+| 対応設計 | `design.md` 0.4.0 |
 | 最終更新 | 2026-11-14 |
-| 現在のマイルストーン | **M3 実装（次フェーズ: M4 マルチホップ強化と名前解決）** |
+| 現在のマイルストーン | **M4 実装（NameServer / webtcp:// / 永続 NodeId。次フェーズ: M5 分散ドメイン）** |
 
 ---
 
@@ -15,7 +15,7 @@
 - **M0（設計文書化）**: `specification.md` / `design.md` / `plan.md` の整備と既存課題の Issue 化を完了。
 - **M1（最小の end-to-end）**: ブラウザ非依存コア再構成、v1 シリアライザ、WebRTC / シグナリング / エントランス探索アダプタ、2 タブデモ、テスト 18 件、CI を完了し `main` へマージ済み。
 - **M2（TCP セマンティクス完成と運用基盤）**: バイト単位 Seq/Ack・ランダム ISN・60 KiB 超の自動分割・動的 RTO・輻輳制御・Fast Retransmit / SACK・Half-Close・レベル付きロガー・`bootstrap()` 自動接続・TURN/ICE 設定と自動 ICE 再起動・Starlight ドキュメントサイト・実ブラウザ 2 タブ検証の仕組みを整備した。
-- **M3（セキュリティ / #28）**: 本サイクルで実装。**Ed25519 署名**と **NodeId の公開鍵指紋化**（プロトコル v2）、ブラウザ用 `BrowserKeyManager`（IndexedDB + 非抽出 CryptoKey）、Node.js 用 `NodeKeyManager`、公開鍵の配布（シグナリング交換 + `RT_UPDATE` 同梱）、署名・検証・鍵導出のテストを追加した。
+- **M3（セキュリティ / #28）**: PR #34 で main にマージ済み。**Ed25519 署名**と **NodeId の公開鍵指紋化**（プロトコル v2）、ブラウザ用 `BrowserKeyManager`（IndexedDB + 非抽出 CryptoKey）、Node.js 用 `NodeKeyManager`、公開鍵の配布（シグナリング交換 + `RT_UPDATE` 同梱）、署名・検証・鍵導出のテストを追加した。
 
 ## 2. マイルストーン
 
@@ -24,9 +24,9 @@
 | M0 | 設計文書化 | ✅ 完了 | 仕様書・設計書・計画書、Issue 整理 |
 | M1 | 最小の end-to-end | ✅ 完了 | アダプタ実装、コア修正、ビルド、デモ、テスト |
 | M2 | TCP セマンティクスの完成と運用基盤 | ✅ 完了 | バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close・ロガー・`bootstrap()`・TURN/ICE 再起動・ドキュメントサイト・実ブラウザ検証 |
-| **M3** | **セキュリティ** | **✅ 実装済み（PR レビュー待ち）** | Ed25519 署名（プロトコル v2）・NodeId の鍵指紋化・`KeyManager`（IndexedDB / node:crypto）・公開鍵の配布（#28） |
-| M4 | マルチホップ強化と名前解決 | 未着手 | RPF 厳格化、SSE/WebSocket シグナリング、NameServer、`webtcp://`（#25） |
-| M5 | 分散ドメイン | 未着手 | `domain.global`、ブロックチェーン連携（#25） |
+| M3 | セキュリティ | ✅ 完了（#34 マージ済み） | Ed25519 署名（プロトコル v2）・NodeId の鍵指紋化・`KeyManager`（IndexedDB / node:crypto）・公開鍵の配布（#28） |
+| **M4** | **NameServer と webtcp:// URL** | **実装済み（PR レビュー待ち）** | NameServer（A/CNAME・ローカル登録・既知ノード問い合わせ）、`webtcp://`、永続 NodeId と衝突検出、デモ/サイト（#25） |
+| M5 | 分散ドメインとネットワーク強化 | 未着手 | `domain.global`、ブロックチェーン所有権証明、RPF 厳格化、SSE/WebSocket、鍵ローテーション/リプレイ強化（#25） |
 
 ## 3. 完了済みマイルストーンのスコープ
 
@@ -58,7 +58,7 @@
 - [x] **実ブラウザ 2 タブデモ検証の整備**: デモ内蔵の自己チェックモード（`?selftest=1` / `?role=server/client&autostart=1`）と Playwright ヘッドレス Chromium 2 タブ検証（`examples/verify-browser.mjs` + CI `browser-e2e` ジョブ）を追加
 - [x] テスト拡張（M2 完了時点で 43 件すべて通過）およびドキュメント同期
 
-### 3.3 M3（本サイクル / 完了）
+### 3.3 M3（完了 / #34 マージ済み）
 
 - [x] ドキュメントと実装の同期チェック（本書・`specification.md`・`design.md`・`README.md`・`docs/layer.md`・`webtcp_website`）
 - [x] **#28 Ed25519 署名と NodeId の鍵指紋化**:
@@ -80,9 +80,26 @@
 - [x] テスト追加（`tests/keys.test.mjs` / `tests/signed-network.test.mjs` / `tests/browser-keys.test.mjs`）— 全 86 件通過
 - [x] デモと Playwright 実ブラウザ検証を Ed25519 署名（v2）に対応（`?insecure=1` で v1 比較、`?e2e=1` でタブごとに独立した鍵）
 
+### 3.4 M4（本サイクル / #25）
+
+着手前に M3 までの実装と文書を網羅同期し、差分を #35（文書）、#36（永続鍵/衝突）、#37（RT_UPDATE/鍵伝播）、#38（起動/状態/ICE）へ整理した。
+
+- [x] 仕様書 0.4.0 → 設計書 0.4.0 → 計画書 0.4.0 の順に更新
+- [x] **NameServer**: A/CNAME 相当、ローカル登録、既知ノード（明示リゾルバ/隣接/経路表）への問い合わせ、TTL キャッシュ、CNAME ループ/深度/並列/サイズ制限
+- [x] **`webtcp://` URL**: NodeId/名前 + 必須ポート + path/query/fragment のパース、`connectURL()`、名前解決経由接続
+- [x] **永続 NodeId**: ブラウザ復元時の署名チャレンジ、`NodeKeyManager.open({ keyFile })`、`NodeIdCollisionError`
+- [x] **#37**: RT_UPDATE 受信元検証と `entries[].publicKey` 伝播（事前鍵共有なしマルチホップ）
+- [x] **#38**: 起動失敗再試行、end イベント状態、cwnd 上限の回帰、ICE 再起動例外時の挙動修正
+- [x] デモに名前登録/解決/URL 接続を追加し、Playwright 検証を拡張
+- [x] README / docs/layer / webtcp_website を同期
+- [x] `npm run build` / `npm test`（webtcp_jslib、105 件通過）、`npm run build`（webtcp_website、10 ページ）
+- [x] CI（build-and-test / build-website / browser-e2e）— PR #39 で全ジョブ成功
+
+**M4 スコープ外**: `domain.global` へのドメイン登録、ブロックチェーンによるドメイン所有権証明。これらは #25 を開いたまま M5 で扱う。
+
 ## 4. 将来課題
 
-### 4.1 セキュリティ（M3 で完了、残課題は M3.5 以降）
+### 4.1 セキュリティ（M3 完了、残課題は M5 以降）
 
 | 課題 | 内容 | 状態 |
 | :--- | :--- | :--- |
@@ -90,36 +107,36 @@
 | NodeId の鍵指紋化 | `SHA-256(公開鍵)` の先頭 16 バイトを NodeId とする自己証明型識別子 | ✅ 完了 |
 | 鍵管理 | `BrowserKeyManager`（IndexedDB + 非抽出 CryptoKey）/ `NodeKeyManager`（`node:crypto`） | ✅ 完了 |
 | 公開鍵配布 | シグナリング時交換 + `RT_UPDATE` 同梱 + `KeyDirectory` / `IPublicKeyResolver` | ✅ 完了 |
-| リプレイ対策 | 基本方針は仕様化（§10.6）。トランスポートのシーケンス空間で重複を排除する。セッション Nonce による明示的な再生検知は将来強化 | 仕様化済み・強化は M4 |
-| 鍵のローテーション | NodeId が鍵指紋であるため、鍵更新 = ノード ID 変更。証明書チェーン的な移行手段は未実装 | M4 以降 |
-| 鍵の分散ストレージ | `IPublicKeyResolver` を実装した IPFS 等のバックエンド | M4 以降 |
+| リプレイ対策 | 基本方針は仕様化（§10.6）。トランスポートのシーケンス空間で重複を排除する。セッション Nonce による明示的な再生検知は将来強化 | 仕様化済み・強化は M5 |
+| 鍵のローテーション | NodeId が鍵指紋であるため、鍵更新 = ノード ID 変更。証明書チェーン的な移行手段は未実装 | M5 以降 |
+| 鍵の分散ストレージ | `IPublicKeyResolver` を実装した IPFS 等のバックエンド | M5 以降 |
 
-### 4.2 ネットワーク強化（M4）
+### 4.2 ネットワーク強化（M5 以降）
 
 | 課題 | 内容 | 目標 |
 | :--- | :--- | :--- |
-| マルチホップ厳格化 | RPF の厳格化、ループ検出・スプリットホライズンの強化。 | M4 |
-| シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装追加。 | M4 |
-| 鍵学習の最適化 | 未知公開鍵の待機（既定 5 秒）を、オンデマンドな鍵照会リクエストに置き換える。 | M4 |
+| マルチホップ厳格化 | RPF の厳格化、ループ検出・スプリットホライズンの強化。 | M5 |
+| シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装追加。 | M5 |
+| 鍵学習の最適化 | 未知公開鍵の待機（既定 5 秒）を、オンデマンドな鍵照会リクエストに置き換える。 | M5 |
 
-### 4.3 名前解決と分散ドメイン（M4–M5、据え置き）
+### 4.3 名前解決と分散ドメイン（M4 実装 / M5 将来課題）
 
-**#25（NameServer / `webtcp://` URL / `domain.global` / ブロックチェーン）は M3 のスコープ外**であり、M4–M5 の将来課題として据え置く。
-M3 で NodeId が公開鍵の指紋になったことで、「名前解決の前提となるノードの真正性」は解決済みである。
+**#25 のうち NameServer / `webtcp://` / 永続 NodeId は M4 で実装済み**。`domain.global` とブロックチェーンによる所有権証明は M5 に据え置くため、#25 は M4 PR マージ後もオープン維持とする。
+M3 の NodeId 鍵指紋化によりノードの真正性は検証できるが、名前のグローバル所有権は別問題である。
 
 | 課題 | 内容 | 目標 | Issue |
 | :--- | :--- | :--- | :--- |
-| `webtcp://` URL | `webtcp://nodeId:port/path` のパースとルーティング。 | M4 | #25 |
-| NameServer | `connection.on(port, ns.on)` による名前解決、CNAME / A レコード相当。 | M5 | #25 |
+| `webtcp://` URL | `webtcp://nodeId:port/path` のパースと `connectURL()` による接続。 | ✅ M4 実装済み | #25 |
+| NameServer | A/CNAME ローカル登録、TTL キャッシュ、既知ノードへの反復問い合わせ。 | ✅ M4 実装済み | #25 |
 | `domain.global` | グローバルドメインの登録・解決。 | M5 | #25 |
 | ブロックチェーン連携 | ドメイン所有権の証明と分散台帳への登録。 | M5 | #25 |
-| 永続 NodeId | Ed25519 鍵の永続化は `BrowserKeyManager`（IndexedDB）で実現済み。マルチデバイス同期・バックアップは未対応。 | M4 | #25 |
+| 永続 NodeId | `BrowserKeyManager`（IndexedDB + 署名チャレンジ）と `NodeKeyManager.open({ keyFile })` で実装済み。マルチデバイス同期・バックアップは未対応。 | ✅ M4 実装済み（同期は M5 以降） | #25 |
 
 ### 4.4 品質・開発体験（継続課題）
 
 | 課題 | 内容 |
 | :--- | :--- |
-| パッケージ公開 | npm 公開、`exports` のサブパス（`/adapters`）、セマンティックバージョニング。M3 の成果（Ed25519 / プロトコル v2 / 鍵管理）は **0.3.0** としてリリースする。パッケージのバージョンは現状 0.1.0 のままで、リリース時に更新する。 |
+| パッケージ公開 | npm 公開、`exports` のサブパス（`/adapters`）、セマンティックバージョニング。パッケージは未公開。文書バージョン 0.4.0 と npm パッケージバージョンは別管理とし、公開時に_semver_を決定する（現状 package.json は 0.1.0）。 |
 | パフォーマンス | シリアライザのゼロコピー化、バッファプール、大量セッション時のベンチマーク。Ed25519 署名のバッチ検証。 |
 | 相互運用 | v1 のみのノードとの併存運用（`NullPacketVerifier` + `requireSignatures: false`）。 |
 
@@ -131,7 +148,7 @@ M3 で NodeId が公開鍵の指紋になったことで、「名前解決の前
 | Symmetric NAT での接続失敗 | P2P 直接接続不可 | `iceServers` と動的 TURN 資格情報フック `iceServersProvider`、自動 ICE 再起動を提供（M2 で対応）。TURN サーバー自体は利用者配備。 |
 | Web Crypto の Ed25519 非対応ブラウザ（Chrome 136 以前等） | 署名付き通信ができない | デモは自動で v1 へフォールバック。ライブラリは `keyManager` 未指定なら v1（`NullPacketVerifier`）で動作し、対応ブラウザでは v2 を使う（M3 で対応）。 |
 | 未知ピアの公開鍵未着による初回パケットの取りこぼし | 接続直後に一時的に通信できない | `RT_UPDATE` への公開鍵同梱（自己証明）+ シグナリング時交換 + 最大 5 秒の鍵待機（M3 で対応）。 |
-| 距離ベクトルの収束遅延 | 3 ノード以上で一時的に到達不能 | 直接隣接への送信は常に許可。M4 でルーティングを強化。 |
+| 距離ベクトルの収束遅延 | 3 ノード以上で一時的に到達不能 | 直接隣接への送信は常に許可。M5 でルーティングを強化。 |
 | 仕様と実装の乖離 | 保守性低下 | 各サイクル冒頭でドキュメント同期チェックを行い、仕様変更時は同一 PR で更新する。 |
 
 ## 6. Issue 運用
@@ -160,8 +177,12 @@ M3 で NodeId が公開鍵の指紋になったことで、「名前解決の前
 | #28 | security | Ed25519 署名（`Ed25519PacketVerifier`）・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager`・公開鍵配布・プロトコル v2・仕様書 §10 更新 |
 | #13 | security | Null 検証器の暫定対応を解消（既定は v2。`NullPacketVerifier` は v1 相互運用専用として残置） |
 
-### 6.4 M4 以降に据え置いた Issue
+### 6.4 M4 で参照する Issue
 
-| # | 内容 | 予定 |
+| # | 内容 | 扱い |
 | :--- | :--- | :--- |
-| #25 | NameServer / `webtcp://` / `domain.global` / ブロックチェーン連携 | M4–M5 |
+| #25 | NameServer / `webtcp://` / `domain.global` / ブロックチェーン連携 | M4 で前半を実装。M5 課題が残るためオープン維持 |
+| #35 | M3 時点の文書同期ずれ | M4 PR で修正 |
+| #36 | 永続鍵復元・NodeId 衝突・Node.js 永続化 | M4 PR で修正 |
+| #37 | RT_UPDATE 受信元検証とマルチホップ鍵伝播 | M4 PR で修正 |
+| #38 | 起動再試行・end 状態・cwnd 上限回帰・ICE 再起動 | M4 PR で修正 |

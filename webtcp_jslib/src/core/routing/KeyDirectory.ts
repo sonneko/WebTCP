@@ -5,6 +5,8 @@ import {
     decodePublicKey,
     encodePublicKey,
     nodeIdMatchesPublicKey,
+    NodeIdCollisionError,
+    isValidNodeId,
 } from './keys.js';
 import type { Logger } from '../util/Logger.js';
 
@@ -91,10 +93,19 @@ export class KeyDirectory implements IPublicKeyResolver {
         return true;
     }
 
-    /** 非同期検証を挟まずに登録する（指紋検証済みの鍵を渡す場合のみ）。 */
+    /**
+     * 非同期検証を挟まずに登録する（指紋検証済みの鍵を渡す場合のみ）。
+     * 既存鍵と異なる場合は NodeIdCollisionError（M4 / #36）。
+     */
     public setPublicKey(nodeId: NodeId, publicKey: Uint8Array): void {
+        if (!isValidNodeId(nodeId) || publicKey.byteLength !== ED25519_PUBLIC_KEY_BYTES) {
+            throw new Error('setPublicKey requires a valid NodeId and a 32-byte public key');
+        }
         const existing = this.keys.get(nodeId);
-        if (existing && bytesEqual(existing, publicKey)) return;
+        if (existing) {
+            if (bytesEqual(existing, publicKey)) return;
+            throw new NodeIdCollisionError(nodeId, existing, publicKey);
+        }
         this.keys.set(nodeId, publicKey);
         this.notify(nodeId, publicKey);
     }

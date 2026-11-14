@@ -6,9 +6,11 @@ import {
     bytesToHex,
     deriveNodeId,
     isValidNodeId,
+    NodeIdCollisionError,
 } from '../../core/routing/keys.js';
 import { KeyDirectory } from '../../core/routing/KeyDirectory.js';
 import { loadNodeCrypto, MinimalKeyObject, MinimalNodeCrypto } from './nodeCrypto.js';
+import { NodeIdentityStorage } from './NodeIdentityStorage.js';
 
 /**
  * Node.js 向け Ed25519 鍵管理（#28）。
@@ -34,6 +36,11 @@ export interface NodeKeyManagerOptions {
      * `Ed25519PacketVerifier` の `keyDirectory` にも同じインスタンスを渡す。
      */
     keyDirectory?: KeyDirectory;
+}
+
+export interface NodeKeyManagerOpenOptions extends NodeKeyManagerOptions {
+    /** PKCS#8 PEM ファイル。無ければ 0600 で作成し、あれば再利用する（M4 / #36）。 */
+    keyFile: string;
 }
 
 export class NodeKeyManager implements Ed25519KeyManager {
@@ -117,9 +124,7 @@ export class NodeKeyManager implements Ed25519KeyManager {
             throw new Error(`invalid NodeId: ${nodeId}`);
         }
         if (nodeId !== derived) {
-            throw new Error(
-                `NodeId ${nodeId} does not match the Ed25519 public key fingerprint ${derived}`,
-            );
+            throw new NodeIdCollisionError(nodeId, publicKey);
         }
 
         return new NodeKeyManager({
@@ -131,6 +136,22 @@ export class NodeKeyManager implements Ed25519KeyManager {
             signingKey,
             keyDirectory: options.keyDirectory ?? null,
         });
+    }
+
+    /**
+     * ファイルから身元を復元、無ければ生成して安全に永続化する。
+     * options.nodeId は期待 NodeId として扱い、不一致なら NodeIdCollisionError。
+     */
+    public static async open(options: NodeKeyManagerOpenOptions): Promise<NodeKeyManager> {
+        const storage = new NodeIdentityStorage(options.keyFile);
+        const existing = await storage.load();
+        if (existing !== null) {
+            return NodeKeyManager.create({ ...options, privateKeyPem: existing });
+        }
+        const created = await NodeKeyManager.create(options);
+        const winningPem = await storage.save(created.exportPrivateKeyPem());
+        if (winningPem === created.exportPrivateKeyPem()) return created;
+        return NodeKeyManager.create({ ...options, privateKeyPem: winningPem });
     }
 
     /** ローカル秘密鍵でデータに署名する（64 バイト）。 */

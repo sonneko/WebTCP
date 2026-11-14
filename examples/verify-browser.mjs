@@ -13,9 +13,10 @@
  *   1. 2 つの実ブラウザタブ（Tab A: サーバー、Tab B: クライアント）での UI 操作による
  *      実 WebRTC 接続・テキストエコー・80 KiB 大容量自動分割往復・Half-Close 切断
  *   2. `?role=server&autostart=1` + `?role=client&autostart=1` の 2 タブ自動検証
- *   3. `?selftest=1` の同一タブ 2 ピア自己チェック（Ed25519 署名検証を含む）
+ *   3. `?selftest=1` の同一タブ 2 ピア自己チェック（Ed25519 署名検証・NameServer 名前解決・webtcp:// URL 接続を含む）
  *
  * M3（#28）以降、デモは既定で Ed25519 署名（プロトコル v2）を使う。
+ * M4（#25）では NameServer / webtcp:// URL の検証を追加した。
  * ブラウザが Web Crypto の Ed25519 を持たない場合は v1 にフォールバックする。
  */
 
@@ -172,6 +173,31 @@ try {
             document.getElementById('server-log')?.textContent?.includes('CLOSED'),
         );
 
+        // M4: 名前解決 + webtcp:// URL 接続（リンク確立済みの隣接から NameServer で引く）
+        await pageB.click('#resolve-name-btn');
+        await pageB.waitForFunction(() =>
+            document.getElementById('client-log')?.textContent?.includes('名前解決: demo-service ->'),
+        );
+        await pageB.fill('#url-input', 'webtcp://demo-alias:8080/hello?x=1#frag');
+        await pageB.click('#connect-url-btn');
+        await pageB.waitForFunction(
+            () => document.getElementById('client-status')?.textContent?.includes('ESTABLISHED'),
+            undefined,
+            { timeout: 15_000 },
+        );
+        await pageB.waitForFunction(() =>
+            document.getElementById('client-log')?.textContent?.includes('webtcp:// 接続成功'),
+        );
+        await pageB.fill('#message-input', 'hello-over-webtcp-url');
+        await pageB.click('#send-btn');
+        await pageB.waitForFunction(() =>
+            document.getElementById('client-log')?.textContent?.includes('echo:hello-over-webtcp-url'),
+        );
+        await pageB.click('#disconnect-btn');
+        await pageB.waitForFunction(() =>
+            document.getElementById('client-status')?.textContent?.includes('切断されました'),
+        );
+
         if (pageErrors.length > 0) {
             throw new Error(`Page errors in Test 1: ${pageErrors.join('; ')}`);
         }
@@ -202,7 +228,7 @@ try {
             { timeout: 20_000 },
         );
         const twoTabResult = await cliPage.evaluate(() => window.__WEBTCP_TWOTAB__);
-        if (!twoTabResult?.ok) {
+        if (!twoTabResult?.ok || twoTabResult.resolvedName !== 'demo-alias') {
             const clientLog = await cliPage.locator('#client-log').textContent();
             const serverLog = await srvPage.locator('#server-log').textContent();
             throw new Error(
@@ -231,6 +257,10 @@ try {
             throw new Error(`Test 3 failed: ${JSON.stringify(selfResult)}`);
         }
         await ctx3.close();
+        const namingStep = selfResult.steps.find((step) => step.name.includes('NameServer'));
+        if (!namingStep?.ok) {
+            throw new Error(`Test 3 missing NameServer step: ${JSON.stringify(selfResult)}`);
+        }
         console.log(
             `[verify-browser]   Test 3 PASS (${selfResult.durationMs}ms, ${selfResult.steps.length} steps)!`,
         );

@@ -11,6 +11,7 @@ export * from './core/link/index.js';
 export * from './core/routing/index.js';
 export * from './core/transport/index.js';
 export * from './core/network/index.js';
+export * from './core/naming/index.js';
 
 // アダプタ
 export * from './adapters/webrtc/index.js';

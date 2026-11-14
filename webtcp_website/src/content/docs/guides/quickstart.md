@@ -5,9 +5,7 @@ description: WebTCP のインストール、2 タブデモの起動、最小の�
 
 ## インストール
 
-```bash
-npm install @sonneko/webtcp-tunneler
-```
+> `@sonneko/webtcp-tunneler` はまだ npm に公開されていません。現時点ではリポジトリからビルドして利用してください。公開後に `npm install @sonneko/webtcp-tunneler` を使えるようにします。
 
 リポジトリから直接ビルドして試す場合:
 
@@ -33,6 +31,7 @@ node examples/server.mjs
 1. タブ A で「ポート 8080 で待ち受ける」をクリック
 2. タブ B で「接続先を探す」→ 相手を選択 →「接続」（または「自動接続 (`bootstrap`)」）
 3. テキスト送信や「80 KiB 分割送信テスト」で往復通信を確認
+4. 「名前を解決」「URL で接続」で `demo-service` / `demo-alias` の名前解決と `webtcp://` 接続を確認
 
 1 タブで即座に実 WebRTC 検証したい場合は `http://localhost:8787/examples/demo/?selftest=1` を開いてください。
 デモは既定で **Ed25519 署名（プロトコル v2）** を使います。署名なし（v1）で比較したい場合は `?insecure=1` を付けます。
@@ -121,3 +120,33 @@ if (connected.length > 0) {
   stream.end();
 }
 ```
+
+
+## 名前解決と `webtcp://` URL（M4 / #25）
+
+サービス側で `NameServer` に名前を登録して待ち受けます。
+
+```ts
+import { NameServer } from '@sonneko/webtcp-tunneler';
+
+const ns = new NameServer(network);
+ns.registerA('my-service', network.localNodeId);
+ns.registerCNAME('alias', 'my-service');
+ns.listen(); // 既定の仮想ポート 5300
+```
+
+クライアント側は、隣接または経路表で既知のノードへ問い合わせって名前を解決し、URL で接続します。
+
+```ts
+import { parseWebTCPUrl } from '@sonneko/webtcp-tunneler';
+
+const url = 'webtcp://alias:8080/path?x=1#frag';
+const parsed = parseWebTCPUrl(url); // path / query / fragment はアプリケーション用
+const stream = await network.connectURL(url, { nameServer: ns });
+await stream.send('hello');
+```
+
+- 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。
+- `webtcp://` のポートは必須（1–65535）。NodeId リテラル（32 文字 hex）なら NameServer なしで接続できます。
+- 名前解決はグローバルな所有権証明ではありません。`domain.global` / ブロックチェーン連携は M5 の将来課題です。
+- 詳しくは [名前解決ガイド](/guides/name-resolution/) を参照してください。

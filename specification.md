@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.3.0 |
+| 文書バージョン | 0.4.0 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
-| プロトコルバージョン | 2（v1 は受信のみ後方互換） |
+| プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決は v2 上のアプリケーション層） |
 | ステータス | 実験的（破壊的変更あり） |
 | 最終更新 | 2026-11-14 |
 
@@ -23,6 +23,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 3. シグナリング手段や STUN/TURN 設定を差し替え可能にする**リンク層の抽象化**
 4. 将来のマルチホップルーティングおよび名前解決に耐える**L3 ヘッダー**
 5. 改ざん・なりすましを防ぐ **Ed25519 署名**と、公開鍵の指紋に基づく**自己証明型の NodeId**（v2）
+6. **NameServer** による名前解決と **`webtcp://` URL**、永続ノード識別子（M4）
 
 ## 2. 用語
 
@@ -32,6 +33,8 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | NodeId | ノードを一意に識別する 32 文字の hex。プロトコル v2 では **Ed25519 公開鍵の指紋**（`SHA-256` の先頭 16 バイト）。v1（レガシー）ではランダム値。 |
 | 鍵管理 (KeyManager) | Ed25519 の鍵生成・署名・検証・公開鍵解決を担う実装。ブラウザは `BrowserKeyManager`、Node.js は `NodeKeyManager`。 |
 | 公開鍵ディレクトリ (KeyDirectory) | `NodeId -> Ed25519 公開鍵` の対応表。指紋一致を検証して登録する。 |
+| NameServer | 名前を A レコード（NodeId）または CNAME レコード（別名）へ対応付け、ローカル登録と既知ノードへの問い合わせで解決するアプリケーション層サービス。 |
+| WebTCP URL | `webtcp://<NodeId または 名前>:<port>/path?query#fragment` 形式の接続先指定。 |
 | 隣接ノード (Neighbor) | データチャネルが直接確立している相手ノード。 |
 | 仮想ストリーム (VirtualStream) | 仮想 TCP セッション。`(remoteNodeId, localPort, remotePort)` で一意。 |
 | 仮想ポート | アプリケーションを識別する 16 ビット整数（有効範囲 1–65535、0 は制御用予約）。 |
@@ -49,7 +52,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 
 ```
 +-----------------------------------------------------------+
-| L7  アプリケーション (HTTP 風 API / 任意のプロトコル)        |
+| L7  アプリケーション / NameServer / webtcp:// URL            |
 +-----------------------------------------------------------+
 | L4  TransportLayer : ポート多重化 / SessionManager          |
 |     VirtualStream  : 状態機械 / バイト単位 Seq-Ack / 分割    |
@@ -105,6 +108,16 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 
 仮想ストリームは `(remoteNodeId, localPort, remotePort)` の三つ組で識別する。実装内部では文字列 `${remoteNodeId}:${localPort}:${remotePort}` をキーとしてよい。双方向で同一のキーになる必要があるため、送信側は `sourcePort = localPort`, `destinationPort = remotePort` を必ず設定しなければならない (MUST)。
 
+### 5.4 永続ノード識別子と衝突検出（M4）
+
+- v2 の NodeId は鍵指紋であるため、**秘密鍵の永続化と再利用**が NodeId の永続化を意味する。
+- `BrowserKeyManager.open()` は IndexedDB の非抽出 CryptoKey を復元し、保存公開鍵の指紋と NodeId の一致に加えて、**署名チャレンジによる秘密鍵/公開鍵の対応**を検証しなければならない (MUST)。検証に失敗した保存身元を黙って再利用してはならない (MUST NOT)。
+- `NodeKeyManager.open({ keyFile })` は PKCS#8 PEM ファイルを読み書きする。新規作成時は親ディレクトリを作成し、一時ファイルへの書き込みとリンク/rename による原子的な公開を行い、秘密鍵ファイルのパーミッションは `0600` としなければならない (MUST)。既存ファイルの上書き競合時は既存鍵を読み直して検証する。
+- 明示的な `expectedNodeId` / `nodeId` が保存済み NodeId と異なる場合、実装は `NodeIdCollisionError` を投げなければならない (MUST)。
+- `KeyDirectory` は同一 NodeId に異なる公開鍵が提示された場合、既存鍵を保持する。非同期 `addPublicKey()` は `false` を返し、同期 `setPublicKey()` は `NodeIdCollisionError` を投げる。`setPublicKey()` は**指紋検証済みの鍵のみ**を受け付ける後方互換 API である。
+- `WebTCPNetwork` は鍵管理と公開鍵ディレクトリを併用する場合、ローカル NodeId に既に異なる鍵が登録されていれば `NodeIdCollisionError` を投げなければならない (MUST)。
+- ブラウザで IndexedDB が利用できない場合はセッション限定のメモリ身元へ縮退してよい (MAY)。ストレージ障害は警告する。鍵の再生成は `regenerate` / `BrowserKeyManager.regenerate()` の明示操作に限定する。
+
 ## 6. パケット形式（プロトコルバージョン 2 / v1 互換）
 
 すべての WebTCP パケットは 1 つのバイナリメッセージとしてデータチャネルで送信される。データチャネルはメッセージ境界を保存するため、追加のフレーミングは行わない。
@@ -156,7 +169,7 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 8. `version == 2` なら `senderId` が `^[0-9a-f]{32}$` に一致する。違反は破棄 (MUST)。
 9. `version == 2` なら署名検証（§10）に成功する。失敗は破棄し `warn` ログを出す (MUST)。
 
-7〜9 はシリアライザではなくルーティング層（`RoutingLayer`）が担う（デシリアライズは構文検証のみ）。
+7 はシリアライザが構文検証として実施する。8〜9 はルーティング層（`RoutingLayer`）が担う。
 
 ### 6.3 フラグ
 
@@ -199,9 +212,13 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 
 1. デシリアライズ（失敗時は破棄。§6.2 の 1–7）。
 2. **署名検証**（§10.2）。失敗・欠落は破棄し `warn` ログを出す (MUST)。
-3. `RT_UPDATE` パケットは `RoutingTableManager` へ渡し、トランスポート層へは渡さない。
-   `RT_UPDATE` に同梱された `publicKey` は公開鍵ディレクトリへ登録する（§10.4.2）。
-4. **RPF (Reverse Path Forwarding)** チェック: 送信元への経路の nextHop が、実際に受信した隣接と一致することを確認する。ただし経路が未学習で、かつ受信元が直接の隣接である場合は許可する（M1–M2 の縮退動作）。それ以外は破棄。
+3. `RT_UPDATE` パケットは次をすべて満たす場合のみ `RoutingTableManager` へ渡し、トランスポート層へは渡さない。満たさない場合は破棄する (MUST)。
+   - 受信元が直接の隣接である。
+   - 外側 `senderId` と受信元 NodeId、ペイロード内 `senderId` が一致する。
+   - 外側 `destinationId` が自ノードである。
+   - `ttl > 0` かつ `sourcePort == destinationPort == 0`。
+   `RT_UPDATE` は中継してはならない (MUST NOT)。同梱された `publicKey` は公開鍵ディレクトリへ登録する（§10.4.2）。
+4. 通常パケットの **RPF (Reverse Path Forwarding)** チェック: 送信元への経路の nextHop が、実際に受信した隣接と一致することを確認する。ただし経路が未学習で、かつ受信元が直接の隣接である場合は許可する（M1–M2 の縮退動作）。それ以外は破棄。
 5. `destinationId == localNodeId` ならトランスポート層へ渡して終了。
 6. そうでなければ中継転送する: `ttl` を 1 減算し、`ttl <= 0` になった場合は破棄する (MUST)。残っていれば経路表の `nextHop` へ送信する。
 
@@ -216,7 +233,7 @@ TTL が署名対象外（0 に正規化）であるため、減算しても署�
 {
   "senderId": "0123456789abcdef0123456789abcdef",
   "entries": [
-    { "destinationId": "fedcba9876543210fedcba9876543210", "cost": 1 }
+    { "destinationId": "fedcba9876543210fedcba9876543210", "cost": 1, "publicKey": "…" }
   ],
   "withdrawals": ["00112233445566778899aabbccddeeff"],
   "publicKey": "ISvn_HoP1dCMEm4bsU7kNzMqrxXPpd-LXRjPPHErhAI"
@@ -226,7 +243,8 @@ TTL が署名対象外（0 に正規化）であるため、減算しても署�
 - `publicKey`（任意、プロトコル v2）: 送信元の Ed25519 公開鍵（32 バイトの Base64url、パディングなし）。
   詳細は §10.4.2 を参照。v2 ノードは同梱することが望ましい (SHOULD)。
 
-- `entries` には自分自身のエントリを含めてはならない (MUST NOT)。
+- `entries` には自分自身のエントリを含めてはならない (MUST NOT)。各エントリは任意で `publicKey`（Base64url）を含めてよい (MAY)。受信側は指紋一致を検証して公開鍵ディレクトリへ登録し、経路とともに既知鍵を伝播する。これによりマルチホップ先の署名検証鍵を事前共有なしに学習できる。
+- `entries` / `withdrawals` はそれぞれ最大 256 件、`cost` は 0–255 の整数とする。超過・不正値は破棄する (MUST)。送信側は上限を超える場合、複数の `RT_UPDATE` に分割して送る (MUST)。
 - 受信側は送信元隣接ノード（`senderId`）の直接経路（`cost = 1`）の `lastSeen` を更新しなければならない (MUST)。
 - 受信側は各エントリについて `cost + 1` を計算し、距離ベクトル方式で経路を更新する。現在のネクストホップが送信元と一致し、コストが同一である場合も `lastSeen` を更新しなければならない (MUST)（経路変化は発生しないため再ブロードキャストは行わない）。
 - `withdrawals` は到達不能になった宛先のリストである。受信側は、その宛先の現在のネクストホップが送信元と一致する場合に限りエントリを削除する (MUST)。省略可能。
@@ -523,7 +541,7 @@ interface PublicKeyPayload {
 
 **保証しないもの**:
 
-- アプリケーション層のペイロード機密性（DTLS 終端より上では平文。E2E 暗号化は M4 以降の課題）。
+- アプリケーション層のペイロード機密性（DTLS 終端より上では平文。E2E 暗号化は M5 以降の課題）。
 - 公開鍵の真正性そのもの（初回接触時の中間者。指紋の帯域外確認は利用者の責任）。
 - ノードの可用性・レート制限。
 
@@ -566,9 +584,8 @@ signatureInput = magic | version | ttl(0 固定) | flags | sourcePort | destinat
   「送信元が 1 度だけ署名し、以降は誰も再署名しない」モデルを実現する (MUST)。
 - `version` は送信時のバージョン（v2 = `2`）を含める。
 - 実装は `BinaryPacketSerializer.serializeForSigning(packet)`（送信側）と
-  `signatureInputFromBytes(rawBytes)`（受信側、再シリアライズせずに同じ表現を生成）で提供する。
-- 送受信で **1 バイトでも異なれば検証は失敗する**。したがって、受信バイト列から
-  署名対象を導出する経路（`signatureInputFromBytes`）と送信側の経路は同一の結果を返さなければならない (MUST)。
+  `signatureInputFromBytes(rawBytes)`（受信側、署名フィールドを除去）で提供する。
+- 受信側は `signatureInputFromBytes()` の結果の TTL バイト（オフセット 2）を **0 に上書き**してから検証しなければならない (MUST)。送信側は署名前に TTL を 0 にして `serializeForSigning()` を呼ぶ。この正規化後、両経路は同一の結果を返さなければならない (MUST)。
 
 ### 10.4 公開鍵の配布
 
@@ -586,7 +603,7 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 `RT_UPDATE` のペイロード JSON に `publicKey`（Base64url）を含める。
 `RT_UPDATE` 自体も署名されるため、受信側は「同梱された公開鍵で署名を検証し、
 その公開鍵の指紋が `senderId` と一致すること」を確認できる（自己証明）。
-マルチホップでは中継ノードもこの経路で送信元の公開鍵を学習できる。
+また `entries[].publicKey` により、隣接が学習済みのリモートノードの公開鍵も経路情報と一緒に伝播する。受信側は各鍵の指紋一致を検証する。
 
 #### 10.4.3 公開鍵ディレクトリと解決順序
 
@@ -597,7 +614,7 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 3. 最大 `keyWaitTimeoutMs`（既定 5000 ms）待機して再試行
 
 `IPublicKeyResolver` を実装すれば、IPFS 等の**分散ストレージ**から鍵を引く方式に差し替えられる
-（M4 以降の課題。M3 では同梱インターフェースのみ提供）。
+（M5 以降の課題。M4 では同梱インターフェースのみ提供）。
 
 #### 10.4.4 鍵の衝突・すり替え
 
@@ -608,13 +625,14 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 
 | 実装 | 環境 | 秘密鍵の保存 | 署名・検証のプリミティブ |
 | :--- | :--- | :--- | :--- |
-| `BrowserKeyManager` | ブラウザ | **IndexedDB** に **非抽出 CryptoKey**（`extractable: false`）。公開鍵・NodeId は同一レコード＋ `localStorage` 相当のキャッシュ | Web Crypto API（`crypto.subtle`、Ed25519） |
-| `NodeKeyManager` | Node.js | メモリ上の `KeyObject`。永続化は PKCS#8 PEM / シード hex を利用者が管理 | `node:crypto`（`generateKeyPairSync` / `webcrypto.subtle`） |
+| `BrowserKeyManager` | ブラウザ | **IndexedDB** に **非抽出 CryptoKey**（`extractable: false`）。公開鍵・NodeId は同一レコードに保存。復元時に指紋と署名チャレンジを検証 | Web Crypto API（`crypto.subtle`、Ed25519） |
+| `NodeKeyManager` | Node.js | `create()` はメモリ。`open({ keyFile })` は PKCS#8 PEM を `0600` で永続化・再利用 | `node:crypto`（`generateKeyPairSync` / `webcrypto.subtle`） |
 
 要件:
 
 - 秘密鍵は**生バイトとしてエクスポートできない**ことが望ましい (SHOULD)。ブラウザ実装は `extractable: false` を既定とする。
 - 署名（`sign`）・検証（`verify`）・指紋導出（`deriveNodeId`）を提供しなければならない (MUST)。
+- `isBrowserEd25519Supported()` は同期の簡易プローブであり、アルゴリズム対応を保証しない。実際の可否は `BrowserKeyManager.open()` の成否で判定する。
 - 全実装で `deriveNodeId` は同一結果を返さなければならない (MUST)。
 - 利用可能な Ed25519 実装: Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+。
   非対応環境では v1（`NullPacketVerifier`）へフォールバックする。
@@ -625,12 +643,12 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
   既に受信済みの範囲は破棄され、アプリケーションへ二重に渡らない。
 - `ackNum` は累積確認応答であるため、古い `ackNum` を持つリプレイは送信状態を巻き戻さない
   （`SND.UNA` より古い ACK は無視される）。
-- `RT_UPDATE` は **`lastSeen` の更新のみ** を行い（距離ベクトルのコスト比較）、
-  リプレイされても経路の逆転や削除を引き起こさない。撤回（`withdrawals`）は
-  現行のネクストホップが一致する場合に限り適用される。
+- `RT_UPDATE` は直接隣接からのみ受理し、距離ベクトルのコスト比較で経路を更新する。
+  撤回（`withdrawals`）は現行のネクストホップが一致する場合に限り適用される。
+  ただし署名付き `RT_UPDATE` のリプレイによる撤回・経路変動を完全に防ぐものではない。
 - **限界**: 署名付きパケットそのものは有効期限を持たないため、リンク層の外で記録・再送された
   パケットを「新規」と誤認する余地がある。セッション Nonce とタイムスタンプによる明示的な
-  再生検知は M4 以降の強化課題とする（`plan.md` §4.1）。
+  再生検知は M5 以降の強化課題とする（`plan.md` §4.1）。
 
 ### 10.7 既知の制約
 
@@ -691,11 +709,83 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | NodeId バイト長 | 16 B（`SHA-256` の先頭 16 バイト） |
 | 公開鍵長 | 32 B |
 | 公開鍵待機タイムアウト (`keyWaitTimeoutMs`) | 5 000 ms |
+| NameServer 仮想ポート | 5300 |
+| 名前レコード既定 TTL / 最大 TTL | 60 s / 86 400 s |
+| 名前問い合わせタイムアウト / 解決全体タイムアウト | 2 s / 5 s |
+| CNAME 最大連鎖 / キャッシュ最大件数 | 8 / 1024 |
+| 問い合わせ既知ノード上限 / 並列数 | 16 / 4 |
 | 署名必須化 (`requireSignatures`) | 鍵管理または `Ed25519PacketVerifier` 指定時 `true` |
 
-## 12. 公開 API
+## 12. 名前解決と WebTCP URL（M4 / #25）
 
-### 12.1 WebTCPNetwork
+### 12.1 名前とレコード
+
+- 名前は ASCII の LDH ラベル（英数字とハイフン）をドットで区切る。各ラベル 1–63 文字、全体 253 文字以下。ラベルの先頭/末尾ハイフンは禁止。大文字は小文字へ正規化し、末尾のルートドットは除去する。
+- 32 文字小文字 hex の名前は NodeId リテラルとして予約し、名前登録には使えない。
+- A レコード相当: `name -> NodeId`。CNAME レコード相当: `name -> canonical name`。
+- レコードは TTL（ミリ秒）を持つ。既定 60 000 ms、最大 86 400 000 ms。ローカル登録は明示的に削除・更新するまで有効。リモート応答と解決結果は TTL 経過までキャッシュする。
+- ローカル登録が常に優先する。リモート応答は「応答ノードがその名前をこう登録している」という情報であり、**グローバルな所有権証明ではない**。同一名前に複数の異なる応答がある場合は最初に受理した結果を TTL までキャッシュする。
+
+### 12.2 NameServer
+
+`NameServer` はアプリケーション層サービスであり、新しい L3/L4 フラグやワイヤーバージョンを追加しない。既存の `VirtualStream` 上で UTF-8 JSON の要求/応答を 1 ストリームにつき 1 往復交換する。既定ポートは **5300**（仮想ポート。利用者が必要なら変更可能）。
+
+API:
+
+```ts
+const ns = new NameServer(network, { port?, defaultTtlMs?, queryTimeoutMs?, resolveTimeoutMs?, maxCnameDepth?, maxCacheEntries?, maxQueriedNodes?, queryConcurrency?, resolvers?, logger? })
+ns.registerA(name, nodeId, ttlMs?): void
+ns.registerCNAME(name, target, ttlMs?): void
+ns.unregister(name): boolean
+ns.listen(): void
+ns.close(): void
+await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
+```
+
+- `listen()` は_network の仮想ポートを待ち受け、`close()` は自身が登録したハンドラを解除する。ネットワーク自体は閉じない。
+- 解決順序は (1) ローカル登録、(2) 有効なキャッシュ、(3) 既知ノードへの問い合わせ。CNAME は最大 8 段まで辿り、訪問済み名前への再訪はループとして拒否する。
+- 既知ノードは明示 `resolvers`、直接隣接、経路表の宛先から重複を除いて作る。自身は除外し、最大 16 ノードへ最大 4 並列で問い合わせる。問い合わせは `network.connect()` を用いるため、マルチホップ経路と v2 署名検証を利用する。
+- サーバーは自分のローカル登録のみを権威データとして返す。再帰問い合わせはしない。クライアントが CNAME 連鎖を反復解決するため、ノード間の問い合わせループを作らない。
+- 要求/応答は最大 16 KiB。応答は要求 ID と名前が一致しなければならない。不正・タイムアウト応答は無視し、全体タイムアウトまたは中断で reject する。
+- キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。
+
+問い合わせプロトコル（JSON）:
+
+```json
+{ "protocol": 1, "type": "query", "id": "<ランダムhex>", "name": "my-service" }
+```
+
+```json
+{ "protocol": 1, "type": "answer", "id": "<要求と同じ>", "name": "my-service", "record": { "type": "A", "name": "my-service", "target": "<NodeId>", "ttlMs": 60000 } }
+```
+
+不在時は `{"protocol":1,"type":"error","id":"…","name":"…","code":"NXDOMAIN"}`。不正要求は `INVALID`。`record.type` は `A` または `CNAME`。クライアントは要求を送って `end()` し、サーバーは EOF 後に応答して `end()` する（Half-Close）。
+
+### 12.3 `webtcp://` URL
+
+形式:
+
+```
+webtcp://<host>:<port><path>?<query>#<fragment>
+```
+
+- `host` は NodeId（32 文字小文字 hex）または §12.1 の名前。ホストの大文字は小文字へ正規化する。
+- `port` は必須。1–65535 の整数。既定ポートは無い。
+- `path` は省略時 `/`。`query` と `fragment` は保持するが、WebTCP 接続自体には送信しない。HTTP セマンティクスは定義しない。
+- userinfo、IPv6 アドレス、ホスト内のパーセントエンコード、空白・制御文字、バックスラッシュ、空ホスト、不正ポートは拒否する。
+- `parseWebTCPUrl()` は `WebTCPUrl`（`host`, `nodeId?`, `name?`, `port`, `path`, `search`, `hash`）を返す。`formatWebTCPUrl()` は正規形を返す。
+- `network.connectURL(url, { nameServer?, localPort?, signal? })` は NodeId 指定なら直接接続し、名前指定なら `nameServer.resolve()` 経由で NodeId を得て接続する。名前指定で NameServer が無ければ reject する。戻り値は `VirtualStream`。パス等はアプリケーションが `parseWebTCPUrl()` の結果から利用する。
+- `webtcp://` はブラウザのナビゲーション可能スキームではない。ライブラリ API としてパース・接続する。
+
+### 12.4 セキュリティ境界
+
+- NameServer の応答は仮想ストリーム下層の v2 署名で保護されるが、名前解決自体にグローバルな所有権証明は無い。ローカル登録は利用者設定を信頼する。
+- `domain.global` への登録、ブロックチェーンによる所有権証明、グローバルな名前衝突解決は **M5** の対象（`plan.md`）。
+- 名前問い合わせは増幅を避けるため問い合わせ先数・並列数・メッセージサイズ・CNAME 深度・キャッシュ件数を制限する。
+
+## 13. 公開 API
+
+### 13.1 WebTCPNetwork
 
 ```ts
 new WebTCPNetwork({
@@ -717,6 +807,7 @@ new WebTCPNetwork({
 start(): Promise<void>
 listen(port: VirtualPort, handler: (stream: VirtualStream) => void): void
 connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort): Promise<VirtualStream>
+connectURL(url: string | WebTCPUrl, options?: ConnectURLOptions): Promise<VirtualStream>
 connectToPeer(remoteId: NodeId): Promise<void>
 bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<BootstrapResult>
 getNeighbors(): NodeId[]
@@ -733,10 +824,11 @@ close(): void
 - `keyManager` / `keyDirectory` / `requireSignatures` は M3（#28）で追加された。
   `keyManager` を渡すと自動的にプロトコル v2（署名必須）になり、`verifier` も `Ed25519PacketVerifier` が組まれる。
 - `connect()` は必要に応じてリンクを確立してから仮想接続を開始する。
+- `connectURL()` は M4 で追加。名前指定には `options.nameServer` が必要。
 - `bootstrap()` はエントランス探索結果から候補へ順次接続を試み、失敗時は指数バックオフでリトライする。
 - 起動完了時に `'ready'` イベントを発火する。
 
-### 12.2 VirtualStream
+### 13.2 VirtualStream
 
 ```ts
 send(data: Uint8Array | string): Promise<void>
@@ -761,7 +853,7 @@ on('connect' | 'data' | 'readable' | 'end' | 'close' | 'drain' | 'error', listen
 - `drain` は送信バッファおよび未 ACK キューが空になったときに発火する。
 - `close` は `CLOSED` 遷移時に一度だけ発火する。
 
-### 12.3 セキュリティ API（M3 / #28）
+### 13.3 セキュリティ API（M3 / #28）
 
 ```ts
 // NodeId = Ed25519 公開鍵の指紋
@@ -771,7 +863,8 @@ isValidNodeId(value: unknown): value is NodeId
 
 // 鍵管理
 await NodeKeyManager.create({ privateKeyPem?, secretKeyHex?, nodeId?, keyDirectory? })
-await BrowserKeyManager.open({ databaseName?, regenerate?, keyDirectory?, logger? })
+await NodeKeyManager.open({ keyFile, nodeId?, keyDirectory? })
+await BrowserKeyManager.open({ databaseName?, expectedNodeId?, regenerate?, keyDirectory?, logger? })
 keyManager.sign(data): Promise<Uint8Array>            // 64 バイト
 keyManager.verify(publicKey, data, signature): Promise<boolean>
 keyManager.deriveNodeId(publicKey): Promise<NodeId>
@@ -797,9 +890,10 @@ directory.waitForPublicKey(nodeId, timeoutMs?): Promise<Uint8Array | null>
 | `Ed25519PacketVerifier` | `IPacketVerifier` 実装。署名付与と検証（§10.2 / §10.3） |
 | `NullPacketVerifier` | 署名なしのレガシー検証器（v1 相互運用専用） |
 | `KeyDirectory` | `NodeId -> 公開鍵`。指紋照合つき登録・待機・学習 |
+| `NodeIdCollisionError` | 同一 NodeId に異なる鍵/身元が対応する衝突を表す型付きエラー |
 | `IPublicKeyResolver` | 分散ストレージ等への差し替えポイント（§10.4.3） |
 
-## 13. バージョニング
+## 14. バージョニング
 
 - パケットの `version` フィールドで判別する。未知バージョンは破棄する。
 - **v1（M1–M2）**: `version = 1`。24 バイト固定ヘッダー、`signatureLen = 0`、NodeId はランダム hex。
@@ -809,15 +903,16 @@ directory.waitForPublicKey(nodeId, timeoutMs?): Promise<Uint8Array | null>
 - 移行規則:
   - 送信側は `signature` の有無で v1 / v2 を選ぶ（§6.1）。鍵管理を渡すと常に v2 になる。
   - 受信側は v1 / v2 の両方を**デシリアライズできる** (MUST)。
-  - v2 ノードは既定で v1 パケットを受理する（後方互換）が、`requireSignatures: true` では破棄する。
+  - v2 ノード（鍵管理 / Ed25519 検証器あり）は既定で `requireSignatures: true` のため v1 を破棄する。明示的に `requireSignatures: false` とした場合のみ後方互換で受理する。鍵管理なしの既定は v1。
   - ヘッダーレイアウトが共通のため、v1 と v2 のノードが同一リンク上で併存しても
     デシリアライズ段階では衝突しない（署名検証の可否だけが異なる）。
 
-## 14. 非目標（M3 時点）
+## 15. 非目標（M4 時点）
 
 以下は本仕様の対象外であり、`plan.md` に将来課題として記録する。
 
-- NameServer による名前解決、`webtcp://` URL スキーム、`domain.global`、ブロックチェーン連携（M4–M5 / #25）
+- `domain.global` へのドメイン登録、ブロックチェーンによる所有権証明（M5 / #25）
+- NameServer のグローバル名前衝突解決・権威サーバー階層・DNS 相互運用
 - 鍵のローテーション（NodeId を維持したままの鍵更新）と、マルチデバイス間の鍵同期
 - アプリケーションデータの E2E 暗号化（DTLS 終端より上の機密性）
 - セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§10.6 の限界）

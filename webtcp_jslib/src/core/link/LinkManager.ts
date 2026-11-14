@@ -29,6 +29,7 @@ export class LinkManager extends EventEmitter {
 
     private started = false;
     private closed = false;
+    private listenersAttached = false;
 
     constructor(
         localNodeId: NodeId,
@@ -51,12 +52,20 @@ export class LinkManager extends EventEmitter {
         if (this.started) return;
         this.started = true;
 
-        this.channel.on('data', (fromId, data) => this.handleChannelData(fromId, data));
-        this.channel.on('connection-status', (peerId, isConnected) =>
-            this.handleConnectionStatus(peerId, isConnected),
-        );
+        if (!this.listenersAttached) {
+            this.channel.on('data', (fromId, data) => this.handleChannelData(fromId, data));
+            this.channel.on('connection-status', (peerId, isConnected) =>
+                this.handleConnectionStatus(peerId, isConnected),
+            );
+            this.listenersAttached = true;
+        }
 
-        await this.channel.start();
+        try {
+            await this.channel.start();
+        } catch (error) {
+            this.started = false;
+            throw error;
+        }
         this.logger.info(`LinkManager started (nodeId=${this.localNodeId})`);
     }
 
@@ -123,6 +132,7 @@ export class LinkManager extends EventEmitter {
     }
 
     private handleConnectionStatus(peerId: NodeId, isConnected: boolean): void {
+        if (this.closed || !this.started) return;
         if (isConnected) {
             this.logger.info(`Neighbor connected: ${peerId}`);
             this.emit('neighbor-connected', peerId);
@@ -133,7 +143,7 @@ export class LinkManager extends EventEmitter {
     }
 
     private handleChannelData(fromId: NodeId, data: Uint8Array): void {
-        if (this.closed) return;
+        if (this.closed || !this.started) return;
 
         let packet: WebTCPPacket;
         try {

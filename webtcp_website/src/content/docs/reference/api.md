@@ -33,11 +33,20 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 - `start(): Promise<void>` — 全層を起動（冪等）。完了時に `'ready'` イベントを発火。
 - `listen(port: VirtualPort, handler: (stream: VirtualStream) => void): void` — 指定ポートで待ち受け。ハンドラは `ESTABLISHED` 到達時に呼ばれます。
 - `connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort): Promise<VirtualStream>` — 必要ならリンク確立を行ったうえで仮想 TCP 接続を確立。
+- `connectURL(url: string | WebTCPUrl, options?: ConnectURLOptions): Promise<VirtualStream>` — `webtcp://` URL へ接続（M4 / #25）。名前指定には `options.nameServer` が必要。NodeId リテラルなら不要。
 - `connectToPeer(remoteId: NodeId): Promise<void>` — リンク層の隣接接続のみを確立。
 - `bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<BootstrapResult>` — エントランス候補へ順に接続を試行（失敗時は指数バックオフでリトライ）。
 - `getNeighbors(): NodeId[]` — 直接接続中の隣接ノード ID 一覧。
 - `getRoutingTable(): RoutingTable` — 現在のルーティングテーブル。
 - `close(): void` — 全層・全タイマー・全セッションを停止。
+
+### `ConnectURLOptions`
+
+| 項目 | 型 | 既定値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `nameServer` | `NameServer` | — | 名前指定の解決に使う NameServer |
+| `localPort` | `VirtualPort` | 自動割当 | ローカル仮想ポート |
+| `signal` | `AbortSignal` | — | 中断用シグナル |
 
 ### `BootstrapOptions`
 
@@ -77,15 +86,44 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `'close'` | なし | `CLOSED` へ遷移完了（一度だけ） |
 | `'error'` | `Error` | RST または再送上限超過などの異常終了 |
 
-## セキュリティ API（M3 / #28）
+## 名前解決 API（M4 / #25）
+
+### `NameServer`
+
+| API | 説明 |
+| :--- | :--- |
+| `new NameServer(network, options?)` | アプリケーション層名前解決サービス。既定ポート 5300 |
+| `registerA(name, nodeId, ttlMs?)` | A レコード相当（`name -> NodeId`）をローカル登録 |
+| `registerCNAME(name, target, ttlMs?)` | CNAME レコード相当（`name -> canonical name`）をローカル登録 |
+| `unregister(name)` / `clearCache()` | ローカル登録の削除 / キャッシュ消去 |
+| `listen()` / `close()` | 問い合わせ受付の開始 / 停止（ネットワークは閉じない） |
+| `resolve(name, { signal?, timeoutMs? })` | ローカル → キャッシュ → 既知ノード問い合わせの順で解決。`NameResolution` を返す |
+
+`NameServerOptions`: `port`, `defaultTtlMs`（60000）, `queryTimeoutMs`（2000）, `resolveTimeoutMs`（5000）, `maxCnameDepth`（8）, `maxCacheEntries`（1024）, `maxQueriedNodes`（16）, `queryConcurrency`（4）, `resolvers`, `logger`。
+
+エラー: `NameNotFoundError` / `NameResolutionTimeoutError` / `NameLoopError`。
+
+### `webtcp://` URL
+
+| API | 説明 |
+| :--- | :--- |
+| `parseWebTCPUrl(input)` | `webtcp://host:port/path?query#fragment` を厳格にパースし `WebTCPUrl` を返す。ポート必須 |
+| `formatWebTCPUrl(url)` | `WebTCPUrl` を正規形文字列へ整形 |
+| `normalizeWebTCPName(value)` | 名前を小文字化・末尾ドット除去・LDH 検証。NodeId リテラルは予約 |
+
+`WebTCPUrl`: `host`, `nodeId?`, `name?`, `port`, `path`, `search`, `hash`。
+
+## セキュリティ API（M3 / #28・M4 / #36）
 
 ### 鍵管理
 
 | API | 説明 |
 | :--- | :--- |
-| `BrowserKeyManager.open({ databaseName?, regenerate?, keyDirectory?, logger? })` | ブラウザ用。秘密鍵を **IndexedDB に非抽出 CryptoKey** として保存。`nodeId` / `publicKey` / `sign()` / `verify()` / `deriveNodeId()` |
+| `BrowserKeyManager.open({ databaseName?, expectedNodeId?, regenerate?, keyDirectory?, logger? })` | ブラウザ用。秘密鍵を **IndexedDB に非抽出 CryptoKey** として保存。復元時に指紋と署名チャレンジを検証。`expectedNodeId` 不一致は `NodeIdCollisionError` |
 | `BrowserKeyManager.regenerate(options)` | 新しい鍵ペアで IndexedDB を上書き |
 | `NodeKeyManager.create({ privateKeyPem?, secretKeyHex?, nodeId?, keyDirectory? })` | Node.js 用（`node:crypto`）。`exportPrivateKeyPem()` / `exportSecretKeyHex()` |
+| `NodeKeyManager.open({ keyFile, nodeId?, keyDirectory? })` | PKCS#8 PEM ファイルから復元、無ければ `0600` で原子的に作成（M4 / #36） |
+| `NodeIdCollisionError` | 同一 NodeId に異なる鍵/身元が対応する衝突を表す型付きエラー |
 | `deriveNodeId(publicKey)` | `hex(SHA-256(公開鍵)[0..16])` を返す（NodeId の鍵指紋化） |
 | `nodeIdMatchesPublicKey(nodeId, publicKey)` | 指紋の照合 |
 | `isValidNodeId(value)` | `^[0-9a-f]{32}$` の判定 |
@@ -97,7 +135,7 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | :--- | :--- |
 | `new Ed25519PacketVerifier({ keyManager, keyDirectory?, serializer?, keyWaitTimeoutMs? })` | `IPacketVerifier` 実装。署名付与と検証 |
 | `createEd25519Verifier({ keyManager, keyDirectory?, ... })` | `{ verifier, keyDirectory, publicKey, publicKeyEncoded, nodeId }` を返すヘルパー |
-| `new KeyDirectory({ logger? })` | `addPublicKey()`（指紋不一致は `false`）/ `getPublicKey()` / `waitForPublicKey()` |
+| `new KeyDirectory({ logger? })` | `addPublicKey()`（指紋不一致・既存鍵衝突は `false`）/ `setPublicKey()`（衝突は `NodeIdCollisionError`）/ `getPublicKey()` / `waitForPublicKey()` |
 | `NullPacketVerifier` | 署名なしのレガシー検証器（v1 相互運用専用） |
 | `isEd25519KeyManager(value)` | 鍵管理の型ガード |
 

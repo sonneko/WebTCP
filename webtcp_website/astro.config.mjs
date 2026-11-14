@@ -27,6 +27,7 @@ export default defineConfig({
 					label: 'はじめに',
 					items: [
 						{ label: 'クイックスタート', slug: 'guides/quickstart' },
+						{ label: '名前解決と webtcp:// URL', slug: 'guides/name-resolution' },
 						{ label: 'NAT 越えと STUN / TURN 設定', slug: 'guides/nat-turn-ice' },
 						{ label: 'デモと実ブラウザ検証', slug: 'guides/demo-verification' },
 					],

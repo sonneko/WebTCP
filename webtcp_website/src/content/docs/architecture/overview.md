@@ -16,7 +16,7 @@ description: design.md に基づく WebTCP のレイヤー構成、モジュー�
 
 ```
 +-----------------------------------------------------------+
-| L7  アプリケーション (任意のプロトコル / 将来の HTTP 層)     |
+| L7  アプリケーション (NameServer / 任意のプロトコル)      |
 +-----------------------------------------------------------+
 | L4  TransportLayer : 仮想ポート多重化 / SessionManager      |
 |     VirtualStream  : 状態機械 / バイト Seq-Ack / 自動分割    |
@@ -63,6 +63,17 @@ TTL は 0 に正規化されるため、送信元が 1 度署名すれば中継�
 
 - `BrowserKeyManager`: Web Crypto API + IndexedDB（秘密鍵は **非抽出 CryptoKey**）
 - `NodeKeyManager`: `node:crypto`（Ed25519 `KeyObject` + `webcrypto.subtle`）
+
+### NameServer と `webtcp://` URL（M4 / #25）
+
+`core/naming` は L7 アプリケーション層サービスとして `WebTCPNetwork` の公開 API に依存します。L3/L4 へ名前を漏らさず、既存の署名付き `VirtualStream` 上で JSON 要求/応答を運びます。
+ローカル登録を権威データとし、クライアント側で CNAME を反復解決します。サーバーは他ノードへ再帰問い合わせしないため、問い合わせループと増幅を抑えます。
+`parseWebTCPUrl()` は非特殊スキームの環境依存を避けるため明示的な検証でパースし、`connectURL()` は名前なら NameServer、NodeId なら直接 `connect()` へ振り分けます。
+
+### 永続 NodeId と RT_UPDATE の信頼境界（M4 / #36, #37）
+
+ブラウザ鍵復元時は公開鍵指紋だけでなく署名チャレンジで秘密鍵との対応を検証します。Node.js は `NodeKeyManager.open({ keyFile })` で PKCS#8 PEM を `0600` ・原子的に保存します。
+`RT_UPDATE` は直接隣接・sender 一致・自ノード宛・正 TTL・制御ポート 0 のみ受理し、中継しません。`entries[].publicKey` で既知鍵を経路とともに伝播し、受信側は指紋検証して `KeyDirectory` へ登録します。
 
 ### 差し替え可能な署名検証とロガー
 

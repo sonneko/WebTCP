@@ -4,6 +4,7 @@ import {
     NodeId,
     deriveNodeId,
     isValidNodeId,
+    NodeIdCollisionError,
 } from '../../core/routing/keys.js';
 import type { KeyDirectory } from '../../core/routing/KeyDirectory.js';
 import { Logger } from '../../core/util/Logger.js';
@@ -16,8 +17,8 @@ import { Logger } from '../../core/util/Logger.js';
  *    IndexedDB へそのまま保存でき、`subtle.sign()` に再び渡せる。
  * 2. **秘密鍵は `extractable = false`**。IndexedDB から取り出しても生バイトへ
  *    エクスポートできないため、XSS 等でストレージが読まれても鍵そのものは漏れない。
- * 3. 公開鍵（32 バイト）と NodeId（指紋）のみを `localStorage` にキャッシュし、
- *    起動時に IndexedDB の秘密鍵と突き合わせる。
+ * 3. 公開鍵（32 バイト）と NodeId（指紋）は IndexedDB の同一レコードに保存し、
+ *    復元時に指紋一致と署名チャレンジで秘密鍵/公開鍵の対応を検証する（M4 / #36）。
  *
  * 必要環境:
  * - Web Crypto の Ed25519（Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+）
@@ -48,6 +49,8 @@ export interface BrowserKeyManagerOptions {
     indexedDB?: IDBFactory | null;
     /** Web Crypto の subtle（テスト用に差し替え可能）。省略時は `globalThis.crypto.subtle`。 */
     subtle?: SubtleCrypto;
+    /** 期待する NodeId。保存済み身元と異なる場合は NodeIdCollisionError。 */
+    expectedNodeId?: NodeId;
     /** 保存済みの鍵を使わず、新しい鍵ペアを生成して上書きする。 */
     regenerate?: boolean;
     /** ピアの公開鍵を解決するディレクトリ（任意）。 */
@@ -64,7 +67,10 @@ interface StoredIdentity {
     createdAt: number;
 }
 
-/** ブラウザでの Ed25519 利用可否を判定する。 */
+/**
+ * 同期の簡易プローブ。Web Crypto と IndexedDB の存在のみを確認し、
+ * Ed25519 アルゴリズム対応までは保証しない。実際の可否は open() の成否で判定する。
+ */
 export function isBrowserEd25519Supported(): boolean {
     return (
         typeof globalThis.crypto?.subtle?.generateKey === 'function' &&
@@ -109,6 +115,9 @@ export class BrowserKeyManager implements Ed25519KeyManager {
             throw new Error('Web Crypto (crypto.subtle) is not available');
         }
 
+        if (options.expectedNodeId !== undefined && !isValidNodeId(options.expectedNodeId)) {
+            throw new Error(`invalid expectedNodeId: ${options.expectedNodeId}`);
+        }
         const factory = options.indexedDB === undefined ? globalThis.indexedDB : options.indexedDB;
         const storage = factory
             ? new IdentityStorage(
@@ -120,26 +129,45 @@ export class BrowserKeyManager implements Ed25519KeyManager {
             : null;
 
         if (storage && !options.regenerate) {
-            const existing = await storage.load();
+            let existing: StoredIdentity | null = null;
+            try {
+                existing = await storage.load();
+            } catch (error) {
+                options.logger?.warn('Failed to load WebTCP identity from IndexedDB; using session-only identity:', error);
+            }
             if (existing) {
                 const publicKey =
                     existing.publicKeyRaw instanceof Uint8Array
                         ? existing.publicKeyRaw
                         : new Uint8Array(existing.publicKeyRaw);
-                const derived = await deriveNodeId(publicKey);
-                if (derived === existing.nodeId) {
-                    return new BrowserKeyManager({
-                        nodeId: existing.nodeId,
-                        publicKey,
-                        signingKey: existing.privateKey,
-                        subtle,
-                        storage,
-                        keyDirectory: options.keyDirectory ?? null,
-                    });
+                const derived = await deriveNodeId(publicKey).catch(() => null);
+                if (derived === existing.nodeId && isValidNodeId(existing.nodeId)) {
+                    if (options.expectedNodeId !== undefined && options.expectedNodeId !== existing.nodeId) {
+                        throw new NodeIdCollisionError(existing.nodeId);
+                    }
+                    const challenge = new TextEncoder().encode(`webtcp-identity-check:${existing.nodeId}`);
+                    let matches = false;
+                    try {
+                        const signature = await subtle.sign({ name: 'Ed25519' } as AlgorithmIdentifier, existing.privateKey, challenge);
+                        const verifyKey = await subtle.importKey('raw', publicKey as BufferSource, { name: 'Ed25519' } as AlgorithmIdentifier, false, ['verify']);
+                        matches = await subtle.verify({ name: 'Ed25519' } as AlgorithmIdentifier, verifyKey, signature, challenge);
+                    } catch {
+                        matches = false;
+                    }
+                    if (matches) {
+                        return new BrowserKeyManager({
+                            nodeId: existing.nodeId,
+                            publicKey,
+                            signingKey: existing.privateKey,
+                            subtle,
+                            storage,
+                            keyDirectory: options.keyDirectory ?? null,
+                        });
+                    }
+                    options.logger?.warn('Stored WebTCP private key does not match its public key; regenerating');
+                } else {
+                    options.logger?.warn('Stored WebTCP identity does not match its public key fingerprint; regenerating');
                 }
-                options.logger?.warn(
-                    'Stored WebTCP identity does not match its public key fingerprint; regenerating',
-                );
             }
         }
 
@@ -155,6 +183,9 @@ export class BrowserKeyManager implements Ed25519KeyManager {
             );
         }
         const nodeId = await deriveNodeId(publicKeyRaw);
+        if (options.expectedNodeId !== undefined && options.expectedNodeId !== nodeId) {
+            throw new NodeIdCollisionError(nodeId);
+        }
 
         if (storage) {
             try {

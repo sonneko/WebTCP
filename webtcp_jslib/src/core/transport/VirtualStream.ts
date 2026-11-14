@@ -1063,30 +1063,41 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
         // 残っている readExact 待機者はこれ以上データが届かないため reject する
         this.rejectReadExactWaiters(new Error('Stream ended (EOF) before requested bytes arrived'));
 
+        // 状態を先に遷移させてから end を通知する（#38）。
+        let autoEnd = false;
+        let enteredTimeWait = false;
+        switch (this.state) {
+            case 'ESTABLISHED':
+                this.state = 'CLOSE_WAIT';
+                autoEnd = !this.allowHalfOpen;
+                break;
+            case 'FIN_WAIT_1':
+                if (this.finSentSeq !== null && this.unackedQueue.size() === 0) {
+                    this.state = 'TIME_WAIT';
+                    enteredTimeWait = true;
+                } else {
+                    this.state = 'CLOSING';
+                }
+                break;
+            case 'FIN_WAIT_2':
+                this.state = 'TIME_WAIT';
+                enteredTimeWait = true;
+                break;
+            default:
+                break;
+        }
+
         if (!this.endEmitted) {
             this.endEmitted = true;
             this.emit('end');
         }
 
-        switch (this.state) {
-            case 'ESTABLISHED':
-                this.state = 'CLOSE_WAIT';
-                if (!this.allowHalfOpen) {
-                    this.end();
-                }
-                return;
-            case 'FIN_WAIT_1':
-                if (this.finSentSeq !== null && this.unackedQueue.size() === 0) {
-                    this.enterTimeWait();
-                } else {
-                    this.state = 'CLOSING';
-                }
-                return;
-            case 'FIN_WAIT_2':
-                this.enterTimeWait();
-                return;
-            default:
-                return;
+        if (autoEnd) this.end();
+        if (enteredTimeWait && this.state === 'TIME_WAIT') {
+            this.stopRetransmissionTimer();
+            this.unackedQueue.clear();
+            if (this.timeWaitMs <= 0) this.finalize();
+            else this.restartTimeWaitTimer();
         }
     }
 

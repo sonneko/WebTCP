@@ -13,6 +13,18 @@ export type { NodeId } from '../types/protocol.js';
 /** NodeId のバイト長。SHA-256 指紋の先頭 16 バイトを使う。 */
 export const NODE_ID_BYTES = 16;
 
+/** 同一 NodeId に異なる鍵/身元が対応する場合の型付きエラー（M4 / #36）。 */
+export class NodeIdCollisionError extends Error {
+    constructor(
+        public readonly nodeId: NodeId,
+        public readonly expectedPublicKey?: Uint8Array,
+        public readonly actualPublicKey?: Uint8Array,
+    ) {
+        super(`NodeId collision detected for ${nodeId}: nodeId does not match the Ed25519 public key fingerprint or a different identity is already bound`);
+        this.name = 'NodeIdCollisionError';
+    }
+}
+
 /** NodeId の hex 文字列表現の長さ（32 文字）。 */
 export const NODE_ID_HEX_LENGTH = NODE_ID_BYTES * 2;
 

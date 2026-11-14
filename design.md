@@ -2,8 +2,8 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.3.0 |
-| 対応仕様 | `specification.md` 0.3.0 / プロトコル v2（v1 後方互換） |
+| 文書バージョン | 0.4.0 |
+| 対応仕様 | `specification.md` 0.4.0 / プロトコル v2（v1 後方互換） |
 | 最終更新 | 2026-11-14 |
 
 本書は `specification.md` を満たすための**実装構造と技術判断**を記述する。
@@ -40,7 +40,7 @@ WebTCP/
     │   │   ├── types/
     │   │   │   ├── protocol.ts      # NodeId, VirtualPort, SequenceNumber, StreamState ...
     │   │   │   ├── packet.ts        # WebTCPPacket
-    │   │   │   ├── serializer.ts    # BinaryPacketSerializer (v1 バイナリ形式)
+    │   │   │   ├── serializer.ts    # BinaryPacketSerializer (v1/v2 バイナリ形式)
     │   │   │   └── index.ts
     │   │   ├── util/
     │   │   │   ├── EventEmitter.ts  # DOM/Node 非依存の最小実装
@@ -68,8 +68,12 @@ WebTCP/
     │   │   │   ├── VirtualStream.ts     # フル TCP セマンティクス（M2）
     │   │   │   ├── TransportLayer.ts
     │   │   │   └── index.ts
+    │   │   ├── naming/                  # M4 / #25
+    │   │   │   ├── url.ts               # parseWebTCPUrl / formatWebTCPUrl
+    │   │   │   ├── NameServer.ts        # A/CNAME・キャッシュ・問い合わせサービス
+    │   │   │   └── index.ts
     │   │   └── network/
-    │   │       ├── WebTCPNetwork.ts     # listen / connect / bootstrap (#27)
+    │   │       ├── WebTCPNetwork.ts     # listen / connect / connectURL / bootstrap
     │   │       └── index.ts
     │   └── adapters/
     │       ├── webrtc/
@@ -77,9 +81,11 @@ WebTCP/
     │       │   ├── BrowserWebRTCChannel.ts   # ブラウザ用（RTCPeerConnection）
     │       │   ├── NodeWebRTCChannel.ts      # Node 用（生成関数を注入）
     │       │   └── index.ts
-    │       ├── keys/                          # #28
-    │       │   ├── BrowserKeyManager.ts      # Web Crypto + IndexedDB（非抽出 CryptoKey）
-    │       │   ├── NodeKeyManager.ts         # node:crypto（Ed25519 KeyObject + subtle）
+    │       ├── keys/                          # #28 / M4 永続化
+    │       │   ├── BrowserKeyManager.ts      # IndexedDB 復元 + 署名チャレンジ
+    │       │   ├── NodeKeyManager.ts         # node:crypto + keyFile 永続化
+    │       │   ├── NodeIdentityStorage.ts    # 0600 / 原子的 PEM 保存
+    │       │   ├── nodeFs.ts                 # node:fs / path の遅延ロード
     │       │   ├── nodeCrypto.ts             # node:crypto の遅延ロード（ブラウザ非混入）
     │       │   ├── factory.ts                # createEd25519Verifier()
     │       │   └── index.ts
@@ -96,6 +102,11 @@ WebTCP/
         ├── keys.test.mjs             # 鍵導出・署名・検証・ディレクトリ
         ├── signed-network.test.mjs   # v2 署名付きネットワーク統合
         ├── browser-keys.test.mjs     # BrowserKeyManager（IndexedDB シム）
+        ├── naming-url.test.mjs       # webtcp:// URL パース・整形
+        ├── nameserver.test.mjs       # A/CNAME・キャッシュ・問い合わせ・境界
+        ├── nameserver-network.test.mjs # 実スタック名前解決 / マルチホップ
+        ├── identity-persistence.test.mjs # Node keyFile / Browser 復元 / 衝突
+        ├── lifecycle-regressions.test.mjs # 起動再試行 / end 状態 / ICE / cwnd (#38)
         ├── e2e.test.mjs
         ├── tcp-semantics.test.mjs
         ├── routing.test.mjs
@@ -135,7 +146,7 @@ WebTCP/
 
 ### 3.6 RPF を「直接隣接なら許可」に緩和する
 
-距離ベクトル収束前に最初のパケットが落ちないよう、経路未学習かつ直接隣接からの受信を許可している。マルチホップ強化（M4）で厳格化する。
+距離ベクトル収束前に最初のパケットが落ちないよう、経路未学習かつ直接隣接からの受信を許可している。本格なマルチホップ強化は M5 以降。M4 では RT_UPDATE 自体を直接隣接・sender 一致・正 TTL に限定する。
 なお署名検証（§10.2）は RPF より前に行うため、RPF の緩和がなりすましを許すことはない。
 
 ### 3.7 パケット種別は必ずフラグで判定する
@@ -223,8 +234,8 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
    マルチホップの中継ノードへも伝播させる。
 
 受信側は `KeyDirectory` に登録する前に **必ず指紋一致を検証**する。配布経路（ハブ・中継ノード）が
-信頼できなくても、指紋が一致しなければなりません。このため「分散ストレージに置く」方式も
-`IPublicKeyResolver` の差し替えだけで同じ安全性で導入できる（M4 以降）。
+信頼できなくても、指紋が一致しない鍵は登録しない。このため「分散ストレージに置く」方式も
+`IPublicKeyResolver` の差し替えだけで同じ安全性で導入できる（M5 以降）。
 
 **初回パケットの取りこぼし対策**。隣接確立直後は公開鍵がまだ届いていないことがあるため、
 `Ed25519PacketVerifier` は未知の署名者について `keyWaitTimeoutMs`（既定 5000 ms）だけ
@@ -235,11 +246,37 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 `WebTCPNetwork` に `keyManager`（または `Ed25519PacketVerifier`）を渡すと署名必須（`requireSignatures: true`）になり、
 渡さなければ v1 後方互換モードで動く。受信側は v1 / v2 の両方をデシリアライズできる。
 
+### 3.18 NameServer と `webtcp://` URL（M4 / #25）
+
+**配置**: `core/naming` は L7 アプリケーション層サービスとして `WebTCPNetwork` の公開 API のみに依存する。L3/L4 へ名前を漏らさない。新しいワイヤーフラグは追加せず、既存の署名付き `VirtualStream` 上で JSON 要求/応答を運ぶ。これにより v2 のセキュリティ境界をそのまま利用する。
+
+**解決モデル**: ローカル登録を権威データとし、クライアント側で反復解決する。サーバーはローカル登録のみを返し、他ノードへ再帰問い合わせしない。問い合わせ先は明示リゾルバ、隣接、経路表宛先から重複除外で選ぶ。CNAME はクライアントが最大 8 段辿り、訪問済み名前で拒否する。ノード間再帰を使わないため問い合わせ増幅とループを抑える。
+
+**キャッシュ**: 名前ごとの A/CNAME レコードを TTL 付きで保持し、最大 1024 件。ローカル登録が常に優先。リモートの名前応答は所有権証明ではないため、グローバルな名前衝突解決は M5 の `domain.global` / ブロックチェーンに委ねる。
+
+**URL**: `URL` コンストラクタは非特殊スキームのホスト/ポート解釈が環境依存になるため、`webtcp://` は明示的な正規表現と検証でパースする。ポートは必須、パス省略時は `/`。`connectURL()` は名前なら NameServer、NodeId なら直接 `connect()` へ振り分ける。パス/クエリ/フラグメントは接続先ルーティングには使わずアプリケーションへ返す。
+
+**並行性と終了**: 問い合わせは全体デッドラインとノード単位タイムアウトを持ち、AbortSignal で中断できる。ストリームはタイムアウト・中断・不正応答時に `destroy()` する。NameServer.close() は自身の listen ハンドラと問い合わせを停止し、ネットワークは閉じない。
+
+### 3.19 永続 NodeId と衝突検出（M4 / #36）
+
+- ブラウザ: IndexedDB 復元時に公開鍵指紋だけでなく、秘密鍵で署名したチャレンジを公開鍵で検証する。壊れた身元は黙って使わず再生成。`expectedNodeId` 不一致は `NodeIdCollisionError`。
+- Node.js: `NodeKeyManager.open({ keyFile })` は既存 PEM を復元、無ければ生成して `0600` で原子的に保存する。競合作成時は既存ファイルを読み直す。秘密鍵をネットワークやログへ出さない。
+- `KeyDirectory.setPublicKey()` は後方互換の同期 API だが、既存鍵と異なる場合は `NodeIdCollisionError` で拒否する。非同期経路は従来どおり `false`。
+- `WebTCPNetwork` はローカル鍵とディレクトリ内の既存鍵の衝突を起動前に検出する。
+
+### 3.20 RT_UPDATE の信頼境界と鍵伝播（M4 / #37）
+
+`RT_UPDATE` は直接隣接からのみ、外側 sender・payload sender・受信元が一致し、外側 destination が自ノードで、正の TTL・制御ポート 0 の場合のみ受理する。中継しない。`entries[].publicKey` に既知鍵を同梱して経路と一緒に伝播し、受信側は各鍵の指紋を検証して `KeyDirectory` へ登録する。これにより事前鍵共有なしのマルチホップ v2 通信を可能にする。送信側は `entries` / `withdrawals` を各 256 件以内的 `RT_UPDATE` に分割する。
+
 ## 4. クラス責務
 
 | クラス | 責務 | 依存 |
 | :--- | :--- | :--- |
-| `WebTCPNetwork` | 層の組み立て、公開 API（`listen`/`connect`/`bootstrap`）、ロガー伝播 | 全層 |
+| `WebTCPNetwork` | 層の組み立て、公開 API（`listen`/`connect`/`connectURL`/`bootstrap`）、ロガー伝播 | 全層 |
+| `NameServer` | A/CNAME ローカル登録、TTL キャッシュ、既知ノードへの反復問い合わせ | `WebTCPNetwork`, `Logger` |
+| `parseWebTCPUrl` / `formatWebTCPUrl` | `webtcp://` の厳格パースと正規整形 | `NodeId` 検証 |
+| `NodeIdentityStorage` | Node.js 秘密鍵 PEM の 0600 永続化・原子的作成 | `node:fs/promises` |
 | `LinkManager` | 近隣集合の維持、`WebTCPPacket` ⇄ バイト列、IChannel への送信 | `IChannel`, `IPacketSerializer`, `Logger` |
 | `RoutingLayer` | 宛先判定、転送、TTL、RPF、RT_UPDATE の振り分け、署名の付与と検証 | `LinkManager`, `RoutingTable`, `IPacketVerifier`, `KeyDirectory`, `Logger` |
 | `Ed25519PacketVerifier` | 署名の付与、署名対象バイト列の導出、指紋照合つき検証 | `Ed25519KeyManager`, `KeyDirectory`, `IPacketSerializer` |
@@ -340,8 +377,9 @@ Client (ESTABLISHED)                          Server (ESTABLISHED)
 - **統合（LoopbackChannel）**: 2 ノード E2E、ランダム ISN & 32 ビットラップアラウンド、160 KiB 自動分割・再結合、部分読み取り（`read` / `readExact`）、損失チャネルでの 3 重複 ACK Fast Retransmit + SACK、RTO タイムアウトと `cwnd` 縮小、Half-Close（`CLOSE_WAIT` 中の送信継続 / `allowHalfOpen: false` / 順序外 `FIN`）、3 ノードマルチホップ転送、経路撤回、`RT_UPDATE` の `lastSeen` 更新、TTL=1 境界、`bootstrap()` リトライと指数バックオフ。
 - **署名付きネットワーク（#28）**: 2 ノード v2 E2E、署名欠落パケットの拒否、リンク上での改ざん注入の破棄、
   3 ノードマルチホップでの各ホップ検証、`RT_UPDATE` による公開鍵配布。
-- **鍵管理アダプタ（#28）**: `NodeKeyManager`（PEM / シード復元・指紋照合）、`BrowserKeyManager`
-  （IndexedDB への非抽出 CryptoKey 保存・復元・再生成・IndexedDB 無しのセッション限定動作。テストは `FakeIndexedDB` シムを使用）。
+- **鍵管理アダプタ（#28 / M4）**: `NodeKeyManager`（PEM / シード復元・指紋照合・keyFile 永続化・衝突）、`BrowserKeyManager`
+  （IndexedDB への非抽出 CryptoKey 保存・復元・署名チャレンジ・再生成・IndexedDB 無しのセッション限定動作。テストは `FakeIndexedDB` シムを使用）。
+- **名前解決（M4 / #25）**: URL 正常/異常、A/CNAME、ループ・深度上限、TTL キャッシュ、ローカル優先、問い合わせタイムアウト/中断、実スタック 2 ノード解決、事前鍵共有なし 3 ノードの名前解決と URL 接続。
 - **アダプタ**: `SignalingAdapterHub`、`EntranceSearcherAdapterHub`（`exclude` 対応）、`examples/server.mjs` の配信・API 検証。
 - **WebRTC 経路（FakeRTCPeerConnection）**: Offer/Answer/DataChannel、動的 TURN 資格情報（`iceServersProvider`）、ICE 障害時の自動 ICE 再起動と資格情報更新、再起動上限超過時の切断、同時接続 Glare 解決。
 - **実ブラウザ検証**:
@@ -359,12 +397,13 @@ Client (ESTABLISHED)                          Server (ESTABLISHED)
 | `LinkManager` のダミー `IChannel` | `IChannel` 実装の注入 | 実通信不可だったため。 |
 | `WebTCPNetwork(adapter, keyManager)` | `WebTCPNetwork(options)` | オプション形式への統一。 |
 
-## 10. 既知の制約（M3 時点）
+## 10. 既知の制約（M4 時点）
 
 - **鍵管理を渡さない場合は v1（署名なし）で動く**: 既定の `WebTCPNetwork(options)` は後方互換のため `NullPacketVerifier`。
   署名必須にするには `keyManager` または `Ed25519PacketVerifier` を注入する（`createBrowserNetwork({ keyManager })` など）。
 - **Ed25519 非対応ブラウザ**: Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+。デモは v1 へ自動フォールバックする。
 - **鍵ローテーション・E2E 暗号化・リプレイ検知の強化は未実装**: `specification.md` §10.7 を参照。
-- **RPF は緩和版（M4）**: 経路未学習の直接隣接からの受信を許可している。
-- **名前解決・分散ドメインは未実装（M4–M5 / #25）**: `NameServer`、`webtcp://` URL、`domain.global`、ブロックチェーン連携。
+- **RPF は緩和版**: 経路未学習の直接隣接からの受信を許可している。本格なマルチホップ強化は M5 以降。
+- **名前解決はローカル信頼モデル（M4）**: `NameServer` と `webtcp://` は実装済みだが、グローバルな名前所有権・`domain.global`・ブロックチェーン連携は M5（#25）。
+- **Node.js 鍵ファイルは平文 PEM**: `0600` で保存するが、ディスク暗号化やバックアップは利用者の責任。
 - **Node.js 向け WebRTC 実装は非同梱**: `NodeWebRTCChannel` へ利用者が注入する設計。
