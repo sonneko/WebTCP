@@ -35,24 +35,32 @@ node examples/server.mjs
 3. テキスト送信や「80 KiB 分割送信テスト」で往復通信を確認
 
 1 タブで即座に実 WebRTC 検証したい場合は `http://localhost:8787/examples/demo/?selftest=1` を開いてください。
+デモは既定で **Ed25519 署名（プロトコル v2）** を使います。署名なし（v1）で比較したい場合は `?insecure=1` を付けます。
 
 ## サーバー側（待ち受ける）
 
 ```ts
 import {
+  BrowserKeyManager,
   SignalingAdapterHub,
   createBrowserNetwork,
   createLogger,
 } from '@sonneko/webtcp-tunneler';
 
 const logger = createLogger({ level: 'info' });
+
+// Ed25519 識別子（IndexedDB に非抽出 CryptoKey として保存。NodeId は公開鍵の指紋）
+const keys = await BrowserKeyManager.open({ logger });
+
 const signaling = new SignalingAdapterHub({
   url: 'https://your-signaling-hub.example.com',
+  nodeId: keys.nodeId,
   logger,
 });
 
 const network = createBrowserNetwork({
   signaling,
+  keyManager: keys,  // ← プロトコル v2・署名必須
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   logger,
 });
@@ -76,14 +84,16 @@ network.listen(8080, (stream) => {
 
 ```ts
 import {
+  BrowserKeyManager,
   EntranceSearcherAdapterHub,
   SignalingAdapterHub,
   createBrowserNetwork,
 } from '@sonneko/webtcp-tunneler';
 
 const hubUrl = 'https://your-signaling-hub.example.com';
-const signaling = new SignalingAdapterHub({ url: hubUrl });
-const network = createBrowserNetwork({ signaling });
+const keys = await BrowserKeyManager.open();
+const signaling = new SignalingAdapterHub({ url: hubUrl, nodeId: keys.nodeId });
+const network = createBrowserNetwork({ signaling, keyManager: keys });
 await network.start();
 
 // 自身を除外して接続候補を探索し、指数バックオフ付きで自動リンク確立

@@ -1,11 +1,17 @@
 /**
- * WebTCP M2 デモのクライアントサイド。
+ * WebTCP M3 デモのクライアントサイド。
  *
  * `webtcp_jslib` をビルドした ESM をそのまま import している（バンドラ不要）。
  * 事前に `npm run build`（webtcp_jslib）を実行しておくこと。
  *
+ * 既定で Ed25519 署名（プロトコル v2 / #28）が有効になる。
+ * 秘密鍵は IndexedDB に非抽出 CryptoKey として保存され、NodeId は公開鍵の指紋になる。
+ * Web Crypto の Ed25519 が使えないブラウザでは自動的に v1（署名なし）へフォールバックする。
+ *
  * クエリパラメータ:
  * - `?stun=1`: パブリック STUN サーバー例（EXAMPLE_STUN_ICE_SERVERS）を有効化
+ * - `?insecure=1`: Ed25519 署名を無効化して v1 で動作（比較・デバッグ用）
+ * - `?e2e=1`: テスト用の一時データベース名を使う（Playwright のタブ間で同一鍵を共有しない）
  * - `?selftest=1`: 起動時に同一タブ内の実 WebRTC 2 ピア自己チェックを自動実行
  * - `?role=server&autostart=1`: サーバーとしてポート 8080 で自動待ち受け
  * - `?role=client&autostart=1`: クライアントとして自動探索・接続・検証を実行
@@ -14,8 +20,11 @@ import {
     EXAMPLE_STUN_ICE_SERVERS,
     EntranceSearcherAdapterHub,
     SignalingAdapterHub,
+    BrowserKeyManager,
+    KeyDirectory,
     createBrowserNetwork,
     createLogger,
+    deriveNodeId,
 } from '../../webtcp_jslib/dist/index.js';
 
 const SERVER_PORT = 8080;
@@ -27,6 +36,7 @@ const params = new URLSearchParams(location.search);
 
 const els = {
     nodeId: document.getElementById('node-id'),
+    identity: document.getElementById('identity-status'),
     logLevelSelect: document.getElementById('log-level-select'),
     icePresetSelect: document.getElementById('ice-preset-select'),
     iceCustomWrap: document.getElementById('ice-custom-wrap'),
@@ -59,6 +69,48 @@ let clientStream = null;
 let listening = false;
 let statsTimer = null;
 let currentLogger = createLogger({ level: 'warn' });
+/** 保存済みの Ed25519 鍵管理（タブ内で使い回す）。 */
+let identity = null;
+/** Ed25519 の利用可否（初回判定後にキャッシュ）。 */
+let identityLoadPromise = null;
+
+const SIGNED = params.get('insecure') !== '1';
+
+/**
+ * Ed25519 鍵管理を読み込む（IndexedDB から復元、無ければ生成）。
+ * 利用できないブラウザでは null を返し、v1 へフォールバックする。
+ */
+function loadIdentity() {
+    if (!identityLoadPromise) {
+        identityLoadPromise = (async () => {
+            if (!SIGNED) return null;
+            // Playwright の全タブが同一オリジン（同一 IndexedDB）を共有するため、
+            // E2E モードではタブごとに別の DB 名を使い、独立した鍵指紋を持たせる
+            const databaseName =
+                params.get('e2e') === '1'
+                    ? `webtcp-keys-e2e-${Math.random().toString(16).slice(2)}`
+                    : 'webtcp-keys';
+            try {
+                identity = await BrowserKeyManager.open({
+                    databaseName,
+                    logger: currentLogger,
+                });
+                return identity;
+            } catch (error) {
+                currentLogger.warn('Ed25519 unavailable; falling back to unsigned v1:', error);
+                return null;
+            }
+        })();
+    }
+    return identityLoadPromise;
+}
+
+function describeIdentity(keys) {
+    if (!keys) {
+        return 'Ed25519: 無効（v1 署名なしモード）';
+    }
+    return `Ed25519: 有効（プロトコル v2・署名必須 / 公開鍵 ${keys.nodeId.slice(0, 8)}…）`;
+}
 
 function log(element, message) {
     const timestamp = new Date().toLocaleTimeString();
@@ -119,20 +171,28 @@ async function initNetwork() {
     );
 
     try {
+        const keys = await loadIdentity();
+
         signaling = new SignalingAdapterHub({
             url: location.origin,
             pollIntervalMs: 250,
             logger: currentLogger,
+            ...(keys ? { nodeId: keys.nodeId } : {}),
         });
 
         network = createBrowserNetwork({
             signaling,
             iceServers,
             logger: currentLogger,
+            ...(keys ? { keyManager: keys } : {}),
         });
 
         await network.start();
         els.nodeId.textContent = network.localNodeId;
+        if (els.identity) {
+            els.identity.textContent = describeIdentity(keys);
+            els.identity.className = `status ${keys ? 'ok' : 'warn'}`;
+        }
         return true;
     } catch (error) {
         currentLogger.error('Failed to start WebTCPNetwork:', error);
@@ -478,6 +538,15 @@ function stopStatsPolling() {
 // 実ブラウザ自己チェック（同一ページ内で 2 つの実 RTCPeerConnection を検証）
 // =========================================================================
 
+async function waitForCondition(predicate, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('condition not met within the timeout');
+}
+
 function addSelfTestRow(label, status = 'run', detail = '') {
     const li = document.createElement('li');
     li.innerHTML = `<span class="badge ${status}">${status.toUpperCase()}</span><span>${label}</span>${detail ? ` — <span class="status">${detail}</span>` : ''}`;
@@ -505,10 +574,50 @@ async function runSelfTest() {
     })();
 
     const logger = createLogger({ level: els.logLevelSelect.value });
-    const sigServer = new SignalingAdapterHub({ url: location.origin, pollIntervalMs: 120, logger });
-    const sigClient = new SignalingAdapterHub({ url: location.origin, pollIntervalMs: 120, logger });
-    const netServer = createBrowserNetwork({ signaling: sigServer, iceServers, logger });
-    const netClient = createBrowserNetwork({ signaling: sigClient, iceServers, logger });
+
+    // 同一タブ内で 2 つの独立した Ed25519 識別子を作る（#28）
+    const makeIdentity = async () => {
+        if (!SIGNED) return null;
+        try {
+            return await BrowserKeyManager.open({
+                databaseName: `webtcp-keys-selftest-${Math.random().toString(16).slice(2)}`,
+                logger,
+            });
+        } catch (error) {
+            logger.warn('Ed25519 unavailable; self-test falls back to v1:', error);
+            return null;
+        }
+    };
+    const keysServer = await makeIdentity();
+    const keysClient = await makeIdentity();
+    const keyDirectory = keysServer || keysClient ? new KeyDirectory({ logger }) : null;
+
+    const buildNetwork = (signaling, keys) => {
+        const options = { signaling, iceServers, logger };
+        if (keys && keyDirectory) {
+            return createBrowserNetwork({
+                ...options,
+                keyManager: keys,
+                keyDirectory,
+            });
+        }
+        return createBrowserNetwork(options);
+    };
+
+    const sigServer = new SignalingAdapterHub({
+        url: location.origin,
+        pollIntervalMs: 120,
+        logger,
+        ...(keysServer ? { nodeId: keysServer.nodeId } : {}),
+    });
+    const sigClient = new SignalingAdapterHub({
+        url: location.origin,
+        pollIntervalMs: 120,
+        logger,
+        ...(keysClient ? { nodeId: keysClient.nodeId } : {}),
+    });
+    const netServer = buildNetwork(sigServer, keysServer);
+    const netClient = buildNetwork(sigClient, keysClient);
 
     const runStep = async (name, fn) => {
         const li = addSelfTestRow(name, 'run');
@@ -555,6 +664,24 @@ async function runSelfTest() {
                 throw new Error('bootstrap がサーバーノードへ接続できませんでした');
             }
             return `peer=${netServer.localNodeId.slice(0, 8)}…`;
+        });
+
+        // 1.5 Ed25519 署名と鍵指紋（#28）
+        await runStep('1b. Ed25519 署名検証 & NodeId の鍵指紋一致（プロトコル v2）', async () => {
+            if (!keysServer || !keysClient) {
+                return 'Ed25519 非対応のためスキップ（v1）';
+            }
+            const derived = await deriveNodeId(keysServer.publicKey);
+            if (derived !== keysServer.nodeId) {
+                throw new Error('NodeId が公開鍵の指紋と一致しません');
+            }
+            await waitForCondition(
+                () =>
+                    keyDirectory.get(keysClient.nodeId) !== undefined &&
+                    keyDirectory.get(keysServer.nodeId) !== undefined,
+                3000,
+            );
+            return `fingerprint=${keysServer.nodeId.slice(0, 8)}…`;
         });
 
         // 2. 仮想 TCP 接続（ランダム ISN & ESTABLISHED）

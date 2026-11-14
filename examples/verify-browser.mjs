@@ -13,7 +13,10 @@
  *   1. 2 つの実ブラウザタブ（Tab A: サーバー、Tab B: クライアント）での UI 操作による
  *      実 WebRTC 接続・テキストエコー・80 KiB 大容量自動分割往復・Half-Close 切断
  *   2. `?role=server&autostart=1` + `?role=client&autostart=1` の 2 タブ自動検証
- *   3. `?selftest=1` の同一タブ 2 ピア自己チェック（5 項目）
+ *   3. `?selftest=1` の同一タブ 2 ピア自己チェック（Ed25519 署名検証を含む）
+ *
+ * M3（#28）以降、デモは既定で Ed25519 署名（プロトコル v2）を使う。
+ * ブラウザが Web Crypto の Ed25519 を持たない場合は v1 にフォールバックする。
  */
 
 import { createDemoServer } from './server.mjs';
@@ -53,6 +56,13 @@ async function withDemoServer(fn) {
     }
 }
 
+/** 2 つの NodeId が異なることを確認する（鍵指紋がタブごとに独立していることの検証）。 */
+function assertDistinct(nodeIdA, nodeIdB) {
+    if (nodeIdA === nodeIdB) {
+        throw new Error(`Both tabs share the same NodeId (${nodeIdA}); Ed25519 identities were not independent`);
+    }
+}
+
 async function waitForEntrance(origin, expectedNodeId, timeoutMs = 5000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -84,7 +94,8 @@ try {
         pageA.on('pageerror', (err) => pageErrors.push(`TabA: ${err.message}`));
         pageB.on('pageerror', (err) => pageErrors.push(`TabB: ${err.message}`));
 
-        await Promise.all([pageA.goto(baseUrl), pageB.goto(baseUrl)]);
+        // タブごとに独立した Ed25519 識別子を作る（鍵指紋が NodeId になる）
+        await Promise.all([pageA.goto(`${baseUrl}?e2e=1`), pageB.goto(`${baseUrl}?e2e=1`)]);
 
         // 両タブの NodeId 初期化完了を待つ
         await Promise.all([
@@ -98,7 +109,17 @@ try {
 
         const nodeIdA = (await pageA.locator('#node-id').textContent()).trim();
         const nodeIdB = (await pageB.locator('#node-id').textContent()).trim();
+        assertDistinct(nodeIdA, nodeIdB);
         console.log(`[verify-browser]   Tab A=${nodeIdA.slice(0, 8)}…, Tab B=${nodeIdB.slice(0, 8)}…`);
+
+        const identityA = (await pageA.locator('#identity-status').textContent()).trim();
+        const identityB = (await pageB.locator('#identity-status').textContent()).trim();
+        console.log(`[verify-browser]   Tab A: ${identityA} / Tab B: ${identityB}`);
+        if (!identityA.includes('Ed25519: 有効')) {
+            console.warn(
+                '[verify-browser]   WARN: このブラウザは Web Crypto の Ed25519 非対応のため v1 で検証しています',
+            );
+        }
 
         // Tab A の初回ポーリングがハブへ登録されるのを待つ
         await waitForEntrance(origin, nodeIdA);
@@ -167,14 +188,14 @@ try {
         const srvPage = await ctx2.newPage();
         const cliPage = await ctx2.newPage();
 
-        await srvPage.goto(`${baseUrl}?role=server&autostart=1`);
+        await srvPage.goto(`${baseUrl}?e2e=1&role=server&autostart=1`);
         await srvPage.waitForFunction(() =>
             document.getElementById('listen-status')?.textContent?.includes('待ち受け中'),
         );
         const srvNodeId = (await srvPage.locator('#node-id').textContent()).trim();
         await waitForEntrance(origin, srvNodeId);
 
-        await cliPage.goto(`${baseUrl}?role=client&autostart=1`);
+        await cliPage.goto(`${baseUrl}?e2e=1&role=client&autostart=1`);
         await cliPage.waitForFunction(
             () => document.documentElement.dataset.twotab !== undefined,
             undefined,
