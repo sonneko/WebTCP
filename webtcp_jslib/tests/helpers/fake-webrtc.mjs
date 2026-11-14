@@ -1,9 +1,9 @@
 /**
  * テスト用の最小 RTCPeerConnection / RTCDataChannel。
  *
- * 実際の WebRTC スタック（SDP / ICE / SCTP）は使わず、Offer/Answer の受け渡しと
- * データチャネルの開設・メッセージ配送だけを模倣する。
- * `WebRTCChannel` のシグナリング手順とデータ経路を Node.js 上で検証するために使う。
+ * 実際の WebRTC スタック（SDP / ICE / SCTP）は使わず、Offer/Answer の受け渡し、
+ * ICE 再起動の再ネゴシエーション、`setConfiguration`、およびデータチャネルの開設・
+ * メッセージ配送を模倣する。
  */
 
 const offers = new Map();
@@ -59,15 +59,33 @@ class FakeDataChannel {
 }
 
 export class FakeRTCPeerConnection {
-    constructor() {
+    constructor(config = {}) {
+        this.configuration = config;
+        this.configurations = [config];
         this.localDescription = null;
         this.remoteDescription = null;
         this.connectionState = 'new';
+        this.iceConnectionState = 'new';
         this.onicecandidate = null;
         this.onconnectionstatechange = null;
+        this.oniceconnectionstatechange = null;
         this.ondatachannel = null;
         this.localChannel = null;
+        this.remotePeer = null;
         this.remoteOfferId = null;
+        this.restartIceCalls = 0;
+        this.iceRestartOffersCreated = 0;
+        /** ICE 再起動が成功するか（テストで失敗シナリオを再現したい場合に false）。 */
+        this.failIceRestarts = false;
+    }
+
+    setConfiguration(config) {
+        this.configuration = config;
+        this.configurations.push(config);
+    }
+
+    restartIce() {
+        this.restartIceCalls += 1;
     }
 
     createDataChannel(label) {
@@ -75,10 +93,14 @@ export class FakeRTCPeerConnection {
         return this.localChannel;
     }
 
-    async createOffer() {
+    async createOffer(options = {}) {
         const offerId = `offer-${nextId++}`;
         this.offerId = offerId;
-        return { type: 'offer', sdp: JSON.stringify({ offerId }) };
+        const iceRestart = Boolean(options?.iceRestart);
+        if (iceRestart) {
+            this.iceRestartOffersCreated += 1;
+        }
+        return { type: 'offer', sdp: JSON.stringify({ offerId, iceRestart }) };
     }
 
     async createAnswer() {
@@ -98,6 +120,7 @@ export class FakeRTCPeerConnection {
 
             const entry = offers.get(parsed.offerId) ?? {};
             entry.answerer = this;
+            entry.iceRestart = Boolean(parsed.iceRestart);
             offers.set(parsed.offerId, entry);
             return;
         }
@@ -107,16 +130,26 @@ export class FakeRTCPeerConnection {
         if (!entry?.answerer) {
             throw new Error('no answerer registered for this offer');
         }
+
+        if (entry.iceRestart) {
+            this.completeIceRestart(entry.answerer);
+            return;
+        }
+
         this.connectTo(entry.answerer);
     }
 
     async addIceCandidate() {
-        // ICE は模倣しない
+        // ICE candidate 配送は省略
     }
 
     connectTo(answerer) {
+        this.remotePeer = answerer;
+        answerer.remotePeer = this;
         this.connectionState = 'connected';
+        this.iceConnectionState = 'connected';
         answerer.connectionState = 'connected';
+        answerer.iceConnectionState = 'connected';
 
         const offererChannel = this.localChannel;
         const answererChannel = new FakeDataChannel(offererChannel?.label ?? 'webtcp');
@@ -126,6 +159,8 @@ export class FakeRTCPeerConnection {
         }
 
         setTimeout(() => {
+            this.oniceconnectionstatechange?.({});
+            answerer.oniceconnectionstatechange?.({});
             this.onconnectionstatechange?.({});
             answerer.onconnectionstatechange?.({});
 
@@ -138,9 +173,38 @@ export class FakeRTCPeerConnection {
         }, 0);
     }
 
+    completeIceRestart(answerer) {
+        if (this.failIceRestarts) {
+            setTimeout(() => {
+                this.iceConnectionState = 'failed';
+                this.oniceconnectionstatechange?.({});
+            }, 0);
+            return;
+        }
+
+        this.connectionState = 'connected';
+        this.iceConnectionState = 'connected';
+        answerer.connectionState = 'connected';
+        answerer.iceConnectionState = 'connected';
+
+        setTimeout(() => {
+            this.oniceconnectionstatechange?.({});
+            answerer.oniceconnectionstatechange?.({});
+            this.onconnectionstatechange?.({});
+            answerer.onconnectionstatechange?.({});
+        }, 0);
+    }
+
+    /** テスト用: ICE 障害を発生させる。 */
+    simulateIceState(iceState) {
+        this.iceConnectionState = iceState;
+        this.oniceconnectionstatechange?.({});
+    }
+
     close() {
         const wasConnected = this.connectionState !== 'new' && this.connectionState !== 'closed';
         this.connectionState = 'closed';
+        this.iceConnectionState = 'closed';
         this.localChannel?.close();
         if (wasConnected) {
             setTimeout(() => this.onconnectionstatechange?.({}), 0);
