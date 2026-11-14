@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WebTCP — end-to-end デモ（M2）</title>
+    <title>WebTCP — end-to-end デモ（M4 / NameServer・webtcp://）</title>
     <style>
         :root {
             color-scheme: dark;
@@ -91,11 +91,11 @@
     </style>
 </head>
 <body>
-    <h1>WebTCP — end-to-end デモ（M3 / Ed25519 署名）</h1>
+    <h1>WebTCP — end-to-end デモ（M4 / NameServer・webtcp:// URL）</h1>
     <p class="lead">
         このページを 2 つのタブ（または 2 つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
         下部の「自己チェック」では 1 タブ内で 2 つの実 <code>RTCPeerConnection</code> を使い、自動ブートストラップ・大容量自動分割・Half-Close を一括検証できます。
-        パケットは既定で <strong>Ed25519 署名（プロトコル v2）</strong> され、NodeId は公開鍵の指紋です（秘密鍵は IndexedDB に非抽出 CryptoKey として保存）。
+        パケットは既定で <strong>Ed25519 署名（プロトコル v2）</strong> され、NodeId は公開鍵の指紋です（秘密鍵は IndexedDB に非抽出 CryptoKey として保存）。M4 では <code>NameServer</code> による名前解決と <code>webtcp://</code> URL 接続も試せます。
     </p>
     <div class="meta mono">
         <div>NodeId: <span id="node-id">(起動中...)</span></div>
@@ -139,7 +139,7 @@
                 <span id="listen-status" class="status">未開始</span>
             </div>
             <pre id="server-log" class="log"></pre>
-            <div class="hint">テキストは <code>echo:...</code> を返し、大容量バイナリ（<code>BIG:</code> ヘッダ）はそのまま折り返します。Half-Close（<code>end</code>）受信時は応答後に閉じます。</div>
+            <div class="hint">テキストは <code>echo:...</code> を返し、大容量バイナリ（<code>BIG!</code> ヘッダ）はそのまま折り返します。Half-Close（<code>end</code>）受信時は応答後に閉じます。待ち受け開始時に <code>demo-service</code>（A）と <code>demo-alias</code>（CNAME）を NameServer に登録します。</div>
         </section>
 
         <section class="panel">
@@ -150,6 +150,11 @@
                 <select id="peer-select" style="flex: 1; min-width: 150px;"></select>
                 <button id="connect-btn" class="primary">接続</button>
                 <button id="disconnect-btn" disabled>切断</button>
+            </div>
+            <div class="row">
+                <input id="url-input" type="text" placeholder="webtcp://demo-service:8080/" value="webtcp://demo-service:8080/" />
+                <button id="connect-url-btn">URL で接続</button>
+                <button id="resolve-name-btn">名前を解決</button>
             </div>
             <div class="row">
                 <span id="client-status" class="status">未接続</span>

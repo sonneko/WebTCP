@@ -1,10 +1,11 @@
 /**
- * WebTCP M3 デモのクライアントサイド。
+ * WebTCP M4 デモのクライアントサイド。
  *
  * `webtcp_jslib` をビルドした ESM をそのまま import している（バンドラ不要）。
  * 事前に `npm run build`（webtcp_jslib）を実行しておくこと。
  *
  * 既定で Ed25519 署名（プロトコル v2 / #28）が有効になる。
+ * M4 では NameServer（A/CNAME）と webtcp:// URL 接続のデモを含む。
  * 秘密鍵は IndexedDB に非抽出 CryptoKey として保存され、NodeId は公開鍵の指紋になる。
  * Web Crypto の Ed25519 が使えないブラウザでは自動的に v1（署名なし）へフォールバックする。
  *
@@ -25,9 +26,13 @@ import {
     createBrowserNetwork,
     createLogger,
     deriveNodeId,
+    NameServer,
+    parseWebTCPUrl,
 } from '../../webtcp_jslib/dist/index.js';
 
 const SERVER_PORT = 8080;
+const DEMO_SERVICE_NAME = 'demo-service';
+const DEMO_ALIAS_NAME = 'demo-alias';
 const LARGE_TEST_BYTES = 80 * 1024 + 123; // > 60 KiB
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -51,6 +56,9 @@ const els = {
     bootstrapBtn: document.getElementById('bootstrap-btn'),
     peerSelect: document.getElementById('peer-select'),
     connectBtn: document.getElementById('connect-btn'),
+    urlInput: document.getElementById('url-input'),
+    connectUrlBtn: document.getElementById('connect-url-btn'),
+    resolveNameBtn: document.getElementById('resolve-name-btn'),
     disconnectBtn: document.getElementById('disconnect-btn'),
     clientStatus: document.getElementById('client-status'),
     streamStats: document.getElementById('stream-stats'),
@@ -64,6 +72,7 @@ const els = {
 };
 
 let network = null;
+let nameServer = null;
 let signaling = null;
 let clientStream = null;
 let listening = false;
@@ -140,6 +149,10 @@ async function initNetwork() {
         clientStream.destroy();
         clientStream = null;
     }
+    if (nameServer) {
+        nameServer.close();
+        nameServer = null;
+    }
     if (network) {
         network.close();
         network = null;
@@ -188,6 +201,8 @@ async function initNetwork() {
         });
 
         await network.start();
+        nameServer = new NameServer(network, { logger: currentLogger });
+        nameServer.listen();
         els.nodeId.textContent = network.localNodeId;
         if (els.identity) {
             els.identity.textContent = describeIdentity(keys);
@@ -294,6 +309,11 @@ function onListen() {
             stream.on('error', (error) => log(els.serverLog, `エラー: ${error.message}`));
         });
 
+        if (nameServer) {
+            nameServer.registerA(DEMO_SERVICE_NAME, network.localNodeId);
+            nameServer.registerCNAME(DEMO_ALIAS_NAME, DEMO_SERVICE_NAME);
+            log(els.serverLog, `NameServer 登録: ${DEMO_SERVICE_NAME} A -> ${network.localNodeId.slice(0, 8)}… / ${DEMO_ALIAS_NAME} CNAME -> ${DEMO_SERVICE_NAME}`);
+        }
         listening = true;
         els.listenBtn.disabled = true;
         setStatus(els.listenStatus, `待ち受け中 (port ${SERVER_PORT})`, 'ok');
@@ -396,63 +416,100 @@ async function onConnect() {
     try {
         clientStream = await network.connect(targetId, SERVER_PORT);
         connected = true;
-        setStatus(els.clientStatus, '接続済み (ESTABLISHED)', 'ok');
-        log(
-            els.clientLog,
-            `仮想TCPセッション確立 (remote=${targetId.slice(0, 8)}…, ISN=${clientStream.initialSendSeqNum})`,
-        );
-
-        clientStream.on('data', (data) => {
-            if (pendingLargeTest) {
-                pendingLargeTest.chunks.push(data);
-                pendingLargeTest.received += data.byteLength;
-                if (pendingLargeTest.received >= pendingLargeTest.expected.byteLength) {
-                    const merged = concatBytes(pendingLargeTest.chunks).subarray(
-                        0,
-                        pendingLargeTest.expected.byteLength,
-                    );
-                    const ok = bytesEqual(merged, pendingLargeTest.expected);
-                    const elapsed = Date.now() - pendingLargeTest.startedAt;
-                    const testRef = pendingLargeTest;
-                    pendingLargeTest = null;
-                    log(
-                        els.clientLog,
-                        ok
-                            ? `大容量エコー検証 PASS: ${merged.byteLength} B 一致 (${elapsed} ms)`
-                            : `大容量エコー検証 FAIL: データ不一致`,
-                    );
-                    testRef.resolve(ok);
-                }
-                return;
-            }
-            log(els.clientLog, `受信: ${decoder.decode(data)}`);
-        });
-
-        clientStream.on('end', () => {
-            log(els.clientLog, '相手から EOF (FIN) を受信しました');
-        });
-
-        clientStream.on('close', () => {
-            setStatus(els.clientStatus, '切断されました');
-            setConnectedUi(false);
-            stopStatsPolling();
-            clientStream = null;
-        });
-
-        clientStream.on('error', (error) => {
-            log(els.clientLog, `エラー: ${error.message}`);
-        });
-
-        setConnectedUi(true);
-        startStatsPolling();
+        attachClientStream(clientStream, `remote=${targetId.slice(0, 8)}…`);
     } catch (error) {
         setStatus(els.clientStatus, '接続に失敗しました', 'err');
         log(els.clientLog, `接続失敗: ${error.message}`);
     } finally {
-        // 接続成功時は connectBtn を無効のまま保つ（#32 バグ修正）
         if (!connected) {
             els.connectBtn.disabled = false;
         }
+    }
+}
+
+function attachClientStream(stream, label) {
+    setStatus(els.clientStatus, '接続済み (ESTABLISHED)', 'ok');
+    log(els.clientLog, `仮想TCPセッション確立 (${label}, ISN=${stream.initialSendSeqNum})`);
+    stream.on('data', (data) => {
+        if (pendingLargeTest) {
+            pendingLargeTest.chunks.push(data);
+            pendingLargeTest.received += data.byteLength;
+            if (pendingLargeTest.received >= pendingLargeTest.expected.byteLength) {
+                const merged = concatBytes(pendingLargeTest.chunks).subarray(
+                    0,
+                    pendingLargeTest.expected.byteLength,
+                );
+                const ok = bytesEqual(merged, pendingLargeTest.expected);
+                const elapsed = Date.now() - pendingLargeTest.startedAt;
+                const testRef = pendingLargeTest;
+                pendingLargeTest = null;
+                log(
+                    els.clientLog,
+                    ok
+                        ? `大容量エコー検証 PASS: ${merged.byteLength} B 一致 (${elapsed} ms)`
+                        : `大容量エコー検証 FAIL: データ不一致`,
+                );
+                testRef.resolve(ok);
+            }
+            return;
+        }
+        log(els.clientLog, `受信: ${decoder.decode(data)}`);
+    });
+
+    stream.on('end', () => {
+        log(els.clientLog, '相手から EOF (FIN) を受信しました');
+    });
+
+    stream.on('close', () => {
+        setStatus(els.clientStatus, '切断されました');
+        setConnectedUi(false);
+        stopStatsPolling();
+        clientStream = null;
+    });
+
+    stream.on('error', (error) => {
+        log(els.clientLog, `エラー: ${error.message}`);
+    });
+
+    setConnectedUi(true);
+    startStatsPolling();
+}
+
+async function onConnectURL() {
+    if (!network || !nameServer) return;
+    const url = els.urlInput.value.trim();
+    try {
+        const parsed = parseWebTCPUrl(url);
+        if (clientStream) {
+            clientStream.destroy();
+            clientStream = null;
+        }
+        els.connectUrlBtn.disabled = true;
+        setStatus(els.clientStatus, `URL 接続中: ${parsed.host}:${parsed.port}`);
+        const stream = await network.connectURL(url, { nameServer });
+        clientStream = stream;
+        attachClientStream(stream, `url=${parsed.host}:${parsed.port}${parsed.path}`);
+        log(els.clientLog, `webtcp:// 接続成功 (path=${parsed.path}, search=${parsed.search || '-'}, hash=${parsed.hash || '-'})`);
+    } catch (error) {
+        setStatus(els.clientStatus, 'URL 接続に失敗しました', 'err');
+        log(els.clientLog, `URL 接続失敗: ${error.message}`);
+    } finally {
+        els.connectUrlBtn.disabled = false;
+    }
+}
+
+async function onResolveName() {
+    if (!nameServer) return;
+    const url = els.urlInput.value.trim();
+    try {
+        const parsed = parseWebTCPUrl(url);
+        const name = parsed.name ?? parsed.host;
+        const result = await nameServer.resolve(name);
+        log(els.clientLog, `名前解決: ${name} -> ${result.nodeId} (source=${result.source}, ttl=${result.ttlMs}ms, chain=${result.chain.join(' -> ')})`);
+        setStatus(els.clientStatus, `解決済み: ${name} -> ${result.nodeId.slice(0, 8)}…`, 'ok');
+    } catch (error) {
+        setStatus(els.clientStatus, '名前解決に失敗しました', 'err');
+        log(els.clientLog, `名前解決失敗: ${error.message}`);
     }
 }
 
@@ -641,6 +698,11 @@ async function runSelfTest() {
 
         let serverStream = null;
         let serverSawEnd = false;
+        const nsServer = new NameServer(netServer, { logger });
+        const nsClient = new NameServer(netClient, { logger, queryTimeoutMs: 1500, resolveTimeoutMs: 4000 });
+        nsServer.registerA(DEMO_SERVICE_NAME, netServer.localNodeId);
+        nsServer.registerCNAME(DEMO_ALIAS_NAME, DEMO_SERVICE_NAME);
+        nsServer.listen();
 
         netServer.listen(SERVER_PORT, (stream) => {
             serverStream = stream;
@@ -684,10 +746,23 @@ async function runSelfTest() {
             return `fingerprint=${keysServer.nodeId.slice(0, 8)}…`;
         });
 
-        // 2. 仮想 TCP 接続（ランダム ISN & ESTABLISHED）
+        // 1c. NameServer 名前解決（M4 / #25）
+        await runStep('1c. NameServer 名前解決 (A/CNAME) と webtcp:// URL パース', async () => {
+            const resolved = await nsClient.resolve(DEMO_ALIAS_NAME);
+            if (resolved.nodeId !== netServer.localNodeId) {
+                throw new Error(`名前解決が不一致: ${resolved.nodeId}`);
+            }
+            const parsed = parseWebTCPUrl(`webtcp://${DEMO_SERVICE_NAME}:${SERVER_PORT}/hello?x=1#frag`);
+            if (parsed.name !== DEMO_SERVICE_NAME || parsed.port !== SERVER_PORT || parsed.path !== '/hello') {
+                throw new Error('webtcp:// URL パースが不正です');
+            }
+            return `${DEMO_ALIAS_NAME} -> ${resolved.nodeId.slice(0, 8)}… (${resolved.source})`;
+        });
+
+        // 2. 仮想 TCP 接続（ランダム ISN & ESTABLISHED）を webtcp:// URL で確立
         let client = null;
-        await runStep('2. 仮想 TCP 3 ウェイハンドシェイク & ランダム ISN', async () => {
-            client = await netClient.connect(netServer.localNodeId, SERVER_PORT);
+        await runStep('2. webtcp:// URL 接続 & 仮想 TCP 3 ウェイハンドシェイク', async () => {
+            client = await netClient.connectURL(`webtcp://${DEMO_SERVICE_NAME}:${SERVER_PORT}/`, { nameServer: nsClient });
             if (client.state !== 'ESTABLISHED') {
                 throw new Error(`unexpected state: ${client.state}`);
             }
@@ -746,6 +821,8 @@ async function runSelfTest() {
         document.documentElement.dataset.selftest = 'fail';
         window.__WEBTCP_SELFTEST__ = { ok: false, error: error.message, steps, durationMs: totalMs };
     } finally {
+        nsClient.close();
+        nsServer.close();
         netClient.close();
         netServer.close();
         sigClient.close();
@@ -782,8 +859,13 @@ async function runAutoTwoTabClient() {
         const serverId = boot.connected[0];
         log(els.clientLog, `[auto-2tab] サーバー検出・リンク確立: ${serverId}`);
 
-        const stream = await network.connect(serverId, SERVER_PORT);
-        log(els.clientLog, `[auto-2tab] 仮想 TCP 確立 (ISN=${stream.initialSendSeqNum})`);
+        const resolved = await nameServer.resolve(DEMO_ALIAS_NAME);
+        if (resolved.nodeId !== serverId) {
+            throw new Error(`名前解決がサーバータブと一致しません: ${resolved.nodeId}`);
+        }
+        log(els.clientLog, `[auto-2tab] 名前解決 PASS: ${DEMO_ALIAS_NAME} -> ${resolved.nodeId} (${resolved.source})`);
+        const stream = await network.connectURL(`webtcp://${DEMO_SERVICE_NAME}:${SERVER_PORT}/`, { nameServer });
+        log(els.clientLog, `[auto-2tab] webtcp:// URL 接続確立 (ISN=${stream.initialSendSeqNum})`);
 
         // 1. テキスト往復
         const textExpect = encoder.encode('echo:hello-2tab');
@@ -818,7 +900,7 @@ async function runAutoTwoTabClient() {
         setStatus(els.clientStatus, `2 タブ自動検証 PASS (${durationMs} ms)`, 'ok');
         log(els.clientLog, `[auto-2tab] 全項目 PASS (${durationMs} ms)`);
         document.documentElement.dataset.twotab = 'pass';
-        window.__WEBTCP_TWOTAB__ = { ok: true, serverId, durationMs };
+        window.__WEBTCP_TWOTAB__ = { ok: true, serverId, resolvedName: DEMO_ALIAS_NAME, durationMs };
     } catch (error) {
         const durationMs = Date.now() - startedAt;
         setStatus(els.clientStatus, `2 タブ自動検証 FAIL: ${error.message}`, 'err');
@@ -850,6 +932,8 @@ async function main() {
     els.discoverBtn.addEventListener('click', onDiscover);
     els.bootstrapBtn.addEventListener('click', onBootstrap);
     els.connectBtn.addEventListener('click', onConnect);
+    els.connectUrlBtn.addEventListener('click', onConnectURL);
+    els.resolveNameBtn.addEventListener('click', onResolveName);
     els.disconnectBtn.addEventListener('click', onDisconnect);
     els.sendBtn.addEventListener('click', onSend);
     els.sendLargeBtn.addEventListener('click', onSendLarge);
@@ -872,6 +956,7 @@ async function main() {
 
 window.addEventListener('beforeunload', () => {
     stopStatsPolling();
+    nameServer?.close();
     network?.close();
     signaling?.close();
 });

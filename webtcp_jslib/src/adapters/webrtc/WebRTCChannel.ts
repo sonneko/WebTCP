@@ -376,7 +376,8 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         } catch (error) {
             this.logger.warn(`ICE restart failed for ${peerId}:`, error);
             state.restartingIce = false;
-            if (state.iceRestartCount >= maxRestarts || this.peers.get(peerId) === state) {
+            if (this.peers.get(peerId) !== state) return;
+            if (state.iceRestartCount >= maxRestarts) {
                 this.destroyPeer(peerId, state, true);
             }
         }

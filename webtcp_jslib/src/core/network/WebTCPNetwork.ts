@@ -9,7 +9,9 @@ import { ISignalingAdapter } from '../link/ISignalingAdapter.js';
 import { LinkManager } from '../link/LinkManager.js';
 import { Ed25519PacketVerifier, IPacketVerifier, NullPacketVerifier } from '../routing/PacketVerifier.js';
 import { KeyDirectory } from '../routing/KeyDirectory.js';
-import { Ed25519KeyManager, isValidNodeId } from '../routing/keys.js';
+import { Ed25519KeyManager, NodeIdCollisionError, isValidNodeId } from '../routing/keys.js';
+import type { NameServer } from '../naming/NameServer.js';
+import { formatWebTCPUrl, parseWebTCPUrl, WebTCPUrl } from '../naming/url.js';
 import { RoutingLayer } from '../routing/RoutingLayer.js';
 import { RoutingTable } from '../routing/RoutingTable.js';
 import { RoutingTableManagerOptions } from '../routing/RoutingTableManager.js';
@@ -57,6 +59,13 @@ export interface WebTCPNetworkOptions {
     logger?: Logger;
     /** 既定コンソールロガーのログレベル（任意。既定 `'warn'`）。 */
     logLevel?: LogLevel;
+}
+
+export interface ConnectURLOptions {
+    /** 名前指定の解決に使う NameServer。NodeId 指定では不要。 */
+    nameServer?: NameServer;
+    localPort?: VirtualPort;
+    signal?: AbortSignal;
 }
 
 export interface BootstrapOptions {
@@ -125,6 +134,12 @@ export class WebTCPNetwork extends EventEmitter {
         this.keyManager = options.keyManager ?? null;
         this.localNodeId = this.resolveLocalNodeId(options);
         this.keyDirectory = this.resolveKeyDirectory(options);
+        if (options.keyManager && this.keyDirectory) {
+            const existing = this.keyDirectory.get(this.localNodeId);
+            if (existing && !bytesEqual(existing, options.keyManager.publicKey)) {
+                throw new NodeIdCollisionError(this.localNodeId, existing, options.keyManager.publicKey);
+            }
+        }
         this.verifier = this.resolveVerifier(options);
 
         const routingTable = new RoutingTable(this.localNodeId);
@@ -162,10 +177,14 @@ export class WebTCPNetwork extends EventEmitter {
         if (this.started) return;
         if (this.closed) throw new Error('WebTCPNetwork is closed');
         this.started = true;
-
-        await this.linkManager.start();
-        this.routingLayer.start();
-        this.transportLayer.start();
+        try {
+            await this.linkManager.start();
+            this.routingLayer.start();
+            this.transportLayer.start();
+        } catch (error) {
+            this.started = false;
+            throw error;
+        }
 
         this.scopedLogger.info(`WebTCPNetwork started (nodeId=${this.localNodeId})`);
         this.emit('ready');
@@ -201,6 +220,29 @@ export class WebTCPNetwork extends EventEmitter {
         }
 
         return this.transportLayer.connect(remoteId, remotePort, localPort);
+    }
+
+    /**
+     * `webtcp://` URL へ接続する（M4 / #25）。名前は NameServer で解決する。
+     * path/query/fragment はアプリケーション用であり、ここまでは送信しない。
+     */
+    public async connectURL(
+        url: string | WebTCPUrl,
+        options: ConnectURLOptions = {},
+    ): Promise<VirtualStream> {
+        if (this.closed) throw new Error('WebTCPNetwork is closed');
+        const parsed = typeof url === 'string' ? parseWebTCPUrl(url) : parseWebTCPUrl(formatWebTCPUrl(url));
+        if (options.signal?.aborted) throw new Error('WebTCP URL connection aborted');
+        let nodeId = parsed.nodeId;
+        if (!nodeId) {
+            if (!options.nameServer) throw new Error(`NameServer is required to resolve ${parsed.host}`);
+            const resolution = await options.nameServer.resolve(parsed.name!, {
+                ...(options.signal ? { signal: options.signal } : {}),
+            });
+            nodeId = resolution.nodeId;
+        }
+        if (options.signal?.aborted) throw new Error('WebTCP URL connection aborted');
+        return this.connect(nodeId, parsed.port, options.localPort);
     }
 
     /**
@@ -428,4 +470,10 @@ export class WebTCPNetwork extends EventEmitter {
             signal?.addEventListener('abort', onAbort, { once: true });
         });
     }
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (a.byteLength !== b.byteLength) return false;
+    for (let i = 0; i < a.byteLength; i += 1) if (a[i] !== b[i]) return false;
+    return true;
 }

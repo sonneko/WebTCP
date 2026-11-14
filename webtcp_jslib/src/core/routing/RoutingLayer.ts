@@ -104,6 +104,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
             {
                 getNeighbors: () => this.linkManager.getActiveNeighbors(),
                 sendRoutingUpdate: (neighborId, info) => this.sendRoutingUpdate(neighborId, info),
+                getPublicKeyBase64Url: (nodeId) => this.keyDirectory?.exportPublicKey(nodeId) ?? null,
             },
             {
                 ...options.routingTableManager,
@@ -121,6 +122,9 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         // RT_UPDATE で配布された公開鍵をディレクトリへ登録する（§10.4.2）
         this.manager.onPublicKey = (senderId, publicKeyBase64Url) => {
             void this.learnPublicKey(senderId, publicKeyBase64Url);
+        };
+        this.manager.onAdvertisedPublicKey = (nodeId, publicKeyBase64Url) => {
+            void this.learnPublicKey(nodeId, publicKeyBase64Url);
         };
         this.linkManager.on('neighbor-connected', (peerId: NodeId) => {
             this.manager.handleNeighborUp(peerId);
@@ -159,9 +163,12 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     private async learnPublicKey(nodeId: NodeId, publicKeyBase64Url: string): Promise<void> {
         if (!this.keyDirectory) return;
         try {
+            const alreadyKnown = this.keyDirectory.get(nodeId) !== undefined;
             const accepted = await this.keyDirectory.addPublicKey(nodeId, publicKeyBase64Url);
-            if (accepted) {
+            if (accepted && !alreadyKnown) {
                 this.logger.debug(`Learned Ed25519 public key for ${nodeId} from RT_UPDATE`);
+                // 新しく学習した鍵を隣接へ伝播してマルチホップ先の検証を可能にする。
+                this.manager.announce();
             }
         } catch (error) {
             this.logger.warn(`Failed to register public key for ${nodeId}:`, error);
@@ -270,8 +277,19 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
             return;
         }
 
-        // --- 2. ルーティング情報は RPF / TTL の対象外 ---
+        // --- 2. ルーティング情報は直接隣接・sender 一致・正 TTL のみ（M4 / #37） ---
         if (packet.flags === 'RT_UPDATE') {
+            if (
+                !this.linkManager.isNeighbor(fromId) ||
+                packet.senderId !== fromId ||
+                packet.destinationId !== this.localNodeId ||
+                packet.ttl <= 0 ||
+                packet.sourcePort !== 0 ||
+                packet.destinationPort !== 0
+            ) {
+                this.logger.warn(`Dropping RT_UPDATE from ${packet.senderId} via ${fromId}: invalid control packet`);
+                return;
+            }
             this.manager.handleRoutingInfoPayload(packet.senderId, packet.payload);
             return;
         }

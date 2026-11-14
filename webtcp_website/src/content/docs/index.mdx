@@ -3,7 +3,7 @@ title: WebTCP
 description: WebRTC データチャネル上に仮想 TCP/HTTP トンネルを構築する実験的 P2P ライブラリ
 template: splash
 hero:
-  tagline: ブラウザを自己完結型の P2P サーバー実行環境へ。WebRTC DataChannel 上にバイトストリーム指向の仮想 TCP と Ed25519 署名を実装する TypeScript ライブラリ。
+  tagline: ブラウザを自己完結型の P2P サーバー実行環境へ。WebRTC DataChannel 上にバイトストリーム指向の仮想 TCP・Ed25519 署名・NameServer / webtcp:// URL を実装する TypeScript ライブラリ。
   image:
     file: ../../assets/webtcp-hero.svg
     alt: WebTCP のレイヤー構成図（L4 VirtualStream / L3 RoutingLayer（Ed25519 署名） / L1-L2 WebRTC DataChannel）
@@ -22,11 +22,14 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## WebTCP の特徴（M3 対応済み）
+## WebTCP の特徴（M4 対応済み）
 
 <CardGrid stagger>
 	<Card title="Ed25519 署名と自己証明型 NodeId" icon="approve-check">
-		すべてのパケットが送信元の Ed25519 署名で保護され（プロトコル v2）、NodeId は公開鍵の指紋。改ざん・なりすましは受信側で破棄されます。秘密鍵はブラウザでは IndexedDB に非抽出 CryptoKey として保存されます。
+		鍵管理を渡すとすべてのパケットが送信元の Ed25519 署名で保護され（プロトコル v2）、NodeId は公開鍵の指紋。改ざん・なりすましは受信側で破棄されます。秘密鍵はブラウザでは IndexedDB に非抽出 CryptoKey として保存され、Node.js では `NodeKeyManager.open({ keyFile })` で永続化できます。
+	</Card>
+	<Card title="NameServer と webtcp:// URL" icon="globe">
+		`NameServer` が A/CNAME 相当のローカル登録と既知ノードへの問い合わせで名前を NodeId へ解決します。`parseWebTCPUrl()` と `network.connectURL()` で `webtcp://name:port/path` に接続できます（M4 / #25）。
 	</Card>
 	<Card title="バイトストリーム指向の仮想 TCP" icon="rocket">
 		バイト単位の Seq/Ack、ランダム ISN、60 KiB 超データの自動分割・再結合、部分読み取り（`read` / `readExact`）、Half-Close に対応します。

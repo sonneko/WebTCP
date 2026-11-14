@@ -1,10 +1,12 @@
 # @sonneko/webtcp-tunneler
 
-WebRTC データチャネル上にバイトストリーム指向の仮想 TCP/HTTP トンネルを構築する実験的ライブラリです。
+WebRTC データチャネル上にバイトストリーム指向の仮想 TCP/HTTP トンネルを構築する実験的ライブラリです。M4 で `NameServer`（A/CNAME 名前解決）と `webtcp://` URL、永続 NodeId に対応しました。
 
 - リポジトリ全体の説明・デモ: [github.com/sonneko/WebTCP](https://github.com/sonneko/WebTCP)
-- プロトコル仕様: [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md)
+- プロトコル仕様: [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md)（0.4.0）
 - 設計: [design.md](https://github.com/sonneko/WebTCP/blob/main/design.md)
+
+> このパッケージはまだ npm に公開されていません。利用するにはリポジトリをビルドするか、公開後に `npm install @sonneko/webtcp-tunneler` を実行してください。
 
 ## 使い方（ブラウザ）
 
@@ -14,6 +16,7 @@ import {
     EntranceSearcherAdapterHub,
     SignalingAdapterHub,
     createBrowserNetwork,
+    NameServer,
 } from '@sonneko/webtcp-tunneler';
 
 const hubUrl = 'https://your-hub.example.com';
@@ -39,11 +42,16 @@ network.listen(8080, (stream) => {
     stream.on('end', () => stream.end());
 });
 
+// NameServer（M4）: 名前を登録して待ち受ける
+const ns = new NameServer(network);
+ns.registerA('my-service', network.localNodeId);
+ns.listen();
+
 // クライアント側（エントランス探索からの自動リンク確立 + 仮想 TCP 接続）
 const searcher = new EntranceSearcherAdapterHub({ url: hubUrl, exclude: network.localNodeId });
 const { connected } = await network.bootstrap(searcher);
 if (connected.length > 0) {
-    const stream = await network.connect(connected[0], 8080);
+    const stream = await network.connectURL('webtcp://my-service:8080/', { nameServer: ns });
     await stream.send('hello');
     stream.end();
 }
@@ -58,8 +66,8 @@ import {
     createEd25519Verifier,
 } from '@sonneko/webtcp-tunneler';
 
-// node:crypto で Ed25519 鍵を生成（既存鍵は privateKeyPem / secretKeyHex で復元）
-const keys = await NodeKeyManager.create();
+// node:crypto で Ed25519 鍵を生成・永続化（既存 keyFile は再利用）
+const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' });
 const { verifier, keyDirectory } = createEd25519Verifier({ keyManager: keys });
 
 const network = new WebTCPNetwork({
@@ -71,8 +79,28 @@ const network = new WebTCPNetwork({
 await network.start();
 ```
 
-公開鍵は DataChannel 開設時の `public-key` メッセージと `RT_UPDATE` の `publicKey` フィールドで配布され、
-受信側は `KeyDirectory` に登録する前に必ず指紋一致を検証します（`specification.md` §10）。
+公開鍵は DataChannel 開設時の `public-key` メッセージと `RT_UPDATE` の `publicKey` / `entries[].publicKey` フィールドで配布され、
+受信側は `KeyDirectory` に登録する前に必ず指紋一致を検証します（`specification.md` §10）。これにより事前鍵共有なしのマルチホップ署名検証が可能です。
+
+## 名前解決と `webtcp://` URL（M4 / #25）
+
+```ts
+import { NameServer, parseWebTCPUrl } from '@sonneko/webtcp-tunneler';
+
+const ns = new NameServer(network, { port: 5300 });
+ns.registerA('my-service', network.localNodeId);
+ns.registerCNAME('alias', 'my-service');
+ns.listen();
+
+const resolved = await ns.resolve('alias'); // { nodeId, ttlMs, source, chain }
+const parsed = parseWebTCPUrl('webtcp://alias:8080/path?x=1#frag');
+const stream = await network.connectURL('webtcp://alias:8080/path', { nameServer: ns });
+```
+
+- 解決順序: ローカル登録 → TTL キャッシュ → 既知ノード（`resolvers` / 隣接 / 経路表）への反復問い合わせ。
+- `webtcp://` はポート必須（1–65535）。NodeId リテラルなら NameServer なしで接続できます。
+- `path` / `query` / `fragment` はアプリケーション用で、接続自体には送信しません。
+- グローバルな名前所有権（`domain.global` / ブロックチェーン）は M5 の将来課題です。
 
 > `keyManager` を渡さない場合、後方互換のためプロトコル v1（署名なし・`NullPacketVerifier`）で動作します。
 
@@ -83,8 +111,9 @@ await network.start();
 | NodeId | Ed25519 公開鍵の指紋 `hex(SHA-256(rawPub)[0..16])`（32 文字） |
 | 署名 | Ed25519 64 B、プロトコル v2。署名対象は署名フィールドを除くシリアライズ済みパケット（TTL は 0 に正規化） |
 | ブラウザ鍵管理 | `BrowserKeyManager` — Web Crypto + IndexedDB（**非抽出 CryptoKey**） |
-| Node.js 鍵管理 | `NodeKeyManager` — `node:crypto`（PKCS#8 PEM / シード hex で入出力） |
-| 公開鍵配布 | シグナリング `public-key` 交換 + `RT_UPDATE.publicKey`（どちらも指紋照合必須） |
+| Node.js 鍵管理 | `NodeKeyManager` — `node:crypto`（PKCS#8 PEM / シード hex で入出力、`open({ keyFile })` で 0600 永続化） |
+| 衝突検出 | `NodeIdCollisionError` — 同一 NodeId に異なる鍵/身元が対応する場合に送出 |
+| 公開鍵配布 | シグナリング `public-key` 交換 + `RT_UPDATE.publicKey` / `entries[].publicKey`（どちらも指紋照合必須） |
 | 必要環境 | Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+（Ed25519 非対応時は v1 へフォールバック） |
 
 ## ビルド・テスト・デモ

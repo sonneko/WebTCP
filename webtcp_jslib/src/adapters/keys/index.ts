@@ -9,3 +9,4 @@ export * from './BrowserKeyManager.js';
 export * from './NodeKeyManager.js';
 export * from './nodeCrypto.js';
 export * from './factory.js';
+export * from './NodeIdentityStorage.js';

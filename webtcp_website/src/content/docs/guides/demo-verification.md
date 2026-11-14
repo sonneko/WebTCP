@@ -19,7 +19,7 @@ node examples/server.mjs
 
 ## 検証方法 1: 1 タブ内蔵自己チェック（最速）
 
-ブラウザで次を開くと、1 ページ内に **2 つの実 `BrowserWebRTCChannel`（実 `RTCPeerConnection`）** を立ち上げ、シグナリングハブ経由で以下の 5 項目を自動検証します。
+ブラウザで次を開くと、1 ページ内に **2 つの実 `BrowserWebRTCChannel`（実 `RTCPeerConnection`）** を立ち上げ、シグナリングハブ経由で以下の項目を自動検証します。
 
 ```
 http://localhost:8787/examples/demo/?selftest=1
@@ -27,7 +27,8 @@ http://localhost:8787/examples/demo/?selftest=1
 
 1. エントランス探索と `network.bootstrap()` による実 WebRTC リンク確立
 1b. Ed25519 署名検証と NodeId の鍵指紋一致（プロトコル v2）
-2. 仮想 TCP 3 ウェイハンドシェイク（`ESTABLISHED`）とランダム ISN
+1c. NameServer 名前解決（A/CNAME）と `webtcp://` URL パース（M4 / #25）
+2. `webtcp://` URL 接続と仮想 TCP 3 ウェイハンドシェイク（`ESTABLISHED`）
 3. 双方向テキスト送受信と部分読み取り（`readExact`）
 4. 96 KiB（> 60 KiB）バイナリの自動分割・再結合とバイト完全一致・動的 RTO / `cwnd`
 5. Half-Close（`end()` → `CLOSE_WAIT` での応答受信 → 双方 `CLOSED`）
@@ -36,7 +37,7 @@ STUN を有効にして試す場合は `?selftest=1&stun=1` を指定します�
 
 ## 検証方法 2: 2 タブ手動 / 自動検証
 
-- **手動**: `http://localhost:8787/examples/demo/` を 2 タブで開き、タブ A で「ポート 8080 で待ち受ける」、タブ B で「接続先を探す」→「接続」→ テキスト送信 /「80 KiB 分割送信テスト」を実行します。
+- **手動**: `http://localhost:8787/examples/demo/` を 2 タブで開き、タブ A で「ポート 8080 で待ち受ける」、タブ B で「接続先を探す」→「接続」→ テキスト送信 /「80 KiB 分割送信テスト」を実行します。さらに「名前を解決」「URL で接続」で `demo-service` / `demo-alias` の名前解決と `webtcp://` 接続を確認できます。
 - **ワンクリック 2 タブ自動検証**: タブ A の「別タブで 2 タブ自動検証」を押すか、以下を 2 つのタブで開きます。
   - タブ A: `http://localhost:8787/examples/demo/?role=server&autostart=1`
   - タブ B: `http://localhost:8787/examples/demo/?role=client&autostart=1`

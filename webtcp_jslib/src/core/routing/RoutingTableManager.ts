@@ -1,4 +1,5 @@
 import { NodeId } from '../types/protocol.js';
+import { isValidNodeId } from './keys.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { RoutingTable } from './RoutingTable.js';
 
@@ -12,6 +13,8 @@ export interface RoutingInfoPacket {
     entries: {
         destinationId: NodeId;
         cost: number;
+        /** 任意: 宛先の Ed25519 公開鍵（Base64url）。指紋照合して伝播する（M4 / #37）。 */
+        publicKey?: string;
     }[];
     /** 到達不能になった宛先（経路の撤回）。 */
     withdrawals?: NodeId[];
@@ -31,6 +34,8 @@ export interface RoutingUpdateTransport {
     getNeighbors(): NodeId[];
     /** 指定隣接ノードへルーティング情報を送る。 */
     sendRoutingUpdate(neighborId: NodeId, info: RoutingInfoPacket): Promise<boolean>;
+    /** 既知の公開鍵を Base64url で返す（entries への同梱用、任意）。 */
+    getPublicKeyBase64Url?(nodeId: NodeId): string | null;
 }
 
 export interface RoutingTableManagerOptions {
@@ -56,6 +61,10 @@ export class RoutingTableManager {
      */
     public onPublicKey:
         | ((senderId: NodeId, publicKeyBase64Url: string) => void)
+        | null = null;
+    /** entries[].publicKey で広告された鍵を受け取るフック（M4 / #37）。 */
+    public onAdvertisedPublicKey:
+        | ((nodeId: NodeId, publicKeyBase64Url: string) => void)
         | null = null;
 
     private readonly localNodeId: NodeId;
@@ -150,14 +159,17 @@ export class RoutingTableManager {
         }
 
         const info = this.validateRoutingInfo(parsed);
-        if (!info) {
-            this.logger.warn(`Dropping RT_UPDATE from ${senderId}: invalid structure`);
+        if (!info || info.senderId !== senderId) {
+            this.logger.warn(`Dropping RT_UPDATE from ${senderId}: invalid structure or sender mismatch`);
             return;
         }
 
         // 同梱された公開鍵を配布する（§10.4.2）。指紋照合は受け取り側で行う。
         if (info.publicKey) {
             this.onPublicKey?.(senderId, info.publicKey);
+        }
+        for (const entry of info.entries) {
+            if (entry.publicKey) this.onAdvertisedPublicKey?.(entry.destinationId, entry.publicKey);
         }
 
         this.updateTableFromPeer(senderId, info.entries, info.withdrawals ?? []);
@@ -224,13 +236,33 @@ export class RoutingTableManager {
         const entries: RoutingInfoPacket['entries'] = [];
         this.table.getAllEntries().forEach((entry, destinationId) => {
             if (destinationId === this.localNodeId) return;
-            entries.push({ destinationId, cost: entry.cost });
+            const advertised = this.transport.getPublicKeyBase64Url?.(destinationId);
+            entries.push(advertised ? { destinationId, cost: entry.cost, publicKey: advertised } : { destinationId, cost: entry.cost });
         });
         return { senderId: this.localNodeId, entries, withdrawals };
     }
 
+    /** 仕様 §7.4 の上限（entries / withdrawals 各 256 件）に収まるよう分割する。 */
+    public splitRoutingInfo(info: RoutingInfoPacket): RoutingInfoPacket[] {
+        const chunks: RoutingInfoPacket[] = [];
+        const withdrawals = info.withdrawals ?? [];
+        for (let i = 0; i < withdrawals.length; i += 256) {
+            chunks.push({ senderId: info.senderId, entries: [], withdrawals: withdrawals.slice(i, i + 256) });
+        }
+        for (let i = 0; i < info.entries.length; i += 256) {
+            chunks.push({ senderId: info.senderId, entries: info.entries.slice(i, i + 256), withdrawals: [] });
+        }
+        if (chunks.length === 0) chunks.push({ senderId: info.senderId, entries: [], withdrawals: [] });
+        return chunks;
+    }
+
     private async sendRoutingUpdate(neighborId: NodeId): Promise<boolean> {
-        return this.transport.sendRoutingUpdate(neighborId, this.createRoutingInfoPacket());
+        let allSent = true;
+        for (const chunk of this.splitRoutingInfo(this.createRoutingInfoPacket())) {
+            const sent = await this.transport.sendRoutingUpdate(neighborId, chunk);
+            allSent = allSent && sent;
+        }
+        return allSent;
     }
 
     /**
@@ -243,11 +275,13 @@ export class RoutingTableManager {
 
     /** 全隣接ノードへ現在のテーブルを送る。 */
     private broadcastRoutingUpdate(withdrawals: NodeId[] = []): void {
-        const info = this.createRoutingInfoPacket(withdrawals);
+        const chunks = this.splitRoutingInfo(this.createRoutingInfoPacket(withdrawals));
         for (const neighborId of this.transport.getNeighbors()) {
-            void this.transport.sendRoutingUpdate(neighborId, info).catch((error) => {
-                this.logger.warn(`Failed to send routing update to ${neighborId}:`, error);
-            });
+            for (const info of chunks) {
+                void this.transport.sendRoutingUpdate(neighborId, info).catch((error) => {
+                    this.logger.warn(`Failed to send routing update to ${neighborId}:`, error);
+                });
+            }
         }
     }
 
@@ -284,17 +318,19 @@ export class RoutingTableManager {
     private validateRoutingInfo(value: unknown): RoutingInfoPacket | null {
         if (typeof value !== 'object' || value === null) return null;
         const candidate = value as Partial<RoutingInfoPacket>;
-        if (typeof candidate.senderId !== 'string' || !Array.isArray(candidate.entries)) {
+        if (typeof candidate.senderId !== 'string' || !isValidNodeId(candidate.senderId) || !Array.isArray(candidate.entries)) {
             return null;
         }
 
         const entries: RoutingInfoPacket['entries'] = [];
+        if (candidate.entries.length > 256) return null;
         for (const entry of candidate.entries) {
             if (typeof entry !== 'object' || entry === null) return null;
-            const { destinationId, cost } = entry as { destinationId?: unknown; cost?: unknown };
-            if (typeof destinationId !== 'string' || typeof cost !== 'number') return null;
-            if (!Number.isFinite(cost) || cost < 0) return null;
-            entries.push({ destinationId, cost });
+            const { destinationId, cost, publicKey } = entry as { destinationId?: unknown; cost?: unknown; publicKey?: unknown };
+            if (typeof destinationId !== 'string' || !isValidNodeId(destinationId) || typeof cost !== 'number') return null;
+            if (!Number.isInteger(cost) || cost < 0 || cost > 255) return null;
+            if (publicKey !== undefined && typeof publicKey !== 'string') return null;
+            entries.push(publicKey === undefined ? { destinationId, cost } : { destinationId, cost, publicKey });
         }
 
         let publicKey: string | undefined;
@@ -305,9 +341,9 @@ export class RoutingTableManager {
 
         const withdrawals: NodeId[] = [];
         if (candidate.withdrawals !== undefined) {
-            if (!Array.isArray(candidate.withdrawals)) return null;
+            if (!Array.isArray(candidate.withdrawals) || candidate.withdrawals.length > 256) return null;
             for (const destinationId of candidate.withdrawals) {
-                if (typeof destinationId !== 'string') return null;
+                if (typeof destinationId !== 'string' || !isValidNodeId(destinationId)) return null;
                 withdrawals.push(destinationId);
             }
         }

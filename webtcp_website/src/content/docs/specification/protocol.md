@@ -1,9 +1,9 @@
 ---
 title: プロトコル仕様サマリー
-description: specification.md（0.3.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、シグナリング契約の要約。
+description: specification.md（0.4.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、シグナリング契約の要約。
 ---
 
-このページはリポジトリの `specification.md`（バージョン 0.3.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
+このページはリポジトリの `specification.md`（バージョン 0.4.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
 
 ## バイナリパケット形式（固定 24 バイトヘッダー）
 
@@ -35,7 +35,7 @@ description: specification.md（0.3.0 / プロトコル v2）のパケット形�
 | 3 | `FIN` | 片方向送信終了（シーケンス 1 消費） |
 | 4 | `RST` | 強制切断 |
 | 5 | `SYN_ACK` | `SYN | ACK` の同時表現（シーケンス 1 消費） |
-| 6 | `RT_UPDATE` | 距離ベクトル経路更新（UTF-8 JSON） |
+| 6 | `RT_UPDATE` | 距離ベクトル経路更新（UTF-8 JSON）。直接隣接・sender 一致・自ノード宛・正 TTL・ポート 0 のみ受理し、中継しない |
 | 7 | 予約 | 送信時 0、受信時無視 |
 
 ## トランスポート層（M2 TCP セマンティクス）
@@ -64,7 +64,8 @@ description: specification.md（0.3.0 / プロトコル v2）のパケット形�
 - **署名対象**: 署名フィールドを除いたシリアライズ済みパケット。**TTL は 0 に正規化**するため、中継ノードは再署名しません。
 - **検証**: `senderId` の指紋と検証鍵の指紋を照合し、署名を検証します。失敗したパケットは破棄されます。
 - **鍵管理**: ブラウザは Web Crypto + IndexedDB（**非抽出 CryptoKey**）、Node.js は `node:crypto`。
-- **公開鍵の配布**: シグナリング時の `public-key` 交換 + `RT_UPDATE` への `publicKey` 同梱。どちらも指紋一致を必須とします。
+- **公開鍵の配布**: シグナリング時の `public-key` 交換 + `RT_UPDATE` の `publicKey` / `entries[].publicKey` 同梱。どちらも指紋一致を必須とし、事前鍵共有なしのマルチホップ署名検証を可能にします。
+- **永続 NodeId と衝突検出（M4）**: ブラウザ復元時は署名チャレンジで秘密鍵と公開鍵の対応を検証。Node.js は `NodeKeyManager.open({ keyFile })` で PKCS#8 PEM を `0600` 永続化。同一 NodeId に異なる鍵が対応する場合は `NodeIdCollisionError`。
 - 詳細は [仕様書 §10](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
 
 ## シグナリング・エントランス HTTP 契約
@@ -76,3 +77,12 @@ description: specification.md（0.3.0 / プロトコル v2）のパケット形�
 | `GET` | `/entrances?exclude=<NodeId>` | 接続候補ノード ID 一覧の取得 |
 
 DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'public-key', publicKey: <Base64url>, nodeId }`）を交換します（§9.2.1）。
+
+
+## 名前解決と WebTCP URL（M4 / #25）
+
+- `NameServer` はアプリケーション層サービスで、新しい L3/L4 フラグやワイヤーバージョンを追加しません。既存の署名付き `VirtualStream` 上で UTF-8 JSON の要求/応答を交換します（既定仮想ポート 5300）。
+- レコードは A（`name -> NodeId`）と CNAME（`name -> canonical name`）。TTL 既定 60 秒、最大 86400 秒。
+- 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。サーバーはローカル登録のみを返し、再帰問い合わせしません。
+- `webtcp://<host>:<port><path>?<query>#<fragment>` はポート必須（1–65535）。host は NodeId リテラルまたは LDH 名。`parseWebTCPUrl()` / `formatWebTCPUrl()` / `network.connectURL()` を提供します。
+- 名前解決はグローバルな所有権証明ではありません。`domain.global` とブロックチェーン連携は M5 です。

@@ -20,14 +20,17 @@ description: iceServers の設定、TURN 資格情報の動的取得フック（
 
 ```ts
 import {
+  BrowserKeyManager,
   EXAMPLE_STUN_ICE_SERVERS,
   SignalingAdapterHub,
   createBrowserNetwork,
 } from '@sonneko/webtcp-tunneler';
 
-const signaling = new SignalingAdapterHub({ url: 'https://hub.example.com' });
+const keys = await BrowserKeyManager.open();
+const signaling = new SignalingAdapterHub({ url: 'https://hub.example.com', nodeId: keys.nodeId });
 const network = createBrowserNetwork({
   signaling,
+  keyManager: keys, // プロトコル v2・署名必須
   iceServers: [
     ...EXAMPLE_STUN_ICE_SERVERS,
     {

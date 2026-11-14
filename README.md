@@ -10,18 +10,19 @@ WebTCPは、ブラウザを単なるクライアントではなく、**自己完
 
 ブラウザの制限付きの`fetch`を使っているわけではないので、TCPレイヤーから自由に通信を操ることができます。
 
-> **現在のステータス**: **M3（セキュリティ / Ed25519 署名と NodeId の鍵指紋化）実装済み**。M2 のフル TCP セマンティクス（自動分割・動的 RTO・輻輳制御・Fast Retransmit / SACK・Half-Close）に加え、**Ed25519 署名（プロトコル v2）・NodeId の公開鍵指紋化・`BrowserKeyManager` / `NodeKeyManager`・公開鍵の自動配布**に対応しています。名前解決・分散ドメイン（M4–M5 / #25）は未実装です。詳細は [plan.md](./plan.md) を参照してください。
+> **現在のステータス**: **M4（NameServer / `webtcp://` URL / 永続 NodeId）実装済み**。M3 の Ed25519 署名（プロトコル v2）と NodeId の鍵指紋化に加え、**NameServer（A/CNAME・TTL キャッシュ・既知ノードへの反復問い合わせ）・`webtcp://` URL パースと `connectURL()`・鍵の永続化と衝突検出**に対応しています。`domain.global` とブロックチェーンによる所有権証明は M5（#25）の将来課題です。詳細は [plan.md](./plan.md) を参照してください。
 
 ## 主な機能
 
-1. **Ed25519 署名と自己証明型 NodeId（M3 / #28）**: すべてのパケットは送信元の Ed25519 署名で保護され（プロトコル v2）、NodeId は公開鍵の指紋（`SHA-256` の先頭 16 バイト）です。改ざん・なりすましは受信側で検出され破棄されます。
+1. **Ed25519 署名と自己証明型 NodeId（M3 / #28）**: `keyManager` を渡すとすべてのパケットが送信元の Ed25519 署名で保護され（プロトコル v2）、NodeId は公開鍵の指紋（`SHA-256` の先頭 16 バイト）です。改ざん・なりすましは受信側で検出され破棄されます。
 2. **SCTP上の多重化 (Multiplexing)**: WebRTC の単一のデータチャネル上で、複数の仮想 TCP 接続を仮想ポートとセッション ID により多重化します。
 3. **フル TCP セマンティクス（M2）**: バイト単位の Seq/Ack（32 ビットラップアラウンド対応）、ランダム ISN、60 KiB 超メッセージの自動分割・再結合、部分読み取り（`read` / `readExact`）、RFC 6298 動的 RTO、RFC 5681 輻輳制御、3 重複 ACK Fast Retransmit + SACK、RFC 793 準拠の Half-Close を実装しています。
 4. **シグナリング抽象化と自動ブートストラップ**: `SignalingAdapterHub`・`EntranceSearcherAdapterHub` を同梱し、`WebTCPNetwork.bootstrap(searcher)` により候補ノードへ指数バックオフ付きで自動接続できます。
 5. **NAT 越え（STUN / TURN / ICE 再起動）**: 静的 `iceServers` に加え、短期 TURN 資格情報を都度取得する `iceServersProvider` フック、接続障害時の自動 ICE 再起動（DataChannel 維持）と Glare 解決を備えます。
 6. **マルチホップルーティング**: 距離ベクトル方式の経路表（撤回伝播・生存時刻更新付き）と TTL / RPF を持ち、中継ノードを経由した通信ができます。
 7. **ブラウザで直接動き、ロガー注入可能**: コアは `Buffer` や `events` に非依存。`tsc` の出力を `<script type="module">` から直接読み込め、レベル付きロガー（既定 `warn` 以上）を注入できます。
-8. **プラットフォーム別の鍵管理**: ブラウザは **Web Crypto + IndexedDB（非抽出 CryptoKey）**、Node.js は **`node:crypto`**。秘密鍵は生バイトとしてエクスポートされないため、XSS 等でストレージが読まれても鍵そのものは漏れません。
+8. **プラットフォーム別の鍵管理と永続 NodeId**: ブラウザは **Web Crypto + IndexedDB（非抽出 CryptoKey）**、Node.js は **`node:crypto`**。ブラウザの秘密鍵は生バイトとしてエクスポートされません。Node.js は `NodeKeyManager.open({ keyFile })` で PKCS#8 PEM を `0600` で永続化し、再起動後も同じ NodeId を再利用します。
+9. **NameServer と `webtcp://` URL（M4 / #25）**: `NameServer` が A/CNAME 相当のローカル登録と既知ノードへの問い合わせで名前を NodeId へ解決します。`parseWebTCPUrl()` と `network.connectURL()` で `webtcp://nodeId:port/path` または `webtcp://name:port/path` に接続できます。
 
 ## 仕組み
 
@@ -31,7 +32,7 @@ WebTCP は、WebRTC のデータチャネル（メッセージ指向・順序保
 
 ```
 +-----------------------------------------------------------+
-| L7  アプリケーション (任意のプロトコル / 将来のHTTP)         |
+| L7  アプリケーション (NameServer / 任意のプロトコル)      |
 +-----------------------------------------------------------+
 | L4  TransportLayer : 仮想ポート多重化 / SessionManager      |
 |     VirtualStream  : バイト単位 Seq-Ack / MSS自動分割 /     |
@@ -114,26 +115,25 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 
 各ノードは距離ベクトル方式で経路表を維持します。隣接が接続されるとコスト 1 の経路を登録し、30 秒ごとに経路情報（`RT_UPDATE`）を交換、60 秒更新のない経路は削除して「撤回（`withdrawals`）」を伝播します。同一ネクストホップからの定期更新で生存時刻（`lastSeen`）を更新し、稼働中経路を維持します。
 
-### セキュリティ（M3）
+### セキュリティ（M3）と永続 NodeId（M4）
 
 - **NodeId = Ed25519 公開鍵の指紋**（`SHA-256(rawPublicKey)` の先頭 16 バイト）。`senderId` と検証鍵の指紋が一致しなければパケットは破棄されます。
-- **すべてのパケットが Ed25519 署名されます**（プロトコル v2、64 バイト。署名対象は署名フィールドを除くシリアライズ済みパケット、TTL は 0 に正規化）。
+- **鍵管理を渡すとすべてのパケットが Ed25519 署名されます**（プロトコル v2、64 バイト。署名対象は署名フィールドを除くシリアライズ済みパケット、TTL は 0 に正規化）。
 - **鍵管理**: ブラウザは `BrowserKeyManager`（Web Crypto + **IndexedDB に非抽出 CryptoKey**）、Node.js は `NodeKeyManager`（`node:crypto`）。
-- **公開鍵の配布**: シグナリング時の `public-key` 交換 + `RT_UPDATE` への同梱。`KeyDirectory` が指紋一致を検証して登録します。
+- **公開鍵の配布**: シグナリング時の `public-key` 交換 + `RT_UPDATE` への同梱（送信元鍵と `entries[].publicKey`）。`KeyDirectory` が指紋一致を検証して登録し、マルチホップ先の鍵も事前共有なしに学習できます。
+- **永続化と衝突検出**: ブラウザ復元時は署名チャレンジで秘密鍵と公開鍵の対応を検証。Node.js は `NodeKeyManager.open({ keyFile })`。同一 NodeId に異なる鍵が対応する場合は `NodeIdCollisionError`。
 - `keyManager` を渡さない場合は後方互換のため v1（署名なし）で動作します。
 
-### 現状の制約（M3）
+### 現状の制約（M4）
 
 - 鍵のローテーション（同一 NodeId のままの鍵更新）、アプリケーションデータの E2E 暗号化、明示的なリプレイ検知の強化は未実装です（[specification.md](./specification.md) §10.7）。
 - Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+ です。非対応環境では v1 にフォールバックします。
-- NameServer / `webtcp://` URL / `domain.global` / ブロックチェーン連携は未実装です（M4–M5 / #25）。
+- NameServer と `webtcp://` URL は実装済みですが、名前解決はローカル信頼モデルです。`domain.global` / ブロックチェーン連携 / グローバル名前所有権は未実装です（M5 / #25）。
 - TURN サーバー自体は同梱していません（`iceServers` / `iceServersProvider` で利用者側サーバーを指定）。
 
 ## インストール
 
-```bash
-npm install @sonneko/webtcp-tunneler
-```
+> `@sonneko/webtcp-tunneler` はまだ npm に公開されていません（registry では未登録）。現時点ではこのリポジトリからビルドして利用してください。公開時にパッケージバージョンを決定します（文書バージョン 0.4.0 とは別管理）。
 
 このリポジトリから直接ビルドする場合:
 
@@ -154,8 +154,9 @@ node examples/server.mjs
   1. タブ A で「ポート 8080 で待ち受ける」を押す
   2. タブ B で「接続先を探す」→ 相手を選択 →「接続」（または「自動接続 (`bootstrap`)」）
   3. テキスト送信、および「80 KiB 分割送信テスト」（> 60 KiB 自動分割・再結合）を確認
-  4. 上部のパネルから STUN / カスタム TURN 設定（`?stun=1` でも有効化可能）を切り替えられます
-- **1 タブ自動自己チェック**: `http://localhost:8787/examples/demo/?selftest=1` を開くと、同一ページ内で 2 つの実 `RTCPeerConnection` を起動し、`bootstrap()`・ハンドシェイク・テキスト往復・96 KiB 自動分割・Half-Close の 5 項目を自動検証します。
+  4. 「名前を解決」「URL で接続」で `demo-service` / `demo-alias` の名前解決と `webtcp://` 接続を確認
+  5. 上部のパネルから STUN / カスタム TURN 設定（`?stun=1` でも有効化可能）を切り替えられます
+- **1 タブ自動自己チェック**: `http://localhost:8787/examples/demo/?selftest=1` を開くと、同一ページ内で 2 つの実 `RTCPeerConnection` を起動し、`bootstrap()`・Ed25519 署名・NameServer 名前解決・`webtcp://` URL 接続・テキスト往復・96 KiB 自動分割・Half-Close を自動検証します。
 - **2 タブ自動検証**: タブ A の「別タブで 2 タブ自動検証」を押すか、`?role=server&autostart=1` と `?role=client&autostart=1` を 2 タブで開きます。
 - **Playwright ヘッドレス Chromium 自動 E2E**:
   ```bash
@@ -249,6 +250,38 @@ if (connected.length > 0) {
 }
 ```
 
+### 名前解決と `webtcp://` URL（M4 / #25）
+
+```ts
+import { NameServer, parseWebTCPUrl } from '@sonneko/webtcp-tunneler';
+
+// サービス側: 名前を登録して NameServer を待ち受ける
+const ns = new NameServer(network);
+ns.registerA('my-service', network.localNodeId);
+ns.registerCNAME('alias', 'my-service');
+ns.listen(); // 既定の仮想ポート 5300
+
+// クライアント側: 既知の隣接/経路表ノードへ問い合わせて解決し、URL で接続
+const url = 'webtcp://alias:8080/path?x=1#frag';
+const parsed = parseWebTCPUrl(url); // path/query/fragment はアプリケーション用
+const stream = await network.connectURL(url, { nameServer: ns });
+await stream.send('hello');
+```
+
+- 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。
+- `webtcp://` のポートは必須（1–65535）。NodeId リテラル（32 文字 hex）なら NameServer なしで接続できます。
+- 名前解決はグローバルな所有権証明ではありません。`domain.global` / ブロックチェーン連携は M5 です。
+
+### Node.js で NodeId を永続化する
+
+```ts
+import { NodeKeyManager } from '@sonneko/webtcp-tunneler';
+
+// 初回は 0600 の PKCS#8 PEM を作成し、次回以降は同じ鍵 = 同じ NodeId を復元する
+const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' });
+console.log(keys.nodeId);
+```
+
 ### 低レベル API
 
 `WebTCPNetwork` は任意の `IChannel` と `Logger` を注入できます。
@@ -269,7 +302,7 @@ await network.start();
 ```ts
 import { NodeKeyManager, WebTCPNetwork, createEd25519Verifier } from '@sonneko/webtcp-tunneler';
 
-const keys = await NodeKeyManager.create();             // node:crypto で Ed25519 鍵を生成
+const keys = await NodeKeyManager.open({ keyFile: "./webtcp-identity.pem" }); // 永続 NodeId
 const { verifier, keyDirectory } = createEd25519Verifier({ keyManager: keys });
 
 const network = new WebTCPNetwork({
@@ -285,27 +318,28 @@ console.log('my NodeId:', network.localNodeId);  // = deriveNodeId(keys.publicKe
 既存の鍵を復元する場合:
 
 ```ts
-const keys = await NodeKeyManager.create({ privateKeyPem });  // PKCS#8 PEM
-// または const keys = await NodeKeyManager.create({ secretKeyHex });  // 32 バイトのシード
+const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' }); // ファイル永続化
+// または await NodeKeyManager.create({ privateKeyPem });  // PKCS#8 PEM
+// または await NodeKeyManager.create({ secretKeyHex });    // 32 バイトのシード
 ```
 
 ## ドキュメント
 
 | 文書 | 内容 |
 | :--- | :--- |
-| [specification.md](./specification.md) | プロトコル仕様（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、**セキュリティ §10**） |
+| [specification.md](./specification.md) | プロトコル仕様 0.4.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §10、**名前解決 §12**） |
 | [design.md](./design.md) | 実装構造と設計判断 |
 | [plan.md](./plan.md) | マイルストーン、将来課題、リスク |
-| [docs/layer.md](./docs/layer.md) | 将来構想（名前解決・分散ドメイン）のメモ |
+| [docs/layer.md](./docs/layer.md) | レイヤーと名前解決の解説（M4 実装済み部分と M5 将来構想） |
 | [webtcp_website/](./webtcp_website/) | Astro + Starlight 公式ドキュメントサイト |
 
 ## ディレクトリ構成
 
 ```
 webtcp_jslib/      ライブラリ本体（TypeScript）
-  src/core/        ブラウザ・Node 非依存のプロトコル実装（routing/keys, KeyDirectory を含む）
+  src/core/        ブラウザ・Node 非依存のプロトコル実装（routing/keys, KeyDirectory, naming を含む）
   src/adapters/    WebRTC / シグナリング / エントランス探索 / 鍵管理（keys）
-  tests/           node:test によるテスト（86 件）
+  tests/           node:test によるテスト（105 件）
   dist/            npm run build の生成物（Git 管理外）
 examples/
   server.mjs       静的配信 + シグナリングハブ + エントランス探索
@@ -333,8 +367,8 @@ npm run build
 - **M1（完了）**: 最小の end-to-end。アダプタ、コア修正、ビルド、デモ、テスト
 - **M2（完了）**: バイトストリーム化、自動分割、動的 RTO、輻輳制御、Fast Retransmit / SACK、ランダム ISN、Half-Close、ロガー、`bootstrap()`、TURN/ICE 再起動、ドキュメントサイト、実ブラウザ検証
 - **M3（完了 / #28）**: Ed25519 署名（プロトコル v2）、NodeId の鍵指紋化、`BrowserKeyManager` / `NodeKeyManager`、公開鍵の自動配布
-- **M4（予定 / #25）**: マルチホップ厳格化、SSE/WebSocket シグナリング、`webtcp://` URL、NameServer
-- **M5（予定 / #25）**: `domain.global`、ブロックチェーン連携
+- **M4（実装済み / #25）**: NameServer（A/CNAME）、`webtcp://` URL、永続 NodeId と衝突検出、RT_UPDATE の受信元検証と鍵伝播
+- **M5（予定 / #25）**: `domain.global`、ブロックチェーン連携、RPF 厳格化、SSE/WebSocket シグナリング
 
 詳細は [plan.md](./plan.md) を参照してください。
 
