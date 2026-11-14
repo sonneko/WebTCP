@@ -26,6 +26,7 @@ http://localhost:8787/examples/demo/?selftest=1
 ```
 
 1. エントランス探索と `network.bootstrap()` による実 WebRTC リンク確立
+1b. Ed25519 署名検証と NodeId の鍵指紋一致（プロトコル v2）
 2. 仮想 TCP 3 ウェイハンドシェイク（`ESTABLISHED`）とランダム ISN
 3. 双方向テキスト送受信と部分読み取り（`readExact`）
 4. 96 KiB（> 60 KiB）バイナリの自動分割・再結合とバイト完全一致・動的 RTO / `cwnd`

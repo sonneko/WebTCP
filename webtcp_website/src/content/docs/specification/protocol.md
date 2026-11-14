@@ -1,9 +1,9 @@
 ---
 title: プロトコル仕様サマリー
-description: specification.md（0.2.0 / プロトコル v1）のパケット形式、TCP セマンティクス、ルーティング、シグナリング契約の要約。
+description: specification.md（0.3.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、シグナリング契約の要約。
 ---
 
-このページはリポジトリの `specification.md`（バージョン 0.2.0 / プロトコル v1）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
+このページはリポジトリの `specification.md`（バージョン 0.3.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
 
 ## バイナリパケット形式（固定 24 バイトヘッダー）
 
@@ -12,7 +12,7 @@ description: specification.md（0.2.0 / プロトコル v1）のパケット形�
 | Offset | Size | Field | 型 | 説明 |
 | ---: | ---: | :--- | :--- | :--- |
 | 0 | 1 | `magic` | uint8 | 固定値 `0x57`（`'W'`） |
-| 1 | 1 | `version` | uint8 | プロトコルバージョン（`1`） |
+| 1 | 1 | `version` | uint8 | `2`（既定・署名必須）/ `1`（レガシー・署名なし） |
 | 2 | 1 | `ttl` | uint8 | 残ホップ数（初期値 64） |
 | 3 | 1 | `flags` | uint8 | ビットマスク（下表） |
 | 4 | 2 | `sourcePort` | uint16 | 送信元仮想ポート（1–65535） |
@@ -21,9 +21,9 @@ description: specification.md（0.2.0 / プロトコル v1）のパケット形�
 | 12 | 4 | `ackNum` | uint32 | 次に期待する受信バイト番号（mod 2^32） |
 | 16 | 1 | `senderIdLen` | uint8 | `senderId` UTF-8 長（1–255） |
 | 17 | 1 | `destIdLen` | uint8 | `destinationId` UTF-8 長（1–255） |
-| 18 | 2 | `signatureLen` | uint16 | 署名長（M1–M2 は 0） |
+| 18 | 2 | `signatureLen` | uint16 | 署名長（v2 は 64、v1 は 0） |
 | 20 | 4 | `payloadLen` | uint32 | ペイロード長（上限 60 KiB） |
-| 24 | var | 可変長部 | bytes | `senderId` / `destinationId` / `signature` / `payload` |
+| 24 | var | 可変長部 | bytes | `senderId` / `destinationId` / `signature`（Ed25519, 64 B） / `payload` |
 
 ### フラグビット（Offset 3）
 
@@ -58,6 +58,15 @@ description: specification.md（0.2.0 / プロトコル v1）のパケット形�
 状態: `CLOSED`, `SYN_SENT`, `SYN_RCVD`, `ESTABLISHED`, `FIN_WAIT_1`, `FIN_WAIT_2`, `CLOSE_WAIT`, `CLOSING`, `LAST_ACK`, `TIME_WAIT`。
 既定では `allowHalfOpen = true` であり、相手の `FIN` を受けても `CLOSE_WAIT` に留まってローカルからの送信を継続できます。
 
+## セキュリティ（プロトコル v2 / Ed25519）
+
+- **NodeId = Ed25519 公開鍵の指紋**: `hex(SHA-256(rawPublicKey)[0..16])`（32 文字）。指紋は決定的で、自己証明型の識別子になります。
+- **署名対象**: 署名フィールドを除いたシリアライズ済みパケット。**TTL は 0 に正規化**するため、中継ノードは再署名しません。
+- **検証**: `senderId` の指紋と検証鍵の指紋を照合し、署名を検証します。失敗したパケットは破棄されます。
+- **鍵管理**: ブラウザは Web Crypto + IndexedDB（**非抽出 CryptoKey**）、Node.js は `node:crypto`。
+- **公開鍵の配布**: シグナリング時の `public-key` 交換 + `RT_UPDATE` への `publicKey` 同梱。どちらも指紋一致を必須とします。
+- 詳細は [仕様書 §10](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
+
 ## シグナリング・エントランス HTTP 契約
 
 | メソッド | パス | 用途 |
@@ -65,3 +74,5 @@ description: specification.md（0.2.0 / プロトコル v1）のパケット形�
 | `POST` | `/signal` | Offer / Answer / ICE 候補の送信（`{ fromId, toId, message }` → `202`） |
 | `GET` | `/messages?nodeId=<id>&after=<cursor>` | 自ノード宛シグナリングメッセージのポーリング取得 |
 | `GET` | `/entrances?exclude=<NodeId>` | 接続候補ノード ID 一覧の取得 |
+
+DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'public-key', publicKey: <Base64url>, nodeId }`）を交換します（§9.2.1）。

@@ -7,7 +7,9 @@ import { IChannel } from '../link/IChannel.js';
 import { IEntranceSearcher } from '../link/IEntranceSearcher.js';
 import { ISignalingAdapter } from '../link/ISignalingAdapter.js';
 import { LinkManager } from '../link/LinkManager.js';
-import { IPacketVerifier } from '../routing/PacketVerifier.js';
+import { Ed25519PacketVerifier, IPacketVerifier, NullPacketVerifier } from '../routing/PacketVerifier.js';
+import { KeyDirectory } from '../routing/KeyDirectory.js';
+import { Ed25519KeyManager, isValidNodeId } from '../routing/keys.js';
 import { RoutingLayer } from '../routing/RoutingLayer.js';
 import { RoutingTable } from '../routing/RoutingTable.js';
 import { RoutingTableManagerOptions } from '../routing/RoutingTableManager.js';
@@ -19,11 +21,33 @@ export interface WebTCPNetworkOptions {
     channel: IChannel;
     /** シグナリングアダプタ（任意。`channel` が内部で利用する）。 */
     signaling?: ISignalingAdapter;
-    /** ノードID。省略時はシグナリングアダプタのID、それも無ければランダム生成。 */
+    /** ノードID。省略時は鍵管理の NodeId、シグナリングアダプタのID、ランダム生成の順に解決する。 */
     nodeId?: NodeId;
+    /**
+     * Ed25519 鍵管理（#28）。
+     *
+     * 指定すると、`verifier` 未指定の場合に `Ed25519PacketVerifier` を自動で組み立て、
+     * NodeId を公開鍵の指紋として扱う（プロトコル v2・署名必須）。
+     */
+    keyManager?: Ed25519KeyManager;
+    /**
+     * ピアの公開鍵ディレクトリ（任意）。
+     * 指定すると RT_UPDATE で学習した公開鍵を検証器と共有する。
+     * 省略時は `keyManager` から新しい `KeyDirectory` を生成して `network.keyDirectory` に公開する。
+     */
+    keyDirectory?: KeyDirectory;
+    /**
+     * 署名の必須化。既定は自動判定。
+     * - `keyManager` または `Ed25519PacketVerifier` を指定した場合は `true`
+     * - それ以外（`NullPacketVerifier`）は `false`（v1 パケットも受理）
+     */
+    requireSignatures?: boolean;
     /** パケットのシリアライザ（任意）。 */
     serializer?: IPacketSerializer;
-    /** 署名検証器（任意。既定は NullPacketVerifier）。 */
+    /**
+     * 署名検証器（任意）。
+     * 省略時は `keyManager` があれば `Ed25519PacketVerifier`、無ければ `NullPacketVerifier`。
+     */
     verifier?: IPacketVerifier;
     routingTableManager?: RoutingTableManagerOptions;
     transport?: TransportLayerOptions;
@@ -78,6 +102,12 @@ export class WebTCPNetwork extends EventEmitter {
     public readonly routingLayer: RoutingLayer;
     public readonly transportLayer: TransportLayer;
     public readonly logger: Logger;
+    /** Ed25519 鍵管理（未指定なら null）。 */
+    public readonly keyManager: Ed25519KeyManager | null;
+    /** 公開鍵ディレクトリ（鍵管理・検証器を使わない場合は null）。 */
+    public readonly keyDirectory: KeyDirectory | null;
+    /** 署名検証器（実際に使われているもの）。 */
+    public readonly verifier: IPacketVerifier;
 
     private readonly scopedLogger: Logger;
     private started = false;
@@ -92,8 +122,10 @@ export class WebTCPNetwork extends EventEmitter {
 
         this.logger = baseLogger;
         this.scopedLogger = createScopedLogger(baseLogger, 'NET');
-        this.localNodeId =
-            options.nodeId ?? options.signaling?.getLocalNodeId() ?? generateNodeId();
+        this.keyManager = options.keyManager ?? null;
+        this.localNodeId = this.resolveLocalNodeId(options);
+        this.keyDirectory = this.resolveKeyDirectory(options);
+        this.verifier = this.resolveVerifier(options);
 
         const routingTable = new RoutingTable(this.localNodeId);
 
@@ -105,7 +137,10 @@ export class WebTCPNetwork extends EventEmitter {
         );
 
         this.routingLayer = new RoutingLayer(this.localNodeId, this.linkManager, routingTable, {
-            ...(options.verifier ? { verifier: options.verifier } : {}),
+            verifier: this.verifier,
+            requiredSignatures: this.requiresSignatures(options),
+            ...(this.keyDirectory ? { keyDirectory: this.keyDirectory } : {}),
+            ...(this.keyManager ? { localPublicKey: this.keyManager.publicKey } : {}),
             ...(options.defaultTtl !== undefined ? { defaultTtl: options.defaultTtl } : {}),
             ...(options.routingTableManager
                 ? { routingTableManager: options.routingTableManager }
@@ -282,6 +317,74 @@ export class WebTCPNetwork extends EventEmitter {
         this.routingLayer.stop();
         this.linkManager.close();
         this.removeAllListeners();
+    }
+
+    /**
+     * NodeId を解決する。
+     *
+     * 優先順位: 明示指定 → 鍵管理の指紋 → シグナリングアダプタ → ランダム生成。
+     * 鍵管理が指定されている場合、明示 NodeId は指紋と一致しなければならない（§10.1）。
+     */
+    private resolveLocalNodeId(options: WebTCPNetworkOptions): NodeId {
+        const candidate =
+            options.nodeId ??
+            options.keyManager?.nodeId ??
+            (options.verifier instanceof Ed25519PacketVerifier
+                ? undefined
+                : options.signaling?.getLocalNodeId()) ??
+            generateNodeId();
+
+        if (options.keyManager && candidate !== options.keyManager.nodeId) {
+            throw new Error(
+                `nodeId ${candidate} does not match the Ed25519 key fingerprint ${options.keyManager.nodeId}`,
+            );
+        }
+        if (options.keyManager && !isValidNodeId(candidate)) {
+            throw new Error(`invalid NodeId: ${candidate}`);
+        }
+        return candidate;
+    }
+
+    private resolveKeyDirectory(options: WebTCPNetworkOptions): KeyDirectory | null {
+        if (options.keyDirectory) return options.keyDirectory;
+        if (options.verifier instanceof Ed25519PacketVerifier) {
+            return new KeyDirectory({ logger: options.logger });
+        }
+        if (options.keyManager) {
+            return new KeyDirectory({ logger: options.logger });
+        }
+        return null;
+    }
+
+    private resolveVerifier(options: WebTCPNetworkOptions): IPacketVerifier {
+        if (options.verifier) {
+            // `Ed25519PacketVerifier` にディレクトリが無い場合は、ネットワークの
+            // ディレクトリ（RT_UPDATE / シグナリングで学習）を共有する
+            if (
+                options.verifier instanceof Ed25519PacketVerifier &&
+                !options.verifier.hasKeyDirectory &&
+                this.keyDirectory &&
+                options.keyManager
+            ) {
+                return new Ed25519PacketVerifier({
+                    keyManager: options.keyManager,
+                    keyDirectory: this.keyDirectory,
+                });
+            }
+            return options.verifier;
+        }
+        if (options.keyManager) {
+            return new Ed25519PacketVerifier({
+                keyManager: options.keyManager,
+                ...(this.keyDirectory ? { keyDirectory: this.keyDirectory } : {}),
+            });
+        }
+        return new NullPacketVerifier();
+    }
+
+    private requiresSignatures(options: WebTCPNetworkOptions): boolean {
+        if (options.requireSignatures !== undefined) return options.requireSignatures;
+        return Boolean(options.keyManager) || options.verifier instanceof Ed25519PacketVerifier;
     }
 
     private assertNotAbortedOrClosed(signal?: AbortSignal): void {

@@ -15,6 +15,11 @@ export interface RoutingInfoPacket {
     }[];
     /** 到達不能になった宛先（経路の撤回）。 */
     withdrawals?: NodeId[];
+    /**
+     * 送信元の Ed25519 公開鍵（Base64url、任意）。
+     * プロトコル v2 では RT_UPDATE に同梱して全隣接へ配布する（specification.md §10.4.2）。
+     */
+    publicKey?: string;
 }
 
 /**
@@ -45,6 +50,14 @@ export interface RoutingTableManagerOptions {
  * - 定期的なエイジングとブロードキャスト
  */
 export class RoutingTableManager {
+    /**
+     * RT_UPDATE に同梱された公開鍵（Base64url）を受け取るフック（#28）。
+     * `RoutingLayer` が公開鍵ディレクトリへ登録するために設定する。
+     */
+    public onPublicKey:
+        | ((senderId: NodeId, publicKeyBase64Url: string) => void)
+        | null = null;
+
     private readonly localNodeId: NodeId;
     private readonly table: RoutingTable;
     private readonly transport: RoutingUpdateTransport;
@@ -91,12 +104,11 @@ export class RoutingTableManager {
     /** 隣接ノードが接続した。コスト1の経路を登録して情報交換を始める。 */
     public handleNeighborUp(peerId: NodeId): void {
         this.table.updateEntry(peerId, { cost: 1, nextHopId: peerId });
-        const neighbors = this.transport.getNeighbors();
-        if (!neighbors.includes(peerId)) {
-            void this.sendRoutingUpdate(peerId).catch((error) => {
-                this.logger.warn(`Failed to send initial routing update to ${peerId}:`, error);
-            });
-        }
+        // 新しい隣接へ自身のテーブル（公開鍵つき）を送り、
+        // 既存の隣接にも新しい経路を通知する
+        void this.sendRoutingUpdate(peerId).catch((error) => {
+            this.logger.warn(`Failed to send initial routing update to ${peerId}:`, error);
+        });
         this.broadcastRoutingUpdate();
     }
 
@@ -141,6 +153,11 @@ export class RoutingTableManager {
         if (!info) {
             this.logger.warn(`Dropping RT_UPDATE from ${senderId}: invalid structure`);
             return;
+        }
+
+        // 同梱された公開鍵を配布する（§10.4.2）。指紋照合は受け取り側で行う。
+        if (info.publicKey) {
+            this.onPublicKey?.(senderId, info.publicKey);
         }
 
         this.updateTableFromPeer(senderId, info.entries, info.withdrawals ?? []);
@@ -216,6 +233,14 @@ export class RoutingTableManager {
         return this.transport.sendRoutingUpdate(neighborId, this.createRoutingInfoPacket());
     }
 
+    /**
+     * 現在のテーブル（公開鍵つき）を全隣接へ即座に送る。
+     * テストや、公開鍵の即時配布のために公開している。
+     */
+    public announce(): void {
+        this.broadcastRoutingUpdate();
+    }
+
     /** 全隣接ノードへ現在のテーブルを送る。 */
     private broadcastRoutingUpdate(withdrawals: NodeId[] = []): void {
         const info = this.createRoutingInfoPacket(withdrawals);
@@ -272,6 +297,12 @@ export class RoutingTableManager {
             entries.push({ destinationId, cost });
         }
 
+        let publicKey: string | undefined;
+        if (candidate.publicKey !== undefined) {
+            if (typeof candidate.publicKey !== 'string') return null;
+            publicKey = candidate.publicKey;
+        }
+
         const withdrawals: NodeId[] = [];
         if (candidate.withdrawals !== undefined) {
             if (!Array.isArray(candidate.withdrawals)) return null;
@@ -281,6 +312,8 @@ export class RoutingTableManager {
             }
         }
 
-        return { senderId: candidate.senderId, entries, withdrawals };
+        return publicKey === undefined
+            ? { senderId: candidate.senderId, entries, withdrawals }
+            : { senderId: candidate.senderId, entries, withdrawals, publicKey };
     }
 }

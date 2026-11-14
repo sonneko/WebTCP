@@ -1,6 +1,12 @@
 import { IChannel } from '../../core/link/IChannel.js';
-import { ISignalingAdapter } from '../../core/link/ISignalingAdapter.js';
+import {
+    ISignalingAdapter,
+    isPublicKeyPayload,
+} from '../../core/link/ISignalingAdapter.js';
 import { NodeId } from '../../core/types/protocol.js';
+import { encodePublicKey, decodePublicKey } from '../../core/routing/keys.js';
+import type { Ed25519KeyManager } from '../../core/routing/keys.js';
+import type { KeyDirectory } from '../../core/routing/KeyDirectory.js';
 import { EventEmitter } from '../../core/util/EventEmitter.js';
 import { LogLevel, Logger, createScopedLogger, resolveLogger } from '../../core/util/Logger.js';
 
@@ -44,6 +50,18 @@ export interface WebRTCChannelOptions {
      * 猶予時間（ms）。既定 3000。
      */
     iceRestartDelayMs?: number;
+    /**
+     * Ed25519 鍵管理（任意、#28）。
+     *
+     * 指定すると、ピアとの DataChannel が開いた時点で `public-key`
+     * シグナリングメッセージを交換し、公開鍵ディレクトリへ自動登録する。
+     */
+    keyManager?: Ed25519KeyManager;
+    /**
+     * 公開鍵ディレクトリ（任意）。
+     * `keyManager` と併用して、交換した公開鍵を格納する。
+     */
+    keyDirectory?: KeyDirectory;
     /** ロガー（任意）。 */
     logger?: Logger;
     /** 既定コンソールロガーのログレベル（任意。既定 `'warn'`）。 */
@@ -106,6 +124,12 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         this.started = true;
 
         await this.signaling.listen((fromId, message) => {
+            if (isPublicKeyPayload(message.content) || message.type === 'public-key') {
+                void this.handlePublicKeyMessage(fromId, message.content).catch((error) => {
+                    this.logger.warn(`Failed to handle public-key from ${fromId}:`, error);
+                });
+                return;
+            }
             void this.handleSignal(fromId, message).catch((error) => {
                 this.logger.error(`Failed to handle ${message.type} from ${fromId}:`, error);
             });
@@ -404,6 +428,10 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             this.connectedPeers.set(peerId, true);
             this.resolveOpenWaiters(state);
             this.emit('connection-status', peerId, true);
+            // 公開鍵の交換（#28, §10.4.1）。ピアのリンク確立直後に行う。
+            void this.sendPublicKey(peerId).catch((error) => {
+                this.logger.warn(`Failed to exchange public key with ${peerId}:`, error);
+            });
         };
 
         dataChannel.onclose = () => {
@@ -419,6 +447,58 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
                 this.logger.warn(`Failed to read message from ${peerId}:`, error);
             });
         };
+    }
+
+    /**
+     * 自身の Ed25519 公開鍵をピアへ送る（シグナリング経由、§10.4.1）。
+     *
+     * 鍵管理が未設定の場合は何もしない（v1 相当の動作）。
+     */
+    public async sendPublicKey(peerId: NodeId): Promise<void> {
+        const keyManager = this.options.keyManager;
+        if (!keyManager) return;
+        await this.signaling.sendMessage(peerId, {
+            type: 'public-key',
+            content: {
+                type: 'public-key',
+                publicKey: encodePublicKey(keyManager.publicKey),
+                nodeId: keyManager.nodeId,
+            },
+            fromId: this.localNodeId,
+        });
+    }
+
+    /**
+     * `public-key` メッセージを処理する（§10.4.1）。
+     *
+     * 受信した公開鍵が `fromId` の指紋と一致することを確認してから、
+     * 公開鍵ディレクトリへ登録する。指紋が一致しない鍵は破棄する。
+     */
+    private async handlePublicKeyMessage(fromId: NodeId, content: unknown): Promise<void> {
+        if (this.closed) return;
+        if (!isPublicKeyPayload(content)) {
+            this.logger.warn(`Malformed public-key message from ${fromId}`);
+            return;
+        }
+
+        const publicKey = decodePublicKey(content.publicKey);
+        if (!publicKey) {
+            this.logger.warn(`Invalid Ed25519 public key from ${fromId}`);
+            return;
+        }
+        if (content.nodeId && content.nodeId !== fromId) {
+            this.logger.warn(
+                `Ignoring public key from ${fromId}: claimed nodeId ${content.nodeId} differs from sender`,
+            );
+            return;
+        }
+
+        const directory = this.options.keyDirectory;
+        if (!directory) return;
+        const accepted = await directory.addPublicKey(fromId, publicKey);
+        if (accepted) {
+            this.logger.debug(`Learned Ed25519 public key for ${fromId} via signaling`);
+        }
     }
 
     private destroyPeer(peerId: NodeId, state: PeerState, notify: boolean): void {

@@ -12,7 +12,9 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | オプション | 型 | 既定値 | 説明 |
 | :--- | :--- | :--- | :--- |
 | `signaling` | `ISignalingAdapter` | **必須** | シグナリングアダプタ |
-| `nodeId` | `NodeId` | `signaling.getLocalNodeId()` | ノード ID |
+| `nodeId` | `NodeId` | `keyManager.nodeId` → `signaling.getLocalNodeId()` | ノード ID（鍵管理を渡す場合は指紋と一致必須） |
+| `keyManager` | `Ed25519KeyManager` | — | Ed25519 鍵管理。渡すとプロトコル v2（署名必須）になる |
+| `keyDirectory` | `KeyDirectory` | 鍵管理から自動生成 | ピア公開鍵のディレクトリ |
 | `iceServers` | `RTCIceServer[]` | `[]` | 静的 STUN / TURN 設定 |
 | `iceServersProvider` | `() => RTCIceServer[] \| Promise<RTCIceServer[]>` | — | 接続生成・ICE 再起動時の動的 ICE 設定取得フック |
 | `maxIceRestarts` | `number` | `2` | ICE 失敗時の自動再起動上限（`0` で無効） |
@@ -74,6 +76,37 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `'drain'` | なし | 送信バッファ・未 ACK キューがともに空になった |
 | `'close'` | なし | `CLOSED` へ遷移完了（一度だけ） |
 | `'error'` | `Error` | RST または再送上限超過などの異常終了 |
+
+## セキュリティ API（M3 / #28）
+
+### 鍵管理
+
+| API | 説明 |
+| :--- | :--- |
+| `BrowserKeyManager.open({ databaseName?, regenerate?, keyDirectory?, logger? })` | ブラウザ用。秘密鍵を **IndexedDB に非抽出 CryptoKey** として保存。`nodeId` / `publicKey` / `sign()` / `verify()` / `deriveNodeId()` |
+| `BrowserKeyManager.regenerate(options)` | 新しい鍵ペアで IndexedDB を上書き |
+| `NodeKeyManager.create({ privateKeyPem?, secretKeyHex?, nodeId?, keyDirectory? })` | Node.js 用（`node:crypto`）。`exportPrivateKeyPem()` / `exportSecretKeyHex()` |
+| `deriveNodeId(publicKey)` | `hex(SHA-256(公開鍵)[0..16])` を返す（NodeId の鍵指紋化） |
+| `nodeIdMatchesPublicKey(nodeId, publicKey)` | 指紋の照合 |
+| `isValidNodeId(value)` | `^[0-9a-f]{32}$` の判定 |
+| `encodePublicKey(publicKey)` / `decodePublicKey(text)` | Base64url（パディングなし）エンコード |
+
+### 署名・検証・公開鍵ディレクトリ
+
+| API | 説明 |
+| :--- | :--- |
+| `new Ed25519PacketVerifier({ keyManager, keyDirectory?, serializer?, keyWaitTimeoutMs? })` | `IPacketVerifier` 実装。署名付与と検証 |
+| `createEd25519Verifier({ keyManager, keyDirectory?, ... })` | `{ verifier, keyDirectory, publicKey, publicKeyEncoded, nodeId }` を返すヘルパー |
+| `new KeyDirectory({ logger? })` | `addPublicKey()`（指紋不一致は `false`）/ `getPublicKey()` / `waitForPublicKey()` |
+| `NullPacketVerifier` | 署名なしのレガシー検証器（v1 相互運用専用） |
+| `isEd25519KeyManager(value)` | 鍵管理の型ガード |
+
+### `WebTCPNetwork` の署名関連プロパティ
+
+- `keyManager: Ed25519KeyManager | null` — 指定した鍵管理
+- `keyDirectory: KeyDirectory | null` — 公開鍵ディレクトリ
+- `verifier: IPacketVerifier` — 実際に使われている検証器
+- オプション `requireSignatures?: boolean` — 既定は鍵管理 / `Ed25519PacketVerifier` 指定時に `true`
 
 ## アダプタとロガー
 

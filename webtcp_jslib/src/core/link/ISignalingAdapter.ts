@@ -1,11 +1,34 @@
 import { NodeId } from '../types/protocol.js';
 
 /**
+ * シグナリングメッセージの種別（specification.md §9.2）。
+ *
+ * - `offer` / `answer` / `candidate`: WebRTC のネゴシエーション
+ * - `public-key`: Ed25519 公開鍵の交換（#28、プロトコル v2）
+ */
+export type SignalMessageType = 'offer' | 'answer' | 'candidate' | 'public-key';
+
+/**
+ * `public-key` メッセージの内容（specification.md §9.2.1 / §10.4.1）。
+ *
+ * `publicKey` は 32 バイトの Ed25519 公開鍵を Base64url で表したもの。
+ * `nodeId` は送信側の NodeId（= 公開鍵の指紋）。受信側は指紋の一致を検証する。
+ */
+export interface PublicKeyPayload {
+    type: 'public-key';
+    /** Ed25519 公開鍵（Base64url、32 バイト）。 */
+    publicKey: string;
+    /** 送信側の NodeId（任意。省略時は `fromId` を使う）。 */
+    nodeId?: NodeId;
+}
+
+/**
  * シグナリングメッセージのペイロード構造（specification.md §9.2）。
  * WebRTCのSDP（Offer/Answer）やICE Candidateが入る。
  */
 export interface SignalMessage {
-    type: 'offer' | 'answer' | 'candidate';
+    type: SignalMessageType;
+    /** SDP / ICE candidate / `PublicKeyPayload`。 */
     content: unknown;
     fromId: NodeId;
 }
@@ -38,4 +61,11 @@ export interface ISignalingAdapter {
      * 受信を停止し、リソースを解放する（任意）。
      */
     close?(): void;
+}
+
+/** `content` が `PublicKeyPayload` かどうか。 */
+export function isPublicKeyPayload(value: unknown): value is PublicKeyPayload {
+    if (typeof value !== 'object' || value === null) return false;
+    const candidate = value as Partial<PublicKeyPayload>;
+    return candidate.type === 'public-key' && typeof candidate.publicKey === 'string';
 }

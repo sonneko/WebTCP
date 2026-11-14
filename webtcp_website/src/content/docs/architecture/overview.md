@@ -22,7 +22,8 @@ description: design.md に基づく WebTCP のレイヤー構成、モジュー�
 |     VirtualStream  : 状態機械 / バイト Seq-Ack / 自動分割    |
 |                      動的 RTO / 輻輳制御 / SACK / Half-Close |
 +-----------------------------------------------------------+
-| L3  RoutingLayer   : 宛先判定 / 転送 / TTL / RPF / 署名検証  |
+| L3  RoutingLayer   : 宛先判定 / 転送 / TTL / RPF             |
+|     Ed25519 署名・検証 / KeyDirectory（公開鍵の指紋）          |
 |     RoutingTable(+Manager) : 距離ベクトル経路表と撤回伝播    |
 +-----------------------------------------------------------+
 | L2  LinkManager    : 隣接管理 / バイナリシリアライズ         |
@@ -51,9 +52,21 @@ description: design.md に基づく WebTCP のレイヤー構成、モジュー�
 
 24 バイト固定ヘッダーを変更せず、純粋な `ACK` パケットの空ペイロード領域に SACK オプション（種別 `0x05` + 最大 4 ブロック）を載せる設計としました。順序外データが無い通常時はペイロード 0 バイトのままオーバーヘッドゼロです。
 
+### Ed25519 署名と自己証明型 NodeId（M3 / #28）
+
+`NodeId` は **Ed25519 公開鍵の指紋**（`SHA-256` の先頭 16 バイト）です。署名対象は「署名フィールドを除いたシリアライズ済みパケット」で、
+TTL は 0 に正規化されるため、送信元が 1 度署名すれば中継ノードは再署名せずに転送できます。
+公開鍵は (1) DataChannel open 時の `public-key` シグナリング交換、(2) `RT_UPDATE` への同梱、で配布され、
+受信側は `KeyDirectory` に登録する前に必ず指紋一致を検証します。
+
+鍵管理はプラットフォームごとに分離しています（`core` は暗号ライブラリに依存しない）。
+
+- `BrowserKeyManager`: Web Crypto API + IndexedDB（秘密鍵は **非抽出 CryptoKey**）
+- `NodeKeyManager`: `node:crypto`（Ed25519 `KeyObject` + `webcrypto.subtle`）
+
 ### 差し替え可能な署名検証とロガー
 
-- **署名検証（`IPacketVerifier`）**: M1–M2 の既定は `NullPacketVerifier`。ワイヤーフォーマット上に署名フィールドを予約済みで、M3（#28）で `Ed25519PacketVerifier` を導入予定です。
+- **署名検証（`IPacketVerifier`）**: 既定は `Ed25519PacketVerifier`（プロトコル v2、#28）。`keyManager` を渡すと署名必須になります。`NullPacketVerifier` は v1 後方互換専用として残置しています。
 - **ロガー（`Logger`）**: コア・アダプタ全体から `console.*` の直書きを廃止し、`WebTCPNetwork` へ注入したロガーを全層へ伝播します（既定 `warn` 以上）。
 
 ## 接続・通信・切断シーケンス

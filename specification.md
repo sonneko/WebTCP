@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.2.0 |
+| 文書バージョン | 0.3.0 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
-| プロトコルバージョン | 1 |
+| プロトコルバージョン | 2（v1 は受信のみ後方互換） |
 | ステータス | 実験的（破壊的変更あり） |
 | 最終更新 | 2026-11-14 |
 
@@ -22,13 +22,16 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 2. バイトストリーム指向の**順序保証・自動分割・再送・輻輳制御・半閉鎖**（TCP に相当する L4 機能）
 3. シグナリング手段や STUN/TURN 設定を差し替え可能にする**リンク層の抽象化**
 4. 将来のマルチホップルーティングおよび名前解決に耐える**L3 ヘッダー**
+5. 改ざん・なりすましを防ぐ **Ed25519 署名**と、公開鍵の指紋に基づく**自己証明型の NodeId**（v2）
 
 ## 2. 用語
 
 | 用語 | 定義 |
 | :--- | :--- |
 | ノード (Node) | WebTCP ネットワークに参加する 1 つの実行環境（通常は 1 ブラウザタブ）。`NodeId` で識別される。 |
-| NodeId | ノードを一意に識別する文字列。M1–M2 では 128 ビットのランダム hex（32 文字）。M3 で公開鍵指紋に置き換える。 |
+| NodeId | ノードを一意に識別する 32 文字の hex。プロトコル v2 では **Ed25519 公開鍵の指紋**（`SHA-256` の先頭 16 バイト）。v1（レガシー）ではランダム値。 |
+| 鍵管理 (KeyManager) | Ed25519 の鍵生成・署名・検証・公開鍵解決を担う実装。ブラウザは `BrowserKeyManager`、Node.js は `NodeKeyManager`。 |
+| 公開鍵ディレクトリ (KeyDirectory) | `NodeId -> Ed25519 公開鍵` の対応表。指紋一致を検証して登録する。 |
 | 隣接ノード (Neighbor) | データチャネルが直接確立している相手ノード。 |
 | 仮想ストリーム (VirtualStream) | 仮想 TCP セッション。`(remoteNodeId, localPort, remotePort)` で一意。 |
 | 仮想ポート | アプリケーションを識別する 16 ビット整数（有効範囲 1–65535、0 は制御用予約）。 |
@@ -53,7 +56,8 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 |                      動的 RTO / 輻輳制御 / Fast Retransmit  |
 |                      SACK / Half-Close / 部分読み取り       |
 +-----------------------------------------------------------+
-| L3  RoutingLayer   : 宛先判定 / 転送 / TTL / RPF / 検証     |
+| L3  RoutingLayer   : 宛先判定 / 転送 / TTL / RPF             |
+|     Ed25519 署名・検証 / KeyDirectory（公開鍵の指紋）          |
 |     RoutingTable(+Manager) : 経路表と距離ベクトル交換         |
 +-----------------------------------------------------------+
 | L2  LinkManager    : 隣接管理 / パケットのフレーミング        |
@@ -70,10 +74,26 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 
 ### 5.1 NodeId
 
-- 形式: `^[0-9a-f]{32}$`（M1–M2）。実装は 16 バイトの乱数を hex 化する。
-- ノードは自身の NodeId を 1 つだけ持つ。
-- NodeId は**自己申告**であり、M1–M2 では暗号学的な検証を行わない。M3 で公開鍵指紋に移行する（§10）。
+- 形式: `^[0-9a-f]{32}$`（16 バイトの hex、32 文字）。
+- **プロトコル v2（既定）**: NodeId は Ed25519 公開鍵の指紋である。
+
+  ```
+  NodeId = hex( SHA-256( rawEd25519PublicKey ) [0..16] )
+  ```
+
+  - `rawEd25519PublicKey` は 32 バイトの生公開鍵（SPKI ではなく `raw` 形式）。
+  - 指紋は**決定的**であり、同じ公開鍵からは常に同じ NodeId が得られる。
+  - したがって NodeId は自己証明型であり、パケットの `senderId` が「署名を検証できる公開鍵の指紋」と
+    一致することを確認すれば、なりすましは成立しない（§10.2）。
+  - 実装は `deriveNodeId(publicKey)`（`src/core/routing/keys.ts`）で提供する。
+- **プロトコル v1（レガシー）**: ランダムな 16 バイトを hex 化した値を自己申告で用いる。
+  暗号学的な検証は行えない。v2 ノードは v1 パケットを後方互換のため受理してよい (MAY) が、
+  `requireSignatures` が有効な場合は破棄しなければならない (MUST)。
+- ノードは自身の NodeId を 1 つだけ持つ。鍵管理が NodeId を導出できない場合、
+  そのノードは v2 に参加してはならない (MUST NOT)。
 - シグナリングアダプタは `getLocalNodeId()` で同一の値を返さなければならない (MUST)。
+  鍵管理を用いる場合、`SignalingAdapterHub` の `nodeId` には鍵管理の NodeId を渡す。
+- NodeId の長さは v1 / v2 で共通（32 文字）であり、24 バイト固定ヘッダーのレイアウトは変わらない。
 
 ### 5.2 仮想ポート
 
@@ -85,7 +105,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 
 仮想ストリームは `(remoteNodeId, localPort, remotePort)` の三つ組で識別する。実装内部では文字列 `${remoteNodeId}:${localPort}:${remotePort}` をキーとしてよい。双方向で同一のキーになる必要があるため、送信側は `sourcePort = localPort`, `destinationPort = remotePort` を必ず設定しなければならない (MUST)。
 
-## 6. パケット形式（プロトコルバージョン 1）
+## 6. パケット形式（プロトコルバージョン 2 / v1 互換）
 
 すべての WebTCP パケットは 1 つのバイナリメッセージとしてデータチャネルで送信される。データチャネルはメッセージ境界を保存するため、追加のフレーミングは行わない。
 
@@ -96,7 +116,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | Offset | Size | Field | 型 | 説明 |
 | ---: | ---: | :--- | :--- | :--- |
 | 0 | 1 | `magic` | uint8 | 固定値 `0x57` (`'W'`)。不正値は破棄。 |
-| 1 | 1 | `version` | uint8 | 固定値 `1`。未知バージョンは破棄。 |
+| 1 | 1 | `version` | uint8 | `2`（既定・署名必須）または `1`（レガシー・署名なし）。未知バージョンは破棄。 |
 | 2 | 1 | `ttl` | uint8 | 残ホップ数。初期値 64 を推奨。 |
 | 3 | 1 | `flags` | uint8 | §6.3 のビットマスク。 |
 | 4 | 2 | `sourcePort` | uint16 | 送信元仮想ポート。 |
@@ -105,25 +125,38 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | 12 | 4 | `ackNum` | uint32 | 次に期待する受信シーケンス番号（バイト単位、mod 2^32）。 |
 | 16 | 1 | `senderIdLen` | uint8 | `senderId` の UTF-8 バイト長（1–255）。 |
 | 17 | 1 | `destIdLen` | uint8 | `destinationId` の UTF-8 バイト長（1–255）。 |
-| 18 | 2 | `signatureLen` | uint16 | `signature` のバイト長。M1–M2 は 0。 |
+| 18 | 2 | `signatureLen` | uint16 | `signature` のバイト長。v2 は **64**（Ed25519）、v1 は **0**。 |
 | 20 | 4 | `payloadLen` | uint32 | `payload` のバイト長。 |
 | 24 | var | `senderId` | UTF-8 | 送信元 NodeId。 |
 | … | var | `destinationId` | UTF-8 | 最終宛先 NodeId。 |
-| … | var | `signature` | bytes | 署名（M1–M2 は空）。 |
+| … | var | `signature` | bytes | Ed25519 署名（64 バイト、v2）。v1 では空。 |
 | … | var | `payload` | bytes | アプリケーションデータまたは制御ペイロード（`RT_UPDATE` JSON、`ACK` の SACK オプション）。 |
 
-固定ヘッダー長は 24 バイト。合計長 = `24 + senderIdLen + destIdLen + signatureLen + payloadLen`。
+固定ヘッダー長は 24 バイト（v1 / v2 で共通）。合計長 = `24 + senderIdLen + destIdLen + signatureLen + payloadLen`。
+
+v1 と v2 の違いは `version` フィールドと `signature` の有無だけであり、ヘッダーレイアウトは同一である。
+送信側は次の規則でバージョンを決める (MUST)。
+
+- `signature` が 64 バイトなら **v2**。
+- `signature` が空なら **v1**。
+
+したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§13）。
 
 ### 6.2 受信時の検証
 
 受信側は次を検証し、いずれかに違反したパケットを**破棄しなければならない** (MUST)。
 
 1. バッファ長が 24 バイト以上である。
-2. `magic == 0x57` かつ `version == 1`。
+2. `magic == 0x57` かつ `version` が `1` または `2`。それ以外は破棄する。
 3. 宣言された各長の合計がバッファ長と**厳密に一致する**。
 4. `senderId`, `destinationId` が空でない。
 5. `payloadLen` が実装の上限（既定 60 KiB）以下である。
 6. `flags` の下位 7 ビット（ビット 0–6）に既知のフラグが 1 つ以上立っている。
+7. **`version == 2` なら `signatureLen == 64`、`version == 1` なら `signatureLen == 0`。** 違反は破棄 (MUST)。
+8. `version == 2` なら `senderId` が `^[0-9a-f]{32}$` に一致する。違反は破棄 (MUST)。
+9. `version == 2` なら署名検証（§10）に成功する。失敗は破棄し `warn` ログを出す (MUST)。
+
+7〜9 はシリアライザではなくルーティング層（`RoutingLayer`）が担う（デシリアライズは構文検証のみ）。
 
 ### 6.3 フラグ
 
@@ -154,7 +187,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 
 `RoutingLayer.sendPacket(packet)` は次を行う。
 
-1. 署名付与（M1–M2 は Null 検証器により何もしない）。
+1. 署名付与（§10.3）。既に署名が付いているパケット（中継転送）は再署名しない。
 2. `destinationId == localNodeId` ならトランスポート層へ渡して終了。
 3. `ttl <= 0` のパケットは破棄する。
 4. ルーティングテーブルから宛先エントリを取得。存在しなければ、宛先が**直接の隣接**であれば `cost=1` とみなす。それ以外は破棄し警告する。
@@ -164,12 +197,16 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 
 受信側は次を行う。
 
-1. デシリアライズ（失敗時は破棄）。
-2. 署名検証（§10）。
+1. デシリアライズ（失敗時は破棄。§6.2 の 1–7）。
+2. **署名検証**（§10.2）。失敗・欠落は破棄し `warn` ログを出す (MUST)。
 3. `RT_UPDATE` パケットは `RoutingTableManager` へ渡し、トランスポート層へは渡さない。
+   `RT_UPDATE` に同梱された `publicKey` は公開鍵ディレクトリへ登録する（§10.4.2）。
 4. **RPF (Reverse Path Forwarding)** チェック: 送信元への経路の nextHop が、実際に受信した隣接と一致することを確認する。ただし経路が未学習で、かつ受信元が直接の隣接である場合は許可する（M1–M2 の縮退動作）。それ以外は破棄。
 5. `destinationId == localNodeId` ならトランスポート層へ渡して終了。
 6. そうでなければ中継転送する: `ttl` を 1 減算し、`ttl <= 0` になった場合は破棄する (MUST)。残っていれば経路表の `nextHop` へ送信する。
+
+中継ノードは `senderId` の署名を TTL 減算後に再計算してはならない (MUST NOT)。
+TTL が署名対象外（0 に正規化）であるため、減算しても署名検証は成立する（§10.3）。
 
 ### 7.4 ルーティング情報パケット（RT_UPDATE）
 
@@ -181,9 +218,13 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
   "entries": [
     { "destinationId": "fedcba9876543210fedcba9876543210", "cost": 1 }
   ],
-  "withdrawals": ["00112233445566778899aabbccddeeff"]
+  "withdrawals": ["00112233445566778899aabbccddeeff"],
+  "publicKey": "ISvn_HoP1dCMEm4bsU7kNzMqrxXPpd-LXRjPPHErhAI"
 }
 ```
+
+- `publicKey`（任意、プロトコル v2）: 送信元の Ed25519 公開鍵（32 バイトの Base64url、パディングなし）。
+  詳細は §10.4.2 を参照。v2 ノードは同梱することが望ましい (SHOULD)。
 
 - `entries` には自分自身のエントリを含めてはならない (MUST NOT)。
 - 受信側は送信元隣接ノード（`senderId`）の直接経路（`cost = 1`）の `lastSeen` を更新しなければならない (MUST)。
@@ -193,6 +234,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 - 経路表に実質的な変化（追加・削除・コスト変更）が発生した場合、全隣接ノードへ現在のテーブルを再送する。
 - 30 秒ごとにメンテナンスを行い、60 秒以上更新のない `cost > 0` のエントリを削除する。削除したエントリは `withdrawals` として通知する。
 - ルーティング情報パケットはトランスポート層へ渡してはならない (MUST NOT)。
+- `publicKey` が同梱されている場合、受信側は `senderId` の指紋との一致を確認したうえで公開鍵ディレクトリへ登録しなければならない (MUST)。不一致なら破棄する。
 
 ### 7.5 TTL
 
@@ -393,14 +435,32 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 
 ```ts
 interface SignalMessage {
-  type: 'offer' | 'answer' | 'candidate';
-  content: unknown;      // RTCSessionDescriptionInit / RTCIceCandidateInit
+  type: 'offer' | 'answer' | 'candidate' | 'public-key';
+  content: unknown;      // RTCSessionDescriptionInit / RTCIceCandidateInit / PublicKeyPayload
   fromId: NodeId;
 }
 ```
 
 - `fromId` は送信側が設定し、アダプタは内容を改変してはならない (MUST NOT)。
 - 候補（candidate）は remote description 設定前に到着する可能性があるため、受信側はキューに保持し、設定後にまとめて追加しなければならない (MUST)。
+
+### 9.2.1 公開鍵の交換（`public-key`、プロトコル v2）
+
+```ts
+interface PublicKeyPayload {
+  type: 'public-key';
+  publicKey: string;   // 32 バイトの Ed25519 公開鍵（Base64url、パディングなし）
+  nodeId?: NodeId;     // 送信側の NodeId（= 公開鍵の指紋）。省略時は fromId を使う
+}
+```
+
+- DataChannel が開いた時点で、**双方が** `public-key` メッセージを相手へ送る (SHOULD)。
+  これにより、`RT_UPDATE` の到着を待たずに初回パケットを検証できる。
+- 受信側は `fromId` が公開鍵の指紋と一致することを確認しなければならない (MUST)。不一致は破棄。
+- `nodeId` が付与されていて `fromId` と異なる場合も破棄する (MUST)。
+- 公開鍵は公開情報であるため、シグナリングハブ（平文 HTTP）経由でも機密性の問題はない。
+  ただし**指紋照合を必ず行う**ことにより、ハブが鍵をすり替えてもなりすましは成立しない。
+- 同じノードから異なる公開鍵が届いた場合、既に登録済みの鍵を優先して保持する (MUST)。
 
 ### 9.3 ネゴシエーション・同時接続（Glare）・ICE 再起動
 
@@ -444,20 +504,140 @@ interface SignalMessage {
 - **TURN 資格情報の動的取得フック**: `iceServersProvider?: () => RTCIceServer[] | Promise<RTCIceServer[]>` を指定すると、`RTCPeerConnection` 生成時および ICE 再起動時に都度呼ばれ、短期有効期限の TURN 資格情報（RFC 8489 / TURN REST API 相当）を安全に注入できる。
 - **ICE 再起動**: `iceConnectionState` が `'failed'` に遷移したとき、または `'disconnected'` が `iceRestartDelayMs`（既定 3000 ms）継続したとき、`maxIceRestarts`（既定 2 回）を上限として自動的に ICE 再起動（`createOffer({ iceRestart: true })`）を試行する。`iceServersProvider` が設定されている場合は `setConfiguration({ iceServers })` で資格情報も再取得する。上限を超えた失敗時はピアを破棄し `connection-status(false)` を発火する。
 
-## 10. セキュリティ
+## 10. セキュリティ（プロトコル v2 / Ed25519）
 
-M1–M2 では次を**保証しない**。これは既知の制約であり、M3（#28）で解消する。
+本章は M3（#28）で導入したセキュリティモデルを定義する。
 
-- NodeId の真正性（なりすまし可能）
-- パケットの改ざん検知（`signature` は常に空）
-- ペイロードの機密性（DTLS によるトランスポート暗号化のみ）
+### 10.1 脅威モデルと保証する範囲
 
-M3 の要件（予定）:
+| 脅威 | 対策 | 保証 |
+| :--- | :--- | :--- |
+| **なりすまし**（他人の NodeId を名乗る） | NodeId = 公開鍵指紋。`senderId` と署名検証鍵の指紋が一致しなければ破棄 | ✅ 防止 |
+| **改ざん**（ヘッダー・ペイロードの書き換え） | 署名対象は署名フィールドを除くシリアライズ済みパケット全体 | ✅ 検知 |
+| **偽造パケットの注入** | 隣接ノードは正規の Ed25519 署名なしにパケットを通せない | ✅ 防止 |
+| **リプレイ** | トランスポートのシーケンス空間 + 再送キューで重複を排除（§10.6） | ⚠️ 部分的 |
+| **盗聴** | WebRTC の DTLS（DataChannel）によるトランスポート暗号化 | ⚠️ ホップ間のみ |
+| **中継ノードによる内容閲覧** | 中継ノードは署名検証はできるが、ペイロードは DTLS 終端で復号される | ❌ 未対応（E2E 暗号化は非目標） |
+| **鍵の漏洩** | ブラウザは非抽出 CryptoKey（IndexedDB）、Node.js は PKCS#8 を利用者が保護 | ⚠️ 実装依存 |
+| **DoS（署名計算の浪費）** | デシリアライズ段階で長さ・バージョン・`signatureLen` を検証してから署名検証に入る | ⚠️ 部分的 |
 
-- NodeId = Ed25519 公開鍵の指紋。
-- 送信時にヘッダーとペイロード（署名フィールドを除く）へ署名。
-- 受信時に公開鍵を取得して検証。`KeyManager` インターフェース経由で鍵を解決する。
-- 検証に失敗したパケットは破棄する。
+**保証しないもの**:
+
+- アプリケーション層のペイロード機密性（DTLS 終端より上では平文。E2E 暗号化は M4 以降の課題）。
+- 公開鍵の真正性そのもの（初回接触時の中間者。指紋の帯域外確認は利用者の責任）。
+- ノードの可用性・レート制限。
+
+### 10.2 署名の検証手順
+
+受信側（`RoutingLayer.handleIncomingPacket`）は次の順で検証し、
+いずれかに違反したパケットを**破棄しなければならない** (MUST)。
+
+1. `packet.version == 2`（または署名が付与されている）ことを確認する。
+2. `senderId` が `^[0-9a-f]{32}$` に一致することを確認する。
+3. `signature` の長さが **64 バイト**であることを確認する。
+4. `senderId` に対応する Ed25519 公開鍵を解決する（§10.4）。
+   - 解決できない場合、既定では最大 **5 秒**（`keyWaitTimeoutMs`）まで鍵の到着を待つ。
+   - それでも得られない場合は破棄する。
+5. 公開鍵の指紋が `senderId` と一致することを確認する（§5.1）。不一致は破棄。
+6. 署名対象バイト列（§10.3）に対して `Ed25519.verify(publicKey, signatureInput, signature)` を実行する。
+   `false` なら破棄。
+
+`version == 1`（署名なし）パケットは次のように扱う。
+
+- `RoutingLayer` の `requiredSignatures`（`WebTCPNetwork` では `requireSignatures`）が
+  **`false`（後方互換モード）** の場合のみ受理する。既定は次のとおり。
+  - `keyManager` または `Ed25519PacketVerifier` を注入した場合: **`true`（署名必須）**
+  - `NullPacketVerifier`（レガシー）の場合: **`false`**
+- `true` のとき、v1 パケットは破棄する (MUST)。
+
+### 10.3 署名対象（正規化）
+
+署名対象は **「署名フィールドを除いた、シリアライズ済みパケット」** である。
+
+```
+signatureInput = magic | version | ttl(0 固定) | flags | sourcePort | destinationPort
+               | seqNum | ackNum | senderIdLen | destIdLen | signatureLen(0 固定)
+               | senderId | destinationId | payload
+```
+
+- `signatureLen` フィールドは **0** として書き込む（署名バイト列そのものは含めない）。
+- **`ttl` は 0 に正規化する**。TTL は中継のたびに減算されるため、そのまま署名対象にすると
+  中継ノードが再署名する必要が生じる。TTL 0 固定とすることで、
+  「送信元が 1 度だけ署名し、以降は誰も再署名しない」モデルを実現する (MUST)。
+- `version` は送信時のバージョン（v2 = `2`）を含める。
+- 実装は `BinaryPacketSerializer.serializeForSigning(packet)`（送信側）と
+  `signatureInputFromBytes(rawBytes)`（受信側、再シリアライズせずに同じ表現を生成）で提供する。
+- 送受信で **1 バイトでも異なれば検証は失敗する**。したがって、受信バイト列から
+  署名対象を導出する経路（`signatureInputFromBytes`）と送信側の経路は同一の結果を返さなければならない (MUST)。
+
+### 10.4 公開鍵の配布
+
+採用方式は **「シグナリング時の交換」+「`RT_UPDATE` への同梱」** の併用である。
+いずれの経路でも、受信側は **指紋一致（`nodeId == deriveNodeId(publicKey)`）を必ず検証** するため、
+配布経路が信頼できなくてもなりすましは成立しない。
+
+#### 10.4.1 シグナリング時の交換
+
+DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.1）を交換する。
+直接の隣接ノードとは、これにより `RT_UPDATE` を待たずに署名検証を開始できる。
+
+#### 10.4.2 `RT_UPDATE` への同梱
+
+`RT_UPDATE` のペイロード JSON に `publicKey`（Base64url）を含める。
+`RT_UPDATE` 自体も署名されるため、受信側は「同梱された公開鍵で署名を検証し、
+その公開鍵の指紋が `senderId` と一致すること」を確認できる（自己証明）。
+マルチホップでは中継ノードもこの経路で送信元の公開鍵を学習できる。
+
+#### 10.4.3 公開鍵ディレクトリと解決順序
+
+`KeyDirectory`（`IPublicKeyResolver`）が `NodeId -> 公開鍵` を保持する。解決順序は次のとおり。
+
+1. ディレクトリに登録済みの鍵（シグナリング交換・`RT_UPDATE`・手動登録・既学習キャッシュ）
+2. 受信パケットに同梱された鍵（`RT_UPDATE` の `publicKey`）— 指紋一致が条件
+3. 最大 `keyWaitTimeoutMs`（既定 5000 ms）待機して再試行
+
+`IPublicKeyResolver` を実装すれば、IPFS 等の**分散ストレージ**から鍵を引く方式に差し替えられる
+（M4 以降の課題。M3 では同梱インターフェースのみ提供）。
+
+#### 10.4.4 鍵の衝突・すり替え
+
+- 既に登録済みの NodeId に対して **異なる鍵** が提示された場合、既存の鍵を保持し、新しい鍵は破棄する (MUST)。
+- 同一鍵の再提示は冪等に受理する (MAY)。
+
+### 10.5 鍵管理（KeyManager）
+
+| 実装 | 環境 | 秘密鍵の保存 | 署名・検証のプリミティブ |
+| :--- | :--- | :--- | :--- |
+| `BrowserKeyManager` | ブラウザ | **IndexedDB** に **非抽出 CryptoKey**（`extractable: false`）。公開鍵・NodeId は同一レコード＋ `localStorage` 相当のキャッシュ | Web Crypto API（`crypto.subtle`、Ed25519） |
+| `NodeKeyManager` | Node.js | メモリ上の `KeyObject`。永続化は PKCS#8 PEM / シード hex を利用者が管理 | `node:crypto`（`generateKeyPairSync` / `webcrypto.subtle`） |
+
+要件:
+
+- 秘密鍵は**生バイトとしてエクスポートできない**ことが望ましい (SHOULD)。ブラウザ実装は `extractable: false` を既定とする。
+- 署名（`sign`）・検証（`verify`）・指紋導出（`deriveNodeId`）を提供しなければならない (MUST)。
+- 全実装で `deriveNodeId` は同一結果を返さなければならない (MUST)。
+- 利用可能な Ed25519 実装: Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+。
+  非対応環境では v1（`NullPacketVerifier`）へフォールバックする。
+
+### 10.6 リプレイ対策
+
+- 仮想ストリーム内の `DATA` / `SYN` / `FIN` は**バイト単位のシーケンス空間**で重複排除される（§8.3）。
+  既に受信済みの範囲は破棄され、アプリケーションへ二重に渡らない。
+- `ackNum` は累積確認応答であるため、古い `ackNum` を持つリプレイは送信状態を巻き戻さない
+  （`SND.UNA` より古い ACK は無視される）。
+- `RT_UPDATE` は **`lastSeen` の更新のみ** を行い（距離ベクトルのコスト比較）、
+  リプレイされても経路の逆転や削除を引き起こさない。撤回（`withdrawals`）は
+  現行のネクストホップが一致する場合に限り適用される。
+- **限界**: 署名付きパケットそのものは有効期限を持たないため、リンク層の外で記録・再送された
+  パケットを「新規」と誤認する余地がある。セッション Nonce とタイムスタンプによる明示的な
+  再生検知は M4 以降の強化課題とする（`plan.md` §4.1）。
+
+### 10.7 既知の制約
+
+- アプリケーションデータの **E2E 暗号化は行わない**（WebRTC の DTLS によるホップ間暗号化のみ）。
+- **鍵のローテーション**は NodeId の変更を意味する。同一ノード ID のままの鍵更新は未定義。
+- 初回接触時の中間者（TOFU: Trust On First Use）。指紋の帯域外確認は未実装。
+- 検証失敗パケットのレート制限・ブロックリストは未実装。
 
 ## 11. エラー・ログ・既定値
 
@@ -473,6 +653,11 @@ M3 の要件（予定）:
 | 状況 | 挙動 |
 | :--- | :--- |
 | 不正なパケット | 破棄し、`warn` ログ。例外を上位へ伝播させない。 |
+| 署名検証失敗（v2） | 破棄し、`warn` ログ（`Dropping <FLAGS> from <senderId>: invalid signature`）。 |
+| 署名欠落（`requireSignatures: true`） | 破棄し、`warn` ログ（`... : signature required (protocol v2)`）。 |
+| 公開鍵が解決できない（v2） | `keyWaitTimeoutMs` まで待機し、解決できなければ `invalid signature` として破棄。 |
+| 署名検証中の例外 | 破棄し、`warn` ログ（`... : signature verification threw: <message>`）。例外は上位へ伝播させない。 |
+| 署名付与の失敗（送信時） | `warn` ログ（`Failed to sign <FLAGS> packet; sending unsigned.`）のうえ、v1 パケットとして送信（縮退動作）。 |
 | 宛先不明 | 破棄し、`warn` ログ。 |
 | 未リッスンポートへの SYN | RST を返す。 |
 | 接続タイムアウト | `connect()` を reject。ストリームを破棄。 |
@@ -501,6 +686,12 @@ M3 の要件（予定）:
 | シグナリングポーリング | 1 s |
 | RT_UPDATE 間隔 / 経路寿命 | 30 s / 60 s |
 | 既定ログレベル | `warn` |
+| プロトコルバージョン（署名あり / なし） | v2 / v1 |
+| Ed25519 署名長 | 64 B |
+| NodeId バイト長 | 16 B（`SHA-256` の先頭 16 バイト） |
+| 公開鍵長 | 32 B |
+| 公開鍵待機タイムアウト (`keyWaitTimeoutMs`) | 5 000 ms |
+| 署名必須化 (`requireSignatures`) | 鍵管理または `Ed25519PacketVerifier` 指定時 `true` |
 
 ## 12. 公開 API
 
@@ -510,9 +701,12 @@ M3 の要件（予定）:
 new WebTCPNetwork({
   channel: IChannel,          // 必須
   signaling?: ISignalingAdapter,
-  nodeId?: NodeId,
+  nodeId?: NodeId,            // 省略時: keyManager.nodeId → signaling → ランダム
+  keyManager?: Ed25519KeyManager,   // ブラウザ: BrowserKeyManager / Node: NodeKeyManager
+  keyDirectory?: KeyDirectory,      // 公開鍵ディレクトリ（省略時は鍵管理から生成）
+  requireSignatures?: boolean,      // 既定: 鍵管理 / Ed25519PacketVerifier 指定時 true
   serializer?: IPacketSerializer,
-  verifier?: IPacketVerifier,
+  verifier?: IPacketVerifier,       // 省略時: 鍵管理があれば Ed25519PacketVerifier
   routingTableManager?: RoutingTableManagerOptions,
   transport?: TransportLayerOptions,
   defaultTtl?: number,
@@ -530,8 +724,14 @@ getRoutingTable(): RoutingTable
 close(): void
 ```
 
-- `channel` は必須である。ブラウザでは `createBrowserNetwork({ signaling, iceServers?, iceServersProvider?, logger?, logLevel?, ... })` を使うと `BrowserWebRTCChannel` が自動で組み立てられる。
-- `nodeId` を省略した場合、`signaling.getLocalNodeId()`、それも無ければランダム生成を使う。
+- `channel` は必須である。ブラウザでは `createBrowserNetwork({ signaling, keyManager?, iceServers?, iceServersProvider?, logger?, logLevel?, ... })` を使うと `BrowserWebRTCChannel` が自動で組み立てられる。
+- `nodeId` の解決順は `options.nodeId` → `keyManager.nodeId` → `signaling.getLocalNodeId()`
+  → ランダム生成（`generateNodeId()`）である。ただし `Ed25519PacketVerifier` を直接注入した場合は
+  シグナリングの NodeId を使わない（署名鍵を持たないノード ID で署名することになるため）。
+- 鍵管理を指定した場合、`nodeId` は必ず `keyManager.nodeId`（公開鍵の指紋）と一致しなければならない。
+  不一致ならコンストラクタが例外を投げる（`nodeId ... does not match the Ed25519 key fingerprint ...`）。
+- `keyManager` / `keyDirectory` / `requireSignatures` は M3（#28）で追加された。
+  `keyManager` を渡すと自動的にプロトコル v2（署名必須）になり、`verifier` も `Ed25519PacketVerifier` が組まれる。
 - `connect()` は必要に応じてリンクを確立してから仮想接続を開始する。
 - `bootstrap()` はエントランス探索結果から候補へ順次接続を試み、失敗時は指数バックオフでリトライする。
 - 起動完了時に `'ready'` イベントを発火する。
@@ -561,17 +761,65 @@ on('connect' | 'data' | 'readable' | 'end' | 'close' | 'drain' | 'error', listen
 - `drain` は送信バッファおよび未 ACK キューが空になったときに発火する。
 - `close` は `CLOSED` 遷移時に一度だけ発火する。
 
+### 12.3 セキュリティ API（M3 / #28）
+
+```ts
+// NodeId = Ed25519 公開鍵の指紋
+deriveNodeId(publicKey: Uint8Array): Promise<NodeId>
+nodeIdMatchesPublicKey(nodeId: NodeId, publicKey: Uint8Array): Promise<boolean>
+isValidNodeId(value: unknown): value is NodeId
+
+// 鍵管理
+await NodeKeyManager.create({ privateKeyPem?, secretKeyHex?, nodeId?, keyDirectory? })
+await BrowserKeyManager.open({ databaseName?, regenerate?, keyDirectory?, logger? })
+keyManager.sign(data): Promise<Uint8Array>            // 64 バイト
+keyManager.verify(publicKey, data, signature): Promise<boolean>
+keyManager.deriveNodeId(publicKey): Promise<NodeId>
+keyManager.nodeId / keyManager.publicKey
+
+// 署名・検証
+new Ed25519PacketVerifier({ keyManager, keyDirectory?, serializer?, keyWaitTimeoutMs? })
+createEd25519Verifier({ keyManager, keyDirectory?, ... })
+    // → { verifier, keyDirectory, publicKey, publicKeyEncoded, nodeId }
+
+// 公開鍵ディレクトリ
+new KeyDirectory({ logger? })
+directory.addPublicKey(nodeId, publicKey | base64url): Promise<boolean>   // 指紋不一致は false
+directory.getPublicKey(nodeId): Promise<Uint8Array | null>
+directory.waitForPublicKey(nodeId, timeoutMs?): Promise<Uint8Array | null>
+```
+
+| API | 説明 |
+| :--- | :--- |
+| `deriveNodeId` / `nodeIdMatchesPublicKey` | 公開鍵指紋の導出・照合（§5.1） |
+| `NodeKeyManager` | Node.js 用の Ed25519 鍵管理（`node:crypto`） |
+| `BrowserKeyManager` | ブラウザ用の Ed25519 鍵管理（Web Crypto + IndexedDB / 非抽出 CryptoKey） |
+| `Ed25519PacketVerifier` | `IPacketVerifier` 実装。署名付与と検証（§10.2 / §10.3） |
+| `NullPacketVerifier` | 署名なしのレガシー検証器（v1 相互運用専用） |
+| `KeyDirectory` | `NodeId -> 公開鍵`。指紋照合つき登録・待機・学習 |
+| `IPublicKeyResolver` | 分散ストレージ等への差し替えポイント（§10.4.3） |
+
 ## 13. バージョニング
 
 - パケットの `version` フィールドで判別する。未知バージョンは破棄する。
-- M1–M2 は `version = 1`（24 バイト固定ヘッダーを維持し、SACK は `ACK` ペイロード拡張で後方互換を保つ）。
-- NodeId の形式変更（公開鍵指紋化）および署名必須化はプロトコルバージョン 2 とする予定（M3）。
+- **v1（M1–M2）**: `version = 1`。24 バイト固定ヘッダー、`signatureLen = 0`、NodeId はランダム hex。
+  SACK は `ACK` ペイロード拡張として後方互換を保つ。
+- **v2（M3 / #28、既定）**: `version = 2`。24 バイト固定ヘッダーは v1 と**完全に共通**で、
+  `signature` に 64 バイトの Ed25519 署名が入る。NodeId は公開鍵の指紋でなければならない。
+- 移行規則:
+  - 送信側は `signature` の有無で v1 / v2 を選ぶ（§6.1）。鍵管理を渡すと常に v2 になる。
+  - 受信側は v1 / v2 の両方を**デシリアライズできる** (MUST)。
+  - v2 ノードは既定で v1 パケットを受理する（後方互換）が、`requireSignatures: true` では破棄する。
+  - ヘッダーレイアウトが共通のため、v1 と v2 のノードが同一リンク上で併存しても
+    デシリアライズ段階では衝突しない（署名検証の可否だけが異なる）。
 
-## 14. 非目標（M2 時点）
+## 14. 非目標（M3 時点）
 
 以下は本仕様の対象外であり、`plan.md` に将来課題として記録する。
 
-- Ed25519 署名と NodeId の鍵指紋化（M3 / #28）
 - NameServer による名前解決、`webtcp://` URL スキーム、`domain.global`、ブロックチェーン連携（M4–M5 / #25）
+- 鍵のローテーション（NodeId を維持したままの鍵更新）と、マルチデバイス間の鍵同期
+- アプリケーションデータの E2E 暗号化（DTLS 終端より上の機密性）
+- セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§10.6 の限界）
 - HTTP/1.1・HTTP/2 の完全な実装
 - ブラウザ外（Node.js）での WebRTC 実装の同梱
