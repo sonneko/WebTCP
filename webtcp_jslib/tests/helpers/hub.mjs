@@ -46,7 +46,9 @@ export async function startHub() {
         }
 
         if (req.method === 'GET' && url.pathname === '/entrances') {
-            sendJson(200, { nodes: [...presence.keys()] });
+            const exclude = url.searchParams.get('exclude');
+            const nodes = [...presence.keys()].filter((nodeId) => nodeId !== exclude);
+            sendJson(200, { nodes });
             return;
         }
 

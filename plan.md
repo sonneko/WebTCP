@@ -2,174 +2,128 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.1.0 |
-| 対応仕様 | `specification.md` 0.1.0 |
-| 対応設計 | `design.md` 0.1.0 |
+| 文書バージョン | 0.2.0 |
+| 対応仕様 | `specification.md` 0.2.0 |
+| 対応設計 | `design.md` 0.2.0 |
 | 最終更新 | 2026-11-14 |
-| 現在のマイルストーン | **M1: 最小の end-to-end** |
+| 現在のマイルストーン | **M2 完了（次フェーズ: M3 セキュリティ）** |
 
 ---
 
-## 1. 現状の評価
+## 1. 開発経緯
 
-リポジトリには L2〜L4 の骨格とインターフェースが存在するが、次の理由で「動く状態」ではなかった。
-
-- アダプタ（`BrowserWebRTCChannel`, `SignalingAdapterHub`, `EntranceSearcherAdapterHub`, `NodeWebRTCChannel`）がすべて空ファイル。
-- コアがコンパイルできない（存在しない型・ファイルの import、シグネチャ不一致）。
-- Node.js 組み込み（`Buffer`, `events`, `NodeJS.Timeout`）に依存し、ブラウザで動作しない。
-- `dist/` には存在しない `hello()` の古い成果物だけがあり、`npm run build` が実質機能していない。
-- テスト・CI・デモ・シグナリングサーバーが存在しない。
-
-M1 ではこれらを解消し、「2 つのブラウザが実際に仮想 TCP でデータを送受信できる」最小構成を完成させる。
+- **M0（設計文書化）**: `specification.md` / `design.md` / `plan.md` の整備と既存課題の Issue 化を完了。
+- **M1（最小の end-to-end）**: ブラウザ非依存コア再構成、v1 シリアライザ、WebRTC / シグナリング / エントランス探索アダプタ、2 タブデモ、テスト 18 件、CI を完了し `main` へマージ済み。
+- **M2（TCP セマンティクス完成と運用基盤）**: 本サイクルで実装完了。バイト単位 Seq/Ack・ランダム ISN・60 KiB 超の自動分割・動的 RTO・輻輳制御・Fast Retransmit / SACK・Half-Close・レベル付きロガー・`bootstrap()` 自動接続・TURN/ICE 設定と自動 ICE 再起動・Starlight ドキュメントサイト・実ブラウザ 2 タブ検証の仕組みを整備した。
 
 ## 2. マイルストーン
 
 | ID | 名称 | 状態 | 概要 |
 | :--- | :--- | :--- | :--- |
 | M0 | 設計文書化 | ✅ 完了 | 仕様書・設計書・計画書、Issue 整理 |
-| **M1** | **最小の end-to-end** | **🚧 本作業** | アダプタ実装、コア修正、ビルド、デモ、テスト |
-| M2 | TCP セマンティクスの完成 | 未着手 | バイトストリーム化、自動分割、輻輳制御、ランダム ISN |
-| M3 | セキュリティ | 未着手 | Ed25519 署名、NodeId の鍵指紋化、KeyManager |
-| M4 | マルチホップと名前解決 | 未着手 | 3 ノード以上のルーティング、NameServer、`webtcp://` |
-| M5 | 分散ドメイン | 未着手 | `domain.global`、ブロックチェーン連携 |
+| M1 | 最小の end-to-end | ✅ 完了 | アダプタ実装、コア修正、ビルド、デモ、テスト |
+| **M2** | **TCP セマンティクスの完成と運用基盤** | **✅ 完了** | バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close・ロガー・`bootstrap()`・TURN/ICE 再起動・ドキュメントサイト・実ブラウザ検証 |
+| M3 | セキュリティ | 未着手 | Ed25519 署名、NodeId の鍵指紋化、KeyManager（#28） |
+| M4 | マルチホップ強化と名前解決 | 未着手 | RPF 厳格化、SSE/WebSocket シグナリング、NameServer、`webtcp://`（#25） |
+| M5 | 分散ドメイン | 未着手 | `domain.global`、ブロックチェーン連携（#25） |
 
-## 3. M1 のスコープ
+## 3. 完了済みマイルストーンのスコープ
 
-### 3.1 実装
+### 3.1 M1（完了）
 
 - [x] `specification.md` / `design.md` / `plan.md` の作成
 - [x] コアのコンパイル修正とブラウザ対応（`Uint8Array`、独自 `EventEmitter`）
 - [x] パケットシリアライザの再実装（v1 バイナリ形式、フラグのビット判定）
-- [x] `LinkManager` の再実装（`IChannel` 注入、シリアライザ経由の送受信）
-- [x] `RoutingLayer` / `RoutingTableManager` の修正（送信経路の一本化、RPF 緩和、経路撤回の伝播）
-- [x] `TransportLayer` / `VirtualStream` の修正（フラグ判定、状態遷移、ACK、タイムアウト、リーク解消）
-- [x] `WebTCPNetwork` の公開 API 整備（オプション形式、リンク自動確立）
-- [x] `BrowserWebRTCChannel`（+ 共通基底 `WebRTCChannel`、`NodeWebRTCChannel`）
-- [x] `SignalingAdapterHub`（HTTP ポーリング）
-- [x] `EntranceSearcherAdapterHub`（HTTP）
-- [x] `npm run build` で `dist/` に ESM + 型定義を生成
-- [x] `examples/` にデモとシグナリングサーバー
-- [x] 自動テスト（シリアライザ、トランスポート E2E、シグナリング、ルーティング）
-- [x] CI（build + test）
-- [x] README の「仕組み」節と利用方法の更新
+- [x] `LinkManager` / `RoutingLayer` / `RoutingTableManager` / `TransportLayer` / `VirtualStream` / `WebTCPNetwork` 修正
+- [x] `BrowserWebRTCChannel` / `NodeWebRTCChannel` / `SignalingAdapterHub` / `EntranceSearcherAdapterHub`
+- [x] `npm run build`（ESM + 型定義）、デモ・シグナリングサーバー、テスト 18 件、CI、README 更新
 
-### 3.2 完了条件 (DoD)
+### 3.2 M2（完了）
 
-1. `npm ci && npm run build` が成功し、`dist/index.js` と `dist/index.d.ts` が生成される。
-2. `npm test` が通る。テストには 2 ノード間の `connect` → `send` → 受信 → `close` が含まれる。
-3. `node examples/server.mjs` を起動し、2 つのブラウザタブ（または 2 ブラウザ）で同一オリジンのハブを介して接続し、メッセージの往復ができる。
-4. 未実装のアダプタが残っていない（空ファイルがない）。
-5. 仕様書・設計書・計画書と実装が矛盾しない。
-
-### 3.3 非スコープ
-
-- NameServer、`domain.global`、ブロックチェーン連携（M5）
-- NAT 越えの保証、TURN の自動設定
-- HTTP サーバーとしての完全な実装
+- [x] ドキュメントと実装の同期チェックおよび新規発見バグ（#30, #31, #32）の修正
+- [x] `specification.md` §8.2〜§8.5 / §9.3〜§9.6 / §11〜§12 の拡張
+- [x] **#23 TCP セマンティクス完成**:
+  - バイト単位 Seq/Ack（RFC 1982 mod 2^32 ラップアラウンド対応）と部分読み取り（`read` / `readExact` / `readable`）
+  - 60 KiB 超メッセージの MSS（既定 16 KiB）自動分割・送信バッファ・再結合
+  - 動的 RTO 計算（RFC 6298 Jacobson / Karn + 指数バックオフ）
+  - 輻輳制御（RFC 5681 Slow Start / AIMD Congestion Avoidance / Fast Recovery）
+  - Fast Retransmit（3 重複 ACK）とプロトコル v1 互換の SACK（最大 4 ブロック）
+  - 初期シーケンス番号（ISN）の暗号学的ランダム化
+  - 正しい Half-Close（`CLOSE_WAIT` / `FIN_WAIT_1` / `FIN_WAIT_2` / `LAST_ACK` / `CLOSING` / `TIME_WAIT`、`allowHalfOpen` 既定 `true`）
+- [x] **#26 レベル付きロガー**: `Logger` / `ConsoleLogger`（既定 `warn` 以上）/ `noopLogger` を導入し `WebTCPNetwork` および全層・全アダプタへ注入可能化（`console.*` 直書きを根絶）
+- [x] **#27 エントランス探索からの自動接続**: `WebTCPNetwork.bootstrap(searcher, options)` を実装（候補への順次接続、リトライ、指数バックオフ、`AbortSignal` 対応）
+- [x] **#24 TURN / ICE と NAT 越え**: `iceServers` の文書化、TURN 資格情報の動的取得フック（`iceServersProvider`）、接続失敗・切断時の自動 ICE 再起動（既存 DataChannel 維持）、デモへの STUN 設定例追加
+- [x] **#22 ドキュメントサイト**: `webtcp_website` を Starlight テンプレートから WebTCP 公式ドキュメントへ刷新し、CI でビルド検証
+- [x] **実ブラウザ 2 タブデモ検証の整備**: デモ内蔵の自己チェックモード（`?selftest=1` / `?role=server/client&autostart=1`）と Playwright ヘッドレス Chromium 2 タブ検証（`examples/verify-browser.mjs` + CI `browser-e2e` ジョブ）を追加
+- [x] テスト拡張（43 件すべて通過）およびドキュメント同期
 
 ## 4. 将来課題
 
-### 4.1 プロトコル / トランスポート
+### 4.1 セキュリティ（M3）
+
+| 課題 | 内容 | 目標 | Issue |
+| :--- | :--- | :--- | :--- |
+| Ed25519 署名 | `Ed25519PacketVerifier` を実装し、署名フィールド以外のパケットへ署名する。 | M3 | #28 |
+| NodeId の鍵指紋化 | NodeId を公開鍵指紋から導出し、なりすましを防ぐ（プロトコル v2）。 | M3 | #28 |
+| 鍵管理 | IndexedDB 等に非抽出秘密鍵を保存する `KeyManager` 実装。 | M3 | #28 |
+| リプレイ対策 | セッション Nonce とシーケンス検証の強化。 | M3 | #28 |
+
+### 4.2 ネットワーク強化（M4）
 
 | 課題 | 内容 | 目標 |
 | :--- | :--- | :--- |
-| バイトストリーム化 | 現在はパケット単位の Seq。TCP と同様にバイト単位の Seq/Ack にし、部分読み取り・再結合を提供する。 | M2 |
-| 自動分割 / 再結合 | 60 KiB 超のメッセージを透過的に分割する。 | M2 |
-| 輻輳制御 | 固定ウィンドウ・固定 RTO を、RTT 計測 + 動的 RTO + AIMD に置き換える。 | M2 |
-| 高速再送 | 重複 ACK による fast retransmit、SACK。 | M2 |
-| ランダム ISN | 初期シーケンス番号のランダム化。 | M2 |
-| 半閉鎖 | 現状は FIN 受信で双方向に閉じる。half-close を正しく扱う。 | M2 |
+| マルチホップ厳格化 | RPF の厳格化、ループ検出・スプリットホライズンの強化。 | M4 |
+| シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装追加。 | M4 |
 
-### 4.2 セキュリティ
+### 4.3 名前解決と分散ドメイン（M4–M5、据え置き）
 
-| 課題 | 内容 | 目標 |
-| :--- | :--- | :--- |
-| Ed25519 署名 | `PacketVerifier` を実装し、ヘッダー + ペイロードに署名する（#28）。 | M3 |
-| NodeId の鍵指紋化 | NodeId を公開鍵から導出し、なりすましを防ぐ。 | M3 |
-| 鍵管理 | IndexedDB 等に秘密鍵を保存する `KeyManager` 実装。 | M3 |
-| リプレイ対策 | シーケンス番号とセッションNonceの検証。 | M3 |
+| 課題 | 内容 | 目標 | Issue |
+| :--- | :--- | :--- | :--- |
+| `webtcp://` URL | `webtcp://nodeId:port/path` のパースとルーティング。 | M4 | #25 |
+| NameServer | `connection.on(port, ns.on)` による名前解決、CNAME / A レコード相当。 | M5 | #25 |
+| `domain.global` | グローバルドメインの登録・解決。 | M5 | #25 |
+| ブロックチェーン連携 | ドメイン所有権の証明と分散台帳への登録。 | M5 | #25 |
+| `generateIp` / 永続 NodeId | ノード識別子の永続化（localStorage）と衝突検出。 | M4 | #25 |
 
-### 4.3 ネットワーク
-
-| 課題 | 内容 | 目標 |
-| :--- | :--- | :--- |
-| マルチホップ | 3 ノード以上での転送、RPF の厳格化、ループ検出。 | M4 |
-| シグナリングの低遅延化 | SSE / WebSocket 実装の追加、接続確立の高速化。 | M4 |
-| TURN / ICE 設定 | `iceServers` の既定値、TURN 資格情報の注入。 | M4 |
-| エントランス探索の自動化 | `EntranceSearcherAdapterHub` の結果から自動接続。 | M4 |
-
-### 4.4 名前解決と分散ドメイン（今回のスコープ外）
-
-| 課題 | 内容 | 目標 |
-| :--- | :--- | :--- |
-| `webtcp://` URL | `webtcp://nodeId:port/path` のパースとルーティング。 | M4 |
-| NameServer | `connection.on(port, ns.on)` による名前解決、CNAME / A レコード相当。 | M5 |
-| `domain.global` | グローバルドメインの登録・解決。 | M5 |
-| ブロックチェーン連携 | ドメイン所有権の証明と分散台帳への登録。 | M5 |
-| `generateIp` / 永続 NodeId | ノード識別子の永続化（localStorage）と衝突検出。 | M4 |
-
-> これらは README および `docs/layer.md` に構想として書かれているが、M1 では実装しない。仕様の変更点は `specification.md` に追記する。
-
-### 4.5 品質・開発体験
+### 4.4 品質・開発体験（継続課題）
 
 | 課題 | 内容 |
 | :--- | :--- |
-| ログ制御 | `console.*` の直書きを廃止し、レベル付きロガーに置き換える。 |
-| E2E テスト | Playwright で 2 ブラウザの WebRTC 接続を CI で検証する。 |
-| ドキュメントサイト | `webtcp_website` を Starlight テンプレートから WebTCP のドキュメントに置き換える。 |
-| パッケージ公開 | npm 公開、`exports` のサブパス（`/adapters`）、バージョニング。 |
-| パフォーマンス | シリアライザのゼロコピー化、バッファプール。 |
+| パッケージ公開 | npm 公開、`exports` のサブパス（`/adapters`）、セマンティックバージョニング。 |
+| パフォーマンス | シリアライザのゼロコピー化、バッファプール、大量セッション時のベンチマーク。 |
 
 ## 5. リスクと対策
 
 | リスク | 影響 | 対策 |
 | :--- | :--- | :--- |
-| ブラウザごとの SCTP/DataChannel のメッセージサイズ差異 | 大きなパケットが送れない | 上限 60 KiB を仕様化。M2 で自動分割。 |
-| NAT 越え失敗 | デモが接続できない | 同一 LAN・同一ホストのデモを既定にし、TURN は利用者設定とする。 |
-| 署名なしのため不正パケットを注入できる | セキュリティ | M1 は実験用途と明記。M3 で署名必須化。 |
-| 距離ベクトルの収束遅延 | 3 ノード以上で一時的に到達不能 | 直接隣接への送信は常に許可。M4 で改善。 |
-| 仕様と実装の乖離 | 保守性低下 | 仕様変更時は同一 PR で `specification.md` を更新する。 |
+| ブラウザごとの SCTP/DataChannel のメッセージサイズ差異 | 大きなパケットが送れない | 既定 MSS を 16 KiB に設定し 60 KiB 超を自動分割（M2 で解消）。 |
+| Symmetric NAT での接続失敗 | P2P 直接接続不可 | `iceServers` と動的 TURN 資格情報フック `iceServersProvider`、自動 ICE 再起動を提供（M2 で対応）。TURN サーバー自体は利用者配備。 |
+| 署名なしのため不正パケットを注入できる | セキュリティ | M1–M2 は実験用途と明記。M3（#28）で Ed25519 署名を必須化。 |
+| 距離ベクトルの収束遅延 | 3 ノード以上で一時的に到達不能 | 直接隣接への送信は常に許可。M4 でルーティングを強化。 |
+| 仕様と実装の乖離 | 保守性低下 | 各サイクル冒頭でドキュメント同期チェックを行い、仕様変更時は同一 PR で更新する。 |
 
 ## 6. Issue 運用
 
-- 不具合・未実装は GitHub Issues に 1 件ずつ登録する。
-- 本マイルストーンで修正した Issue は PR 本文で `Closes #n` として紐付ける。
-- 将来課題は `enhancement` ラベルを付け、本計画書の該当節から辿れるようにする。
-
 ### 6.1 M1 で修正した Issue
 
-| # | 内容 |
-| :--- | :--- |
-| #1 | ビルドが dist を生成しない |
-| #2 | コアがコンパイルできない |
-| #3 | `PacketVarifier.ts` の typo と未完成実装 |
-| #4 | `WebTCPNetwork` の import パス誤り |
-| #5 | `RoutingTable` のコンストラクタ不一致 |
-| #6 | ペイロード文字列によるパケット種別判定 |
-| #7 | シリアライザのフラグ復元不正 |
-| #8 | `LinkManager` のダミー実装 |
-| #9 | `PortMultiplexer.ts` の重複 |
-| #10 | `RetrainsmitQueue.ts` の typo |
-| #11 | Node.js 組み込み依存（ブラウザ非対応） |
-| #12 | RPF が未学習経路で全破棄 |
-| #13 | 署名検証の必須化と `KeyManager` 不在 |
-| #14 | `VirtualStream` の ACK・状態遷移 |
-| #15 | セッションのリーク |
-| #16 | `connect()` のタイムアウト不在 |
-| #17 | アダプタが空 |
-| #18 | シグナリングサーバー・デモ不在 |
-| #19 | テスト・CI 不在 |
-| #20 | README の未完成・乖離 |
-| #21 | package.json の不備 |
+#1 〜 #21（すべてクローズ済み）。
 
-### 6.2 M1 の対象外として残した Issue
+### 6.2 M2 で対応した Issue
+
+| # | 種別 | 内容 |
+| :--- | :--- | :--- |
+| #22 | documentation | `webtcp_website` を WebTCP 公式 Starlight ドキュメントサイトへ刷新 |
+| #23 | enhancement | TCP セマンティクス完成（バイトストリーム・自動分割・動的 RTO・輻輳制御・Fast Retransmit / SACK・ランダム ISN・Half-Close） |
+| #24 | enhancement | TURN / ICE 設定文書化、動的資格情報フック、デモ STUN 設定例、自動 ICE 再起動 |
+| #26 | enhancement | レベル付きロガー導入と `console.*` 直書き廃止 |
+| #27 | enhancement | `WebTCPNetwork.bootstrap(searcher)` とリトライ・指数バックオフ |
+| #30 | bug | `RoutingTableManager` の同一コスト `RT_UPDATE` `lastSeen` 未更新・重複送信・TTL 減算タイミング修正 |
+| #31 | bug | `TransportLayer` の `listen` ハンドラ呼出時期（`ESTABLISHED` 化）・`SYN` の `ackNum=0`・ピギーバック ACK・ポート衝突回避 |
+| #32 | bug | `WebRTCChannel` 同時接続 Glare 解決、`EntranceSearcherAdapterHub` `exclude` オプション、デモ UI と `package.json` の不備修正 |
+
+### 6.3 M3 以降に据え置いた Issue
 
 | # | 内容 | 予定 |
 | :--- | :--- | :--- |
-| #22 | `webtcp_website` がテンプレートのまま | 文書化フェーズ |
-| #23 | バイトストリーム・自動分割・輻輳制御 | M2 |
-| #24 | TURN / ICE 設定と NAT 越え | M4 |
-| #25 | NameServer / `webtcp://` / `domain.global` / ブロックチェーン | M4–M5 |
-| #26 | ログが console 直書き | M2 |
-| #27 | エントランス探索からの自動接続 | M4 |
 | #28 | Ed25519 署名と NodeId の鍵指紋化 | M3 |
+| #25 | NameServer / `webtcp://` / `domain.global` / ブロックチェーン連携 | M4–M5 |

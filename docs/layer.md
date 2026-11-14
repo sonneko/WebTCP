@@ -4,9 +4,9 @@
 > 現在の実装仕様は [specification.md](../specification.md)、設計は [design.md](../design.md)、
 > マイルストーンは [plan.md](../plan.md) を参照してください。
 >
-> M1 で実装済み: `WebTCPNetwork` / `VirtualStream` / `BrowserWebRTCChannel` / `SignalingAdapterHub` / `EntranceSearcherAdapterHub`
+> M1–M2 で実装済み: `WebTCPNetwork`（`bootstrap` 含む） / `VirtualStream`（バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close） / `BrowserWebRTCChannel`（ICE 再起動・`iceServersProvider`） / `SignalingAdapterHub` / `EntranceSearcherAdapterHub` / `Logger`
 >
-> M1 で未実装: `webtcp://` URL、`generateIp`、`NameServer`、`HTTP2WebTCPAdapter`、`domain.global`、ブロックチェーン連携
+> 未実装（M3–M5）: Ed25519 署名と鍵指紋化（#28）、`webtcp://` URL、`generateIp`、`NameServer`、`HTTP2WebTCPAdapter`、`domain.global`、ブロックチェーン連携（#25）
 
 ## 目標とするレイヤーモデル
 
@@ -26,11 +26,15 @@ WebTCPNetwork / VirtualStream
 
 WebTCP では、ノードを `NodeId` で直接指定するだけでなく、ドメイン名でサービスを発見できる世界を目指しています。
 
-### 想定 API（未実装）
+### 想定 API（現状と将来構想の対比）
 
 ```ts
-// 現状のAPI（M1）
-import { createBrowserNetwork, SignalingAdapterHub } from '@sonneko/webtcp-tunneler';
+// 現状の API（M2）
+import {
+    EntranceSearcherAdapterHub,
+    SignalingAdapterHub,
+    createBrowserNetwork,
+} from '@sonneko/webtcp-tunneler';
 
 const signaling = new SignalingAdapterHub({ url: location.origin });
 const network = createBrowserNetwork({ signaling });
@@ -41,15 +45,21 @@ network.listen(8080, (stream) => {
         console.log(new TextDecoder().decode(data));
         void stream.send('<h1>Hello World</h1>');
     });
+    stream.on('end', () => stream.end());
 });
 
-// クライアントは NodeId を直接指定する
-const stream = await network.connect(nodeId, 8080);
+// クライアントはエントランス探索 + NodeId で接続する
+const searcher = new EntranceSearcherAdapterHub({
+    url: location.origin,
+    exclude: network.localNodeId,
+});
+const { connected } = await network.bootstrap(searcher);
+const stream = await network.connect(connected[0], 8080);
 await stream.send(JSON.stringify({ message: 'Hello World', status: 'ok' }));
 ```
 
 ```ts
-// 将来構想（未実装）
+// 将来構想（未実装: M4–M5 / #25）
 import { WebTCPNetwork, generateIp } from '@sonneko/webtcp';
 import { BrowserWebRTCChannel } from '@sonneko/webtcp/channel';
 import { HTTP2WebTCPAdapter } from '@sonneko/webtcp/adapter';
@@ -90,8 +100,8 @@ connection.on(3000, ns.on);
 
 ### なぜ未実装なのか
 
-- `NodeId` は現在ランダムな hex であり、公開鍵と結びついていない。名前解決の前提となる「ノードの真正性」が未解決（M3）。
-- ドメインの所有権を誰が保証するか（ブロックチェーンか、信頼できるレジストリか）が未決定（M5）。
-- HTTP 層の API（`HTTPRes` など）はトランスポートのバイトストリーム化（M2）を待つ必要がある。
+- `NodeId` は現在ランダムな hex であり、公開鍵と結びついていない。名前解決の前提となる「ノードの真正性」が未解決（M3 / #28）。
+- ドメインの所有権を誰が保証するか（ブロックチェーンか、信頼できるレジストリか）が未決定（M5 / #25）。
+- バイトストリーム化（M2）は完了したため、M3 のセキュリティ導入後に M4–M5 で `webtcp://` と `NameServer` へ進む。
 
-これらは [plan.md](../plan.md) の §4.4 に将来課題として整理しています。
+これらは [plan.md](../plan.md) の §4.3 に将来課題として整理しています。

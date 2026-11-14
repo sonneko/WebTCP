@@ -20,7 +20,7 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "demo": "node examples/server.mjs"
+    "demo": "node ../examples/server.mjs"
   },
   "repository": {
     "type": "git",

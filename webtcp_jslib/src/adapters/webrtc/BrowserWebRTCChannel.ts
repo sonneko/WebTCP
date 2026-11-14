@@ -13,7 +13,7 @@ export class BrowserWebRTCChannel extends WebRTCChannel {
         super(signaling, options);
     }
 
-    protected createPeerConnection(): RTCPeerConnection {
+    protected createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
         const PeerConnectionCtor = (globalThis as { RTCPeerConnection?: typeof RTCPeerConnection })
             .RTCPeerConnection;
 
@@ -24,8 +24,6 @@ export class BrowserWebRTCChannel extends WebRTCChannel {
             );
         }
 
-        return new PeerConnectionCtor({
-            iceServers: this.options.iceServers ?? [],
-        });
+        return new PeerConnectionCtor({ iceServers });
     }
 }

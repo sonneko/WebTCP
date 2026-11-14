@@ -1,11 +1,13 @@
 import { NodeId } from '../../core/types/protocol.js';
-import { IEntranceSearcher } from './IEntranceSearcher.js';
+import { IEntranceSearcher } from '../../core/link/IEntranceSearcher.js';
 
 export interface EntranceSearcherAdapterHubOptions {
     /** ハブのベースURL。 */
     url: string;
     /** パス。既定 `/entrances`。 */
     path?: string;
+    /** 候補から除外するノードID（通常は自身の NodeId、specification.md §9.5）。 */
+    exclude?: NodeId;
     /** fetch の実装（テスト用に差し替え可能）。 */
     fetchImpl?: typeof fetch;
 }
@@ -20,13 +22,21 @@ export interface EntranceSearcherAdapterHubOptions {
  */
 export class EntranceSearcherAdapterHub implements IEntranceSearcher {
     private readonly url: string;
+    private readonly exclude: NodeId | undefined;
     private readonly fetchImpl: typeof fetch;
 
     constructor(options: EntranceSearcherAdapterHubOptions) {
         if (!options.url) {
             throw new Error('EntranceSearcherAdapterHub requires a hub URL');
         }
-        this.url = options.url.replace(/\/+$/, '') + (options.path ?? '/entrances');
+        const base = options.url.replace(/\/+$/, '') + (options.path ?? '/entrances');
+        this.exclude = options.exclude;
+        if (options.exclude) {
+            const sep = base.includes('?') ? '&' : '?';
+            this.url = `${base}${sep}exclude=${encodeURIComponent(options.exclude)}`;
+        } else {
+            this.url = base;
+        }
 
         const fetchImpl = options.fetchImpl ?? globalThis.fetch;
         if (typeof fetchImpl !== 'function') {
@@ -50,7 +60,8 @@ export class EntranceSearcherAdapterHub implements IEntranceSearcher {
         }
 
         const nodes = body.nodes.filter(
-            (node): node is NodeId => typeof node === 'string' && node.length > 0,
+            (node): node is NodeId =>
+                typeof node === 'string' && node.length > 0 && node !== this.exclude,
         );
         return [...new Set(nodes)];
     }

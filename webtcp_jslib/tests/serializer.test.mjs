@@ -102,3 +102,10 @@ test('serializer: refuses out-of-range ports and ttl', () => {
     assert.throws(() => serializer.serialize(createPacket({ destinationPort: 70000 })), /out of range/);
     assert.throws(() => serializer.serialize(createPacket({ ttl: -1 })), /out of range/);
 });
+
+test('serializer: rejects a packet with zero flags', () => {
+    const serializer = new BinaryPacketSerializer();
+    const encoded = serializer.serialize(createPacket());
+    encoded[3] = 0x00;
+    assert.throws(() => serializer.deserialize(encoded), /invalid flags/);
+});

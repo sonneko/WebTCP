@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WebTCP — 最小 end-to-end デモ</title>
+    <title>WebTCP — end-to-end デモ（M2）</title>
     <style>
         :root {
             color-scheme: dark;
@@ -28,16 +28,17 @@
         }
         h1 { font-size: 20px; margin: 0 0 4px; }
         h2 { font-size: 15px; margin: 0 0 12px; }
-        p.lead { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+        p.lead { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
         code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-        .node-id { font-size: 12px; color: var(--muted); word-break: break-all; }
-        .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+        .meta { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; font-size: 12px; color: var(--muted); }
+        .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
         .panel {
             background: var(--panel);
             border: 1px solid var(--border);
             border-radius: 10px;
             padding: 16px;
         }
+        .panel.wide { margin-top: 16px; }
         .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
         button {
             background: #21262d;
@@ -51,7 +52,8 @@
         button:hover:not(:disabled) { border-color: var(--accent); }
         button:disabled { opacity: 0.45; cursor: not-allowed; }
         button.primary { background: #1f6feb; border-color: #1f6feb; }
-        input, select {
+        button.ok { background: #238636; border-color: #238636; }
+        input, select, textarea {
             background: #0d1117;
             color: var(--text);
             border: 1px solid var(--border);
@@ -61,6 +63,7 @@
             font-family: inherit;
         }
         input[type="text"] { flex: 1; min-width: 140px; }
+        textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
         .log {
             margin: 0;
             padding: 8px;
@@ -75,46 +78,98 @@
         }
         .status { font-size: 12px; color: var(--muted); }
         .status.ok { color: var(--ok); }
+        .status.warn { color: var(--warn); }
         .status.err { color: var(--err); }
         .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+        .stats { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+        .checklist { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
+        .checklist li { padding: 4px 0; border-bottom: 1px solid #21262d; }
+        .badge { display: inline-block; min-width: 48px; text-align: center; padding: 1px 6px; border-radius: 4px; font-size: 11px; margin-right: 8px; }
+        .badge.pass { background: #1b4721; color: var(--ok); }
+        .badge.fail { background: #490202; color: var(--err); }
+        .badge.run { background: #3b2e00; color: var(--warn); }
     </style>
 </head>
 <body>
-    <h1>WebTCP — 最小 end-to-end デモ</h1>
+    <h1>WebTCP — end-to-end デモ（M2）</h1>
     <p class="lead">
-        このページを2つのタブ（または2つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
-        同一オリジンのシグナリングハブを経由して WebRTC の DataChannel が確立し、その上で仮想 TCP の接続が行われます。
+        このページを 2 つのタブ（または 2 つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
+        下部の「自己チェック」では 1 タブ内で 2 つの実 <code>RTCPeerConnection</code> を使い、自動ブートストラップ・大容量自動分割・Half-Close を一括検証できます。
     </p>
-    <div class="node-id mono">このタブの NodeId: <span id="node-id">(起動中...)</span></div>
+    <div class="meta mono">
+        <div>NodeId: <span id="node-id">(起動中...)</span></div>
+        <label>
+            ログレベル:
+            <select id="log-level-select">
+                <option value="warn" selected>warn（既定）</option>
+                <option value="info">info</option>
+                <option value="debug">debug</option>
+                <option value="silent">silent</option>
+            </select>
+        </label>
+    </div>
 
-    <div class="grid" style="margin-top: 16px;">
+    <section class="panel" style="margin-bottom: 16px;">
+        <h2>ICE / STUN / TURN 設定（NAT 越え設定例 #24）</h2>
+        <div class="row">
+            <select id="ice-preset-select">
+                <option value="none">同一ホスト / LAN（iceServers: [] — 既定）</option>
+                <option value="stun">パブリック STUN 例（stun:stun.l.google.com:19302）</option>
+                <option value="custom">カスタム JSON（STUN / TURN）</option>
+            </select>
+            <button id="apply-ice-btn">設定を反映して再起動</button>
+            <span id="ice-status" class="status">iceServers: []</span>
+        </div>
+        <div id="ice-custom-wrap" style="display: none; margin-top: 8px;">
+            <textarea id="ice-custom-json" rows="3">[{"urls":"stun:stun.l.google.com:19302"}]</textarea>
+        </div>
+        <div class="hint">
+            インターネット越えの環境では STUN（さらに Symmetric NAT 環境では TURN サーバーと短期資格情報取得フック <code>iceServersProvider</code>）を設定します。URL に <code>?stun=1</code> を付けると STUN プリセットで起動します。
+        </div>
+    </section>
+
+    <div class="grid">
         <section class="panel">
             <h2>1. サーバー（待ち受け側）</h2>
             <div class="row">
                 <button id="listen-btn" class="primary">ポート 8080 で待ち受ける</button>
+                <button id="open-client-tab-btn">別タブで 2 タブ自動検証</button>
                 <span id="listen-status" class="status">未開始</span>
             </div>
             <pre id="server-log" class="log"></pre>
-            <div class="hint">受け取ったデータをそのまま送り返します（エコー）。</div>
+            <div class="hint">テキストは <code>echo:...</code> を返し、大容量バイナリ（<code>BIG:</code> ヘッダ）はそのまま折り返します。Half-Close（<code>end</code>）受信時は応答後に閉じます。</div>
         </section>
 
         <section class="panel">
             <h2>2. クライアント（接続側）</h2>
             <div class="row">
                 <button id="discover-btn">接続先を探す</button>
-                <select id="peer-select" style="flex: 1; min-width: 160px;"></select>
+                <button id="bootstrap-btn">自動接続 (bootstrap)</button>
+                <select id="peer-select" style="flex: 1; min-width: 150px;"></select>
                 <button id="connect-btn" class="primary">接続</button>
+                <button id="disconnect-btn" disabled>切断</button>
             </div>
             <div class="row">
                 <span id="client-status" class="status">未接続</span>
             </div>
+            <div id="stream-stats" class="stats mono">TCP 統計: 未接続</div>
             <div class="row">
                 <input id="message-input" type="text" placeholder="送信するテキスト" value="こんにちは、WebTCP" disabled />
                 <button id="send-btn" disabled>送信</button>
+                <button id="send-large-btn" disabled>80 KiB 分割送信テスト</button>
             </div>
             <pre id="client-log" class="log"></pre>
         </section>
     </div>
+
+    <section class="panel wide">
+        <h2>3. 実ブラウザ自己チェック（Self-Check）</h2>
+        <div class="row">
+            <button id="selftest-btn" class="ok">自己チェックを実行（実 WebRTC 2 ピア）</button>
+            <span id="selftest-status" class="status">未実行（<code>?selftest=1</code> で自動実行）</span>
+        </div>
+        <ul id="selftest-list" class="checklist mono"></ul>
+    </section>
 
     <script type="module" src="./demo.js"></script>
 </body>

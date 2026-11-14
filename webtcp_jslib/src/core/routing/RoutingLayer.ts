@@ -1,10 +1,15 @@
 import { WebTCPPacket } from '../types/packet.js';
 import { NodeId } from '../types/protocol.js';
 import { EventEmitter } from '../util/EventEmitter.js';
+import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import type { LinkManager } from '../link/LinkManager.js';
 import { IPacketVerifier, NullPacketVerifier } from './PacketVerifier.js';
 import { RoutingTable } from './RoutingTable.js';
-import { RoutingInfoPacket, RoutingTableManager, RoutingTableManagerOptions } from './RoutingTableManager.js';
+import {
+    RoutingInfoPacket,
+    RoutingTableManager,
+    RoutingTableManagerOptions,
+} from './RoutingTableManager.js';
 
 /**
  * トランスポート層へパケットを渡すための抽象。
@@ -25,13 +30,15 @@ export interface RoutingLayerOptions {
     routingTableManager?: RoutingTableManagerOptions;
     /** 送信パケットの初期TTL。既定 64。 */
     defaultTtl?: number;
+    /** ロガー（任意）。 */
+    logger?: Logger;
 }
 
 /**
  * WebTCPプロトコルのルーティング層（L3）。
  *
  * - パケットの宛先判定と転送
- * - 署名検証（M1は NullPacketVerifier）
+ * - 署名検証（M1–M2は NullPacketVerifier）
  * - TTL 管理
  * - RPF（Reverse Path Forwarding）チェック
  * - RT_UPDATE のルーティングテーブルへの反映
@@ -44,6 +51,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     private readonly routingTable: RoutingTable;
     private readonly verifier: IPacketVerifier;
     private readonly defaultTtl: number;
+    private readonly logger: Logger;
 
     private transportLayer: TransportSink | null = null;
 
@@ -53,12 +61,14 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         routingTable: RoutingTable,
         options: RoutingLayerOptions = {},
     ) {
-        super();
+        const baseLogger = options.logger ?? defaultLogger;
+        super(baseLogger);
         this.localNodeId = localNodeId;
         this.linkManager = linkManager;
         this.routingTable = routingTable;
         this.verifier = options.verifier ?? new NullPacketVerifier();
         this.defaultTtl = options.defaultTtl ?? 64;
+        this.logger = createScopedLogger(baseLogger, 'RL');
 
         this.manager = new RoutingTableManager(
             localNodeId,
@@ -67,7 +77,10 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
                 getNeighbors: () => this.linkManager.getActiveNeighbors(),
                 sendRoutingUpdate: (neighborId, info) => this.sendRoutingUpdate(neighborId, info),
             },
-            options.routingTableManager,
+            {
+                ...options.routingTableManager,
+                logger: options.routingTableManager?.logger ?? baseLogger,
+            },
         );
 
         // LinkManager からのイベントを購読する
@@ -117,14 +130,27 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
             return;
         }
 
-        this.forwardPacket(signedPacket);
+        this.forwardPacket(signedPacket, false);
     }
 
     /**
      * ルーティングテーブルに従って次のホップへ転送する。
-     * TTL を1減らし、0になった場合は破棄する。
+     * 中継転送（`isTransit = true`）では TTL を 1 減算し、0 以下になった場合は破棄する（#30）。
      */
-    private forwardPacket(packet: WebTCPPacket): void {
+    private forwardPacket(packet: WebTCPPacket, isTransit: boolean): void {
+        if (isTransit) {
+            if (packet.ttl <= 1) {
+                this.logger.warn(
+                    `TTL expired while forwarding to ${packet.destinationId}. Dropping.`,
+                );
+                return;
+            }
+            packet = { ...packet, ttl: packet.ttl - 1 };
+        } else if (packet.ttl <= 0) {
+            this.logger.warn(`TTL expired before sending to ${packet.destinationId}. Dropping.`);
+            return;
+        }
+
         let nextHopId: NodeId | null = null;
 
         const entry = this.routingTable.getEntry(packet.destinationId);
@@ -136,24 +162,22 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         }
 
         if (!nextHopId) {
-            console.warn(`[RL] No route to ${packet.destinationId}. Dropping packet.`);
+            this.logger.warn(`No route to ${packet.destinationId}. Dropping packet.`);
             return;
         }
         if (nextHopId === this.localNodeId) {
-            console.error('[RL] Routing loop detected: next hop is self.');
-            return;
-        }
-        if (packet.ttl <= 0) {
-            console.warn(`[RL] TTL expired before sending to ${packet.destinationId}. Dropping.`);
+            this.logger.error('Routing loop detected: next hop is self.');
             return;
         }
 
-        packet.ttl -= 1;
+        this.logger.debug(
+            `${isTransit ? 'Forwarded' : 'Sent'} ${packet.flags} packet to ${packet.destinationId} via ${nextHopId} (ttl=${packet.ttl})`,
+        );
 
         void this.linkManager.sendPacketToNeighbor(nextHopId, packet).then((sent) => {
             if (!sent) {
-                console.warn(
-                    `[RL] Failed to forward packet to ${packet.destinationId} via ${nextHopId}.`,
+                this.logger.warn(
+                    `Failed to forward packet to ${packet.destinationId} via ${nextHopId}.`,
                 );
             }
         });
@@ -169,11 +193,11 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         try {
             verified = await this.verifier.verifyPacket(packet);
         } catch (error) {
-            console.warn('[RL] Signature verification threw. Dropping packet.', error);
+            this.logger.warn('Signature verification threw. Dropping packet.', error);
             return;
         }
         if (!verified) {
-            console.warn('[RL] Invalid signature. Dropping packet.');
+            this.logger.warn('Invalid signature. Dropping packet.');
             return;
         }
 
@@ -185,8 +209,8 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
 
         // --- 3. RPF チェック ---
         if (!this.checkReversePath(packet.senderId, fromId)) {
-            console.warn(
-                `[RL] RPF check failed: packet from ${packet.senderId} arrived via ${fromId}. Dropping.`,
+            this.logger.warn(
+                `RPF check failed: packet from ${packet.senderId} arrived via ${fromId}. Dropping.`,
             );
             return;
         }
@@ -195,13 +219,13 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         if (packet.destinationId === this.localNodeId) {
             this.forwardToTransportLayer(packet);
         } else {
-            this.forwardPacket(packet);
+            this.forwardPacket(packet, true);
         }
     }
 
     /**
      * 送信元への最短経路のネクストホップが、実際に受信した隣接と一致するか確認する。
-     * 経路が未学習の場合は、直接の隣接からの受信のみ許可する（M1の縮退動作）。
+     * 経路が未学習の場合は、直接の隣接からの受信のみ許可する（M1–M2の縮退動作）。
      */
     private checkReversePath(sourceId: NodeId, receivedFromId: NodeId): boolean {
         const entry = this.routingTable.getEntry(sourceId);
@@ -220,7 +244,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         if (this.transportLayer) {
             this.transportLayer.handleIncomingPacket(packet);
         } else {
-            console.warn('[RL] Transport layer is not attached. Dropping packet.');
+            this.logger.warn('Transport layer is not attached. Dropping packet.');
         }
     }
 

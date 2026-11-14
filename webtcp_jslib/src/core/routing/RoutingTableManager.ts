@@ -1,4 +1,5 @@
 import { NodeId } from '../types/protocol.js';
+import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { RoutingTable } from './RoutingTable.js';
 
 /**
@@ -32,6 +33,8 @@ export interface RoutingTableManagerOptions {
     maintenancePeriodMs?: number;
     /** エントリの寿命（ms）。既定 60000。 */
     ageThresholdMs?: number;
+    /** ロガー（任意）。 */
+    logger?: Logger;
 }
 
 /**
@@ -47,6 +50,7 @@ export class RoutingTableManager {
     private readonly transport: RoutingUpdateTransport;
     private readonly maintenancePeriodMs: number;
     private readonly ageThresholdMs: number;
+    private readonly logger: Logger;
 
     private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -61,6 +65,7 @@ export class RoutingTableManager {
         this.transport = transport;
         this.maintenancePeriodMs = options.maintenancePeriodMs ?? 30_000;
         this.ageThresholdMs = options.ageThresholdMs ?? 60_000;
+        this.logger = createScopedLogger(options.logger ?? defaultLogger, 'RTM');
     }
 
     /** 定期メンテナンスを開始する（冪等）。 */
@@ -86,7 +91,12 @@ export class RoutingTableManager {
     /** 隣接ノードが接続した。コスト1の経路を登録して情報交換を始める。 */
     public handleNeighborUp(peerId: NodeId): void {
         this.table.updateEntry(peerId, { cost: 1, nextHopId: peerId });
-        void this.sendRoutingUpdate(peerId);
+        const neighbors = this.transport.getNeighbors();
+        if (!neighbors.includes(peerId)) {
+            void this.sendRoutingUpdate(peerId).catch((error) => {
+                this.logger.warn(`Failed to send initial routing update to ${peerId}:`, error);
+            });
+        }
         this.broadcastRoutingUpdate();
     }
 
@@ -105,6 +115,7 @@ export class RoutingTableManager {
         entriesToDelete.forEach((id) => this.table.deleteEntry(id));
 
         if (entriesToDelete.length > 0) {
+            this.logger.debug(`Invalidated ${entriesToDelete.length} routes via ${peerId}`);
             this.broadcastRoutingUpdate(entriesToDelete);
         }
     }
@@ -122,13 +133,13 @@ export class RoutingTableManager {
         try {
             parsed = JSON.parse(new TextDecoder().decode(payload));
         } catch (error) {
-            console.warn(`[RTM] Dropping RT_UPDATE from ${senderId}: invalid JSON`, error);
+            this.logger.warn(`Dropping RT_UPDATE from ${senderId}: invalid JSON`, error);
             return;
         }
 
         const info = this.validateRoutingInfo(parsed);
         if (!info) {
-            console.warn(`[RTM] Dropping RT_UPDATE from ${senderId}: invalid structure`);
+            this.logger.warn(`Dropping RT_UPDATE from ${senderId}: invalid structure`);
             return;
         }
 
@@ -144,6 +155,15 @@ export class RoutingTableManager {
         withdrawals: NodeId[] = [],
     ): void {
         let tableChanged = false;
+
+        // 直接隣接ノード自身のコスト1経路の生存時刻を更新する（#30）
+        const peerEntry = this.table.getEntry(peerId);
+        if (!peerEntry || peerEntry.cost > 1) {
+            this.table.updateEntry(peerId, { cost: 1, nextHopId: peerId });
+            tableChanged = true;
+        } else if (peerEntry.nextHopId === peerId) {
+            this.table.updateEntry(peerId, { cost: 1, nextHopId: peerId });
+        }
 
         // 経路の撤回: 送信元をネクストホップとしていた経路のみ削除する
         for (const destinationId of withdrawals) {
@@ -164,10 +184,12 @@ export class RoutingTableManager {
             if (!currentEntry || newCost < currentEntry.cost) {
                 this.table.updateEntry(destinationId, { cost: newCost, nextHopId: peerId });
                 tableChanged = true;
-            } else if (currentEntry.nextHopId === peerId && newCost !== currentEntry.cost) {
-                // 同じネクストホップからの更新（コスト増減の反映）
+            } else if (currentEntry.nextHopId === peerId) {
+                // 同一ネクストホップからの更新: コスト変化がなくても lastSeen を更新する（#30）
                 this.table.updateEntry(destinationId, { cost: newCost, nextHopId: peerId });
-                tableChanged = true;
+                if (newCost !== currentEntry.cost) {
+                    tableChanged = true;
+                }
             }
         }
 
@@ -199,7 +221,7 @@ export class RoutingTableManager {
         const info = this.createRoutingInfoPacket(withdrawals);
         for (const neighborId of this.transport.getNeighbors()) {
             void this.transport.sendRoutingUpdate(neighborId, info).catch((error) => {
-                console.warn(`[RTM] Failed to send routing update to ${neighborId}:`, error);
+                this.logger.warn(`Failed to send routing update to ${neighborId}:`, error);
             });
         }
     }
@@ -229,6 +251,7 @@ export class RoutingTableManager {
 
         staleEntries.forEach((id) => this.table.deleteEntry(id));
         if (staleEntries.length > 0) {
+            this.logger.debug(`Aged out ${staleEntries.length} stale route(s)`);
             this.broadcastRoutingUpdate(staleEntries);
         }
     }

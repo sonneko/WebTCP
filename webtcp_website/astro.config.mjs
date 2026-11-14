@@ -6,19 +6,44 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
 	integrations: [
 		starlight({
-			title: 'My Docs',
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/withastro/starlight' }],
+			title: 'WebTCP',
+			description: 'WebRTC データチャネル上に仮想 TCP/HTTP トンネルを構築する実験的 P2P ライブラリ',
+			defaultLocale: 'root',
+			locales: {
+				root: {
+					label: '日本語',
+					lang: 'ja',
+				},
+			},
+			social: [
+				{
+					icon: 'github',
+					label: 'GitHub',
+					href: 'https://github.com/sonneko/WebTCP',
+				},
+			],
 			sidebar: [
 				{
-					label: 'Guides',
+					label: 'はじめに',
 					items: [
-						// Each item here is one entry in the navigation menu.
-						{ label: 'Example Guide', slug: 'guides/example' },
+						{ label: 'クイックスタート', slug: 'guides/quickstart' },
+						{ label: 'NAT 越えと STUN / TURN 設定', slug: 'guides/nat-turn-ice' },
+						{ label: 'デモと実ブラウザ検証', slug: 'guides/demo-verification' },
 					],
 				},
 				{
-					label: 'Reference',
-					autogenerate: { directory: 'reference' },
+					label: 'アーキテクチャと仕様',
+					items: [
+						{ label: 'アーキテクチャ解説', slug: 'architecture/overview' },
+						{ label: 'プロトコル仕様サマリー', slug: 'specification/protocol' },
+					],
+				},
+				{
+					label: 'リファレンス',
+					items: [
+						{ label: 'API リファレンス', slug: 'reference/api' },
+						{ label: 'ロードマップと制約', slug: 'reference/roadmap' },
+					],
 				},
 			],
 		}),

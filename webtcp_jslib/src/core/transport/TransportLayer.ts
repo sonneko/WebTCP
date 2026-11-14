@@ -1,5 +1,6 @@
 import { NodeId, VirtualPort, WebTCPPacket } from '../types/index.js';
 import { EventEmitter } from '../util/EventEmitter.js';
+import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { allocateEphemeralPort } from '../util/id.js';
 import type { IRoutingLayer } from '../routing/RoutingLayer.js';
 import { ManagedStream, SessionManager, SessionManagerOptions } from './SessionManager.js';
@@ -15,6 +16,8 @@ export interface TransportLayerOptions {
     connectTimeoutMs?: number;
     /** 制御パケットの初期TTL。既定 64。 */
     defaultTtl?: number;
+    /** ロガー（任意）。 */
+    logger?: Logger;
 }
 
 /**
@@ -33,6 +36,8 @@ export class TransportLayer extends EventEmitter implements TransportContext {
     private readonly streamOptions: VirtualStreamOptions;
     private readonly connectTimeoutMs: number;
     private readonly defaultTtl: number;
+    private readonly baseLogger: Logger;
+    private readonly logger: Logger;
 
     private started = false;
     private closed = false;
@@ -42,11 +47,20 @@ export class TransportLayer extends EventEmitter implements TransportContext {
         routingLayer: IRoutingLayer,
         options: TransportLayerOptions = {},
     ) {
-        super();
+        const baseLogger = options.logger ?? defaultLogger;
+        super(baseLogger);
         this.localNodeId = localNodeId;
         this.routingLayer = routingLayer;
-        this.sessionManager = new SessionManager(options.sessionManager);
-        this.streamOptions = options.stream ?? {};
+        this.baseLogger = baseLogger;
+        this.logger = createScopedLogger(baseLogger, 'TL');
+        this.sessionManager = new SessionManager({
+            ...options.sessionManager,
+            logger: options.sessionManager?.logger ?? baseLogger,
+        });
+        this.streamOptions = {
+            ...options.stream,
+            logger: options.stream?.logger ?? baseLogger,
+        };
         this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
         this.defaultTtl = options.defaultTtl ?? 64;
 
@@ -78,7 +92,7 @@ export class TransportLayer extends EventEmitter implements TransportContext {
      *
      * @param remoteNodeId 接続先ノードID
      * @param remotePort 接続先ポート
-     * @param localPort ローカルポート（省略時は自動割り当て）
+     * @param localPort ローカルポート（省略時は衝突しないエフェメラルポートを自動割り当て）
      * @throws タイムアウト、RST、または送信失敗時
      */
     public async connect(
@@ -88,7 +102,11 @@ export class TransportLayer extends EventEmitter implements TransportContext {
     ): Promise<VirtualStream> {
         if (this.closed) throw new Error('TransportLayer is closed');
         this.assertPort(remotePort);
-        const local = localPort ?? allocateEphemeralPort();
+
+        const local =
+            localPort !== undefined
+                ? localPort
+                : this.allocateUnusedEphemeralPort(remoteNodeId, remotePort);
         this.assertPort(local);
 
         const existing = this.sessionManager.getStream(remoteNodeId, local, remotePort);
@@ -99,14 +117,11 @@ export class TransportLayer extends EventEmitter implements TransportContext {
             throw new Error('A non-VirtualStream session already exists for this tuple');
         }
 
-        const stream = new VirtualStream(
-            this,
-            remoteNodeId,
-            local,
-            remotePort,
-            true,
-            this.streamOptions,
-        );
+        const stream = new VirtualStream(this, remoteNodeId, local, remotePort, true, {
+            defaultTtl: this.defaultTtl,
+            ...this.streamOptions,
+            logger: this.streamOptions.logger ?? this.baseLogger,
+        });
         this.sessionManager.registerStream(stream);
 
         const connected = new Promise<VirtualStream>((resolve, reject) => {
@@ -156,7 +171,8 @@ export class TransportLayer extends EventEmitter implements TransportContext {
     }
 
     /**
-     * パッシブオープン。指定ポートへの SYN を待ち受ける。
+     * パッシブオープン。指定ポートへの接続を待ち受ける。
+     * ハンドラはハンドシェイクが完了して `ESTABLISHED` になったタイミングで呼ばれる（#31）。
      * @throws 同じポートがすでに登録されている場合
      */
     public listen(port: VirtualPort, handler: PortHandler): void {
@@ -199,18 +215,14 @@ export class TransportLayer extends EventEmitter implements TransportContext {
         if (this.closed) return;
 
         if (packet.destinationId !== this.localNodeId) {
-            console.warn('[TL] Received packet not destined for this node. Dropping.');
+            this.logger.warn('Received packet not destined for this node. Dropping.');
             return;
         }
 
         const localPort = packet.destinationPort;
         const remotePort = packet.sourcePort;
 
-        const stream = this.sessionManager.getStream(
-            packet.senderId,
-            localPort,
-            remotePort,
-        );
+        const stream = this.sessionManager.getStream(packet.senderId, localPort, remotePort);
 
         if (stream instanceof VirtualStream) {
             stream.handleIncomingPacket(packet);
@@ -222,8 +234,8 @@ export class TransportLayer extends EventEmitter implements TransportContext {
             return;
         }
 
-        console.warn(
-            `[TL] No session for ${packet.senderId}:${remotePort} -> ${localPort} (flags=${packet.flags}). Sending RST.`,
+        this.logger.warn(
+            `No session for ${packet.senderId}:${remotePort} -> ${localPort} (flags=${packet.flags}). Sending RST.`,
         );
         void this.sendRst(packet.senderId, remotePort, localPort);
     }
@@ -239,25 +251,40 @@ export class TransportLayer extends EventEmitter implements TransportContext {
     ): void {
         const handler = this.portHandlers.get(localPort);
         if (!handler) {
-            console.warn(`[TL] Port ${localPort} is not listening. Sending RST.`);
+            this.logger.warn(`Port ${localPort} is not listening. Sending RST.`);
             void this.sendRst(packet.senderId, remotePort, localPort);
             return;
         }
 
-        const stream = new VirtualStream(
-            this,
-            packet.senderId,
-            localPort,
-            remotePort,
-            false,
-            this.streamOptions,
-        );
+        const stream = new VirtualStream(this, packet.senderId, localPort, remotePort, false, {
+            defaultTtl: this.defaultTtl,
+            ...this.streamOptions,
+            logger: this.streamOptions.logger ?? this.baseLogger,
+        });
         this.sessionManager.registerStream(stream);
+
+        // ハンドシェイクが完了して ESTABLISHED に到達したタイミングでハンドラを呼ぶ（#31, design.md §5.2）
+        stream.once('connect', () => {
+            if (!this.closed) {
+                handler(stream);
+            }
+        });
 
         // SYN を処理させ、SYN_ACK を返させる
         stream.handleIncomingPacket(packet);
+    }
 
-        handler(stream);
+    private allocateUnusedEphemeralPort(
+        remoteNodeId: NodeId,
+        remotePort: VirtualPort,
+    ): VirtualPort {
+        for (let attempt = 0; attempt < 64; attempt += 1) {
+            const candidate = allocateEphemeralPort();
+            if (!this.sessionManager.hasStream(remoteNodeId, candidate, remotePort)) {
+                return candidate;
+            }
+        }
+        throw new Error('Failed to allocate an unused ephemeral port');
     }
 
     /**
@@ -287,7 +314,7 @@ export class TransportLayer extends EventEmitter implements TransportContext {
         try {
             await this.routingLayer.sendPacket(rst);
         } catch (error) {
-            console.warn('[TL] Failed to send RST:', error);
+            this.logger.warn('Failed to send RST:', error);
         }
     }
 
