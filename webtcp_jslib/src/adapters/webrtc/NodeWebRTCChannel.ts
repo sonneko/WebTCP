@@ -6,17 +6,18 @@ export interface NodeWebRTCChannelOptions extends WebRTCChannelOptions {
      * `RTCPeerConnection` を生成する関数。
      *
      * 依存パッケージを増やさないため、`wrtc` や `node-datachannel` などの
-     * 実装は利用者が注入する。
+     * 実装は利用者が注入する。解決済みの `RTCConfiguration`（`iceServers`）が渡される。
      *
      * @example
      * ```ts
      * import wrtc from '@roamhq/wrtc';
      * const channel = new NodeWebRTCChannel(signaling, {
-     *   createPeerConnection: () => new wrtc.RTCPeerConnection(),
+     *   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+     *   createPeerConnection: (config) => new wrtc.RTCPeerConnection(config),
      * });
      * ```
      */
-    createPeerConnection: () => RTCPeerConnection;
+    createPeerConnection: (config?: RTCConfiguration) => RTCPeerConnection;
 }
 
 /**
@@ -25,7 +26,7 @@ export interface NodeWebRTCChannelOptions extends WebRTCChannelOptions {
  * WebRTC 実装を注入することで、コアにネイティブ依存を持ち込まない。
  */
 export class NodeWebRTCChannel extends WebRTCChannel {
-    private readonly factory: () => RTCPeerConnection;
+    private readonly factory: (config?: RTCConfiguration) => RTCPeerConnection;
 
     constructor(signaling: ISignalingAdapter, options: NodeWebRTCChannelOptions) {
         super(signaling, options);
@@ -35,7 +36,7 @@ export class NodeWebRTCChannel extends WebRTCChannel {
         this.factory = options.createPeerConnection;
     }
 
-    protected createPeerConnection(): RTCPeerConnection {
-        return this.factory();
+    protected createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
+        return this.factory({ iceServers });
     }
 }

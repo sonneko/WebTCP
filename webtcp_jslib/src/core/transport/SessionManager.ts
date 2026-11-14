@@ -1,4 +1,5 @@
 import { NodeId, VirtualPort } from '../types/protocol.js';
+import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 
 /**
  * SessionManager が管理するストリームの最小インターフェース。
@@ -29,6 +30,8 @@ export interface SessionManagerOptions {
     sessionTimeoutMs?: number;
     /** クリーンアップの実行間隔（ms）。既定 60000。 */
     cleanupPeriodMs?: number;
+    /** ロガー（任意）。 */
+    logger?: Logger;
 }
 
 /**
@@ -38,11 +41,13 @@ export class SessionManager {
     private readonly activeStreams = new Map<string, ManagedStream>();
     private readonly sessionTimeoutMs: number;
     private readonly cleanupPeriodMs: number;
+    private readonly logger: Logger;
     private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
     constructor(options: SessionManagerOptions = {}) {
         this.sessionTimeoutMs = options.sessionTimeoutMs ?? 300_000;
         this.cleanupPeriodMs = options.cleanupPeriodMs ?? 60_000;
+        this.logger = createScopedLogger(options.logger ?? defaultLogger, 'SM');
     }
 
     /** 定期クリーンアップを開始する（冪等）。 */
@@ -63,7 +68,7 @@ export class SessionManager {
     public registerStream(stream: ManagedStream): void {
         const key = streamKey(stream.remoteNodeId, stream.localPort, stream.remotePort);
         if (this.activeStreams.has(key)) {
-            console.warn(`[SM] Stream already exists for ${key}. Overwriting.`);
+            this.logger.warn(`Stream already exists for ${key}. Overwriting.`);
         }
         this.activeStreams.set(key, stream);
     }
@@ -79,6 +84,15 @@ export class SessionManager {
             stream.lastActivity = Date.now();
         }
         return stream;
+    }
+
+    /** 指定三つ組のストリームが存在するか確認する（アクティビティ時刻は更新しない）。 */
+    public hasStream(
+        remoteNodeId: NodeId,
+        localPort: VirtualPort,
+        remotePort: VirtualPort,
+    ): boolean {
+        return this.activeStreams.has(streamKey(remoteNodeId, localPort, remotePort));
     }
 
     /** ストリームを登録解除する（close は呼ばない）。 */
@@ -112,7 +126,7 @@ export class SessionManager {
         const now = Date.now();
         for (const [key, stream] of [...this.activeStreams.entries()]) {
             if (now - stream.lastActivity > this.sessionTimeoutMs) {
-                console.warn(`[SM] Stream ${key} timed out due to inactivity.`);
+                this.logger.warn(`Stream ${key} timed out due to inactivity.`);
                 this.activeStreams.delete(key);
                 if (stream.destroy) {
                     stream.destroy();

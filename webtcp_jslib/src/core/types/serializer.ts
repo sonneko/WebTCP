@@ -160,7 +160,11 @@ export class BinaryPacketSerializer implements IPacketSerializer {
         }
 
         const ttl = view.getUint8(2);
-        const flags = maskToFlags(view.getUint8(3));
+        const flagMask = view.getUint8(3);
+        if ((flagMask & 0x7f) === 0) {
+            throw new Error(`invalid flags: 0x${flagMask.toString(16)}`);
+        }
+        const flags = maskToFlags(flagMask);
         const sourcePort = view.getUint16(4, false);
         const destinationPort = view.getUint16(6, false);
         const seqNum = view.getUint32(8, false);

@@ -2,6 +2,7 @@ import { BinaryPacketSerializer, IPacketSerializer } from '../types/serializer.j
 import { WebTCPPacket } from '../types/packet.js';
 import { NodeId } from '../types/protocol.js';
 import { EventEmitter } from '../util/EventEmitter.js';
+import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { IChannel } from './IChannel.js';
 
 /**
@@ -24,6 +25,7 @@ export class LinkManager extends EventEmitter {
 
     private readonly channel: IChannel;
     private readonly serializer: IPacketSerializer;
+    private readonly logger: Logger;
 
     private started = false;
     private closed = false;
@@ -32,11 +34,13 @@ export class LinkManager extends EventEmitter {
         localNodeId: NodeId,
         channel: IChannel,
         serializer: IPacketSerializer = new BinaryPacketSerializer(),
+        logger: Logger = defaultLogger,
     ) {
-        super();
+        super(logger);
         this.localNodeId = localNodeId;
         this.channel = channel;
         this.serializer = serializer;
+        this.logger = createScopedLogger(logger, 'LM');
     }
 
     /**
@@ -53,6 +57,7 @@ export class LinkManager extends EventEmitter {
         );
 
         await this.channel.start();
+        this.logger.info(`LinkManager started (nodeId=${this.localNodeId})`);
     }
 
     /** 現在接続済みの隣接ノードIDを返す。 */
@@ -81,6 +86,7 @@ export class LinkManager extends EventEmitter {
             throw new Error('Cannot connect to self');
         }
         if (this.isNeighbor(peerId)) return;
+        this.logger.debug(`Connecting to neighbor ${peerId}`);
         await this.channel.connect(peerId);
     }
 
@@ -95,7 +101,7 @@ export class LinkManager extends EventEmitter {
         try {
             data = this.serializer.serialize(packet);
         } catch (error) {
-            console.error(`[LM] Failed to serialize packet for ${neighborId}:`, error);
+            this.logger.error(`Failed to serialize packet for ${neighborId}:`, error);
             return false;
         }
 
@@ -103,7 +109,7 @@ export class LinkManager extends EventEmitter {
             await this.channel.send(neighborId, data);
             return true;
         } catch (error) {
-            console.error(`[LM] Failed to send packet to ${neighborId}:`, error);
+            this.logger.error(`Failed to send packet to ${neighborId}:`, error);
             return false;
         }
     }
@@ -118,8 +124,10 @@ export class LinkManager extends EventEmitter {
 
     private handleConnectionStatus(peerId: NodeId, isConnected: boolean): void {
         if (isConnected) {
+            this.logger.info(`Neighbor connected: ${peerId}`);
             this.emit('neighbor-connected', peerId);
         } else {
+            this.logger.info(`Neighbor disconnected: ${peerId}`);
             this.emit('neighbor-disconnected', peerId);
         }
     }
@@ -131,7 +139,7 @@ export class LinkManager extends EventEmitter {
         try {
             packet = this.serializer.deserialize(data);
         } catch (error) {
-            console.warn(`[LM] Dropping malformed packet from ${fromId}:`, error);
+            this.logger.warn(`Dropping malformed packet from ${fromId}:`, error);
             return;
         }
 

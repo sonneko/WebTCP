@@ -2,39 +2,82 @@ import { IChannel } from '../../core/link/IChannel.js';
 import { ISignalingAdapter } from '../../core/link/ISignalingAdapter.js';
 import { NodeId } from '../../core/types/protocol.js';
 import { EventEmitter } from '../../core/util/EventEmitter.js';
+import { LogLevel, Logger, createScopedLogger, resolveLogger } from '../../core/util/Logger.js';
+
+/**
+ * STUN/TURN サーバー設定（短期 TURN 資格情報を含む）を動的に取得するためのフック（#24）。
+ * ピア接続の生成時および ICE 再起動時に呼ばれる。
+ */
+export type IceServersProvider = () => RTCIceServer[] | Promise<RTCIceServer[]>;
+
+/**
+ * インターネット越えの動作確認に使えるパブリック STUN サーバーの参考例。
+ * ライブラリ既定値は空配列であり、自動的には使用しない。
+ */
+export const EXAMPLE_STUN_ICE_SERVERS: readonly RTCIceServer[] = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+];
 
 export interface WebRTCChannelOptions {
-    /** STUN/TURN サーバー。既定は空（同一ホスト・同一LAN向け）。 */
+    /**
+     * STUN/TURN サーバーの静的リスト。既定は空（同一ホスト・同一 LAN 向け）。
+     * `iceServersProvider` が指定されている場合はそちらが優先される。
+     */
     iceServers?: RTCIceServer[];
+    /**
+     * ピア接続の生成時および ICE 再起動時に `RTCIceServer[]` を動的に取得するフック。
+     * TURN の短期資格情報（HMAC REST API 等）を安全に更新したい場合に使う。
+     */
+    iceServersProvider?: IceServersProvider;
     /** データチャネルのラベル。既定 `webtcp`。 */
     dataChannelLabel?: string;
     /** 接続確立のタイムアウト（ms）。既定 15000。 */
     connectTimeoutMs?: number;
     /** 1メッセージの最大バイト数。既定 65536。 */
     maxMessageBytes?: number;
+    /**
+     * ICE 接続失敗時に自動で試みる ICE 再起動の最大回数。既定 2（0 で無効）。
+     */
+    maxIceRestarts?: number;
+    /**
+     * `iceConnectionState === 'disconnected'` が継続した場合に ICE 再起動を開始するまでの
+     * 猶予時間（ms）。既定 3000。
+     */
+    iceRestartDelayMs?: number;
+    /** ロガー（任意）。 */
+    logger?: Logger;
+    /** 既定コンソールロガーのログレベル（任意。既定 `'warn'`）。 */
+    logLevel?: LogLevel;
 }
 
 interface PeerState {
     connection: RTCPeerConnection;
     dataChannel: RTCDataChannel | null;
+    isInitiator: boolean;
     remoteDescriptionSet: boolean;
+    awaitingAnswer: boolean;
     opened: boolean;
+    iceRestartCount: number;
+    restartingIce: boolean;
     openTimer: ReturnType<typeof setTimeout> | null;
-    resolveOpen: (() => void) | null;
-    rejectOpen: ((error: Error) => void) | null;
+    iceDisconnectTimer: ReturnType<typeof setTimeout> | null;
+    openResolvers: Array<() => void>;
+    openRejecters: Array<(error: Error) => void>;
 }
 
 /**
  * WebRTC DataChannel を用いた `IChannel` の共通実装。
  *
- * Offer/Answer/ICE の交換、データチャネルの開設・監視をすべてここで行い、
- * サブクラスは `createPeerConnection()` だけを提供する。
+ * Offer/Answer/ICE の交換、同時接続（glare）解決、ICE 再起動、
+ * TURN 資格情報の動的取得フック、データチャネルの開設・監視をすべてここで行い、
+ * サブクラスは `createPeerConnection(iceServers)` だけを提供する。
  */
 export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     public readonly connectedPeers = new Map<NodeId, boolean>();
 
     protected readonly signaling: ISignalingAdapter;
     protected readonly options: WebRTCChannelOptions;
+    protected readonly logger: Logger;
 
     private readonly peers = new Map<NodeId, PeerState>();
     private readonly orphanCandidates = new Map<NodeId, RTCIceCandidateInit[]>();
@@ -43,13 +86,15 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     private closed = false;
 
     constructor(signaling: ISignalingAdapter, options: WebRTCChannelOptions = {}) {
-        super();
+        const baseLogger = resolveLogger(options.logger, options.logLevel);
+        super(baseLogger);
         this.signaling = signaling;
         this.options = options;
+        this.logger = createScopedLogger(baseLogger, 'WRTC');
     }
 
     /** プラットフォーム固有の RTCPeerConnection を生成する。 */
-    protected abstract createPeerConnection(): RTCPeerConnection;
+    protected abstract createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection;
 
     public get localNodeId(): NodeId {
         return this.signaling.getLocalNodeId();
@@ -62,7 +107,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
 
         await this.signaling.listen((fromId, message) => {
             void this.handleSignal(fromId, message).catch((error) => {
-                console.error(`[WRTC] Failed to handle ${message.type} from ${fromId}:`, error);
+                this.logger.error(`Failed to handle ${message.type} from ${fromId}:`, error);
             });
         });
     }
@@ -73,10 +118,34 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         if (peerId === this.localNodeId) throw new Error('Cannot connect to self');
         if (this.connectedPeers.get(peerId) === true) return;
 
-        const state = this.createPeer(peerId);
+        // 既にネゴシエーション中のピアがあれば、その確立完了を共有待機する
+        const existing = this.peers.get(peerId);
+        if (existing) {
+            if (existing.opened) return;
+            return new Promise<void>((resolve, reject) => {
+                existing.openResolvers.push(resolve);
+                existing.openRejecters.push(reject);
+            });
+        }
+
+        const iceServers = await this.resolveIceServers();
+        if (this.closed) throw new Error('WebRTCChannel is closed');
+        if (this.connectedPeers.get(peerId) === true) return;
+
+        // resolveIceServers 待機中に相手から offer が到着していた場合はそれに乗る
+        const raced = this.peers.get(peerId);
+        if (raced) {
+            if (raced.opened) return;
+            return new Promise<void>((resolve, reject) => {
+                raced.openResolvers.push(resolve);
+                raced.openRejecters.push(reject);
+            });
+        }
+
+        const state = this.createPeer(peerId, true, iceServers);
         const opened = new Promise<void>((resolve, reject) => {
-            state.resolveOpen = resolve;
-            state.rejectOpen = reject;
+            state.openResolvers.push(resolve);
+            state.openRejecters.push(reject);
         });
 
         try {
@@ -86,19 +155,32 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             );
             this.attachDataChannel(peerId, state, dataChannel);
 
+            state.awaitingAnswer = true;
             const offer = await state.connection.createOffer();
             await state.connection.setLocalDescription(offer);
-            await this.sendSignal(
-                peerId,
-                'offer',
-                state.connection.localDescription ?? offer,
-            );
+            await this.sendSignal(peerId, 'offer', state.connection.localDescription ?? offer);
         } catch (error) {
-            this.destroyPeer(peerId, state, false);
+            // 同時接続 glare で polite 側が既に新ピアへ差し替えていた場合は破棄しない
+            if (this.peers.get(peerId) === state) {
+                this.destroyPeer(peerId, state, false);
+            }
             throw error instanceof Error ? error : new Error(String(error));
         }
 
         await opened;
+    }
+
+    /**
+     * 指定ピアに対して明示的に ICE 再起動を実行する（#24）。
+     * `iceServersProvider` が設定されている場合は最新の TURN 資格情報も再適用する。
+     */
+    public async restartIce(peerId: NodeId): Promise<void> {
+        if (this.closed) throw new Error('WebRTCChannel is closed');
+        const state = this.peers.get(peerId);
+        if (!state) {
+            throw new Error(`No active peer connection for ${peerId}`);
+        }
+        await this.restartIceForPeer(peerId, state);
     }
 
     public async send(targetId: NodeId, data: Uint8Array): Promise<void> {
@@ -139,48 +221,169 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     }
 
     // ===============================================
-    // ピアの生成と破棄
+    // ICE サーバー解決とピア生成・破棄
     // ===============================================
 
-    private createPeer(peerId: NodeId): PeerState {
-        const connection = this.createPeerConnection();
+    private async resolveIceServers(): Promise<RTCIceServer[]> {
+        if (this.options.iceServersProvider) {
+            const provided = await this.options.iceServersProvider();
+            return Array.isArray(provided) ? provided : [];
+        }
+        return this.options.iceServers ?? [];
+    }
+
+    private createPeer(
+        peerId: NodeId,
+        isInitiator: boolean,
+        iceServers: RTCIceServer[],
+    ): PeerState {
+        const connection = this.createPeerConnection(iceServers);
         const state: PeerState = {
             connection,
             dataChannel: null,
+            isInitiator,
             remoteDescriptionSet: false,
+            awaitingAnswer: false,
             opened: false,
+            iceRestartCount: 0,
+            restartingIce: false,
             openTimer: null,
-            resolveOpen: null,
-            rejectOpen: null,
+            iceDisconnectTimer: null,
+            openResolvers: [],
+            openRejecters: [],
         };
         this.peers.set(peerId, state);
         this.connectedPeers.set(peerId, false);
 
         const timeoutMs = this.options.connectTimeoutMs ?? 15_000;
         state.openTimer = setTimeout(() => {
-            state.rejectOpen?.(
+            this.rejectOpenWaiters(
+                state,
                 new Error(`WebRTC connection to ${peerId} timed out after ${timeoutMs}ms`),
             );
-            state.rejectOpen = null;
-            state.resolveOpen = null;
             this.destroyPeer(peerId, state, true);
         }, timeoutMs);
 
         connection.onicecandidate = (event) => {
             if (!event.candidate) return;
-            void this.sendSignal(peerId, 'candidate', event.candidate.toJSON()).catch((error) => {
-                console.warn(`[WRTC] Failed to send ICE candidate to ${peerId}:`, error);
+            const candidateInit =
+                typeof event.candidate.toJSON === 'function'
+                    ? event.candidate.toJSON()
+                    : (event.candidate as unknown as RTCIceCandidateInit);
+            void this.sendSignal(peerId, 'candidate', candidateInit).catch((error) => {
+                this.logger.warn(`Failed to send ICE candidate to ${peerId}:`, error);
             });
+        };
+
+        connection.oniceconnectionstatechange = () => {
+            this.handleIceConnectionStateChange(peerId, state);
         };
 
         connection.onconnectionstatechange = () => {
             const connectionState = connection.connectionState;
-            if (connectionState === 'failed' || connectionState === 'closed') {
+            if (connectionState === 'connected') {
+                this.clearIceDisconnectTimer(state);
+                state.iceRestartCount = 0;
+                state.restartingIce = false;
+            } else if (connectionState === 'failed') {
+                void this.handleIceFailure(peerId, state);
+            } else if (connectionState === 'closed') {
                 this.destroyPeer(peerId, state, true);
             }
         };
 
         return state;
+    }
+
+    private handleIceConnectionStateChange(peerId: NodeId, state: PeerState): void {
+        if (this.closed || this.peers.get(peerId) !== state) return;
+        const iceState = state.connection.iceConnectionState;
+
+        if (iceState === 'connected' || iceState === 'completed') {
+            this.clearIceDisconnectTimer(state);
+            state.iceRestartCount = 0;
+            state.restartingIce = false;
+            return;
+        }
+
+        if (iceState === 'disconnected') {
+            if (state.iceDisconnectTimer !== null || state.restartingIce) return;
+            const delayMs = this.options.iceRestartDelayMs ?? 3000;
+            this.logger.debug(
+                `ICE disconnected with ${peerId}; scheduling restart check in ${delayMs}ms`,
+            );
+            state.iceDisconnectTimer = setTimeout(() => {
+                state.iceDisconnectTimer = null;
+                if (this.closed || this.peers.get(peerId) !== state) return;
+                const current = state.connection.iceConnectionState;
+                if (current === 'disconnected' || current === 'failed') {
+                    void this.handleIceFailure(peerId, state);
+                }
+            }, delayMs);
+            return;
+        }
+
+        if (iceState === 'failed') {
+            this.clearIceDisconnectTimer(state);
+            void this.handleIceFailure(peerId, state);
+            return;
+        }
+
+        if (iceState === 'closed') {
+            this.destroyPeer(peerId, state, true);
+        }
+    }
+
+    private async handleIceFailure(peerId: NodeId, state: PeerState): Promise<void> {
+        if (this.closed || this.peers.get(peerId) !== state) return;
+        if (state.restartingIce) return;
+
+        const maxRestarts = this.options.maxIceRestarts ?? 2;
+        if (maxRestarts <= 0 || state.iceRestartCount >= maxRestarts) {
+            this.logger.warn(
+                `ICE failed with ${peerId} after ${state.iceRestartCount} restart attempt(s); closing peer`,
+            );
+            this.destroyPeer(peerId, state, true);
+            return;
+        }
+
+        try {
+            await this.restartIceForPeer(peerId, state);
+        } catch (error) {
+            this.logger.warn(`ICE restart failed for ${peerId}:`, error);
+            state.restartingIce = false;
+            if (state.iceRestartCount >= maxRestarts || this.peers.get(peerId) === state) {
+                this.destroyPeer(peerId, state, true);
+            }
+        }
+    }
+
+    private async restartIceForPeer(peerId: NodeId, state: PeerState): Promise<void> {
+        state.restartingIce = true;
+        state.iceRestartCount += 1;
+        this.logger.info(
+            `Initiating ICE restart #${state.iceRestartCount} for peer ${peerId}`,
+        );
+
+        // 動的 TURN 資格情報フックがあれば最新設定を反映する
+        if (this.options.iceServersProvider) {
+            const freshServers = await this.resolveIceServers();
+            if (this.closed || this.peers.get(peerId) !== state) return;
+            if (typeof state.connection.setConfiguration === 'function') {
+                state.connection.setConfiguration({ iceServers: freshServers });
+            }
+        }
+
+        if (typeof state.connection.restartIce === 'function') {
+            state.connection.restartIce();
+        }
+
+        state.awaitingAnswer = true;
+        const offer = await state.connection.createOffer({ iceRestart: true });
+        if (this.closed || this.peers.get(peerId) !== state) return;
+
+        await state.connection.setLocalDescription(offer);
+        await this.sendSignal(peerId, 'offer', state.connection.localDescription ?? offer);
     }
 
     private attachDataChannel(
@@ -192,15 +395,14 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         dataChannel.binaryType = 'arraybuffer';
 
         dataChannel.onopen = () => {
+            if (this.peers.get(peerId) !== state) return;
             state.opened = true;
             if (state.openTimer !== null) {
                 clearTimeout(state.openTimer);
                 state.openTimer = null;
             }
             this.connectedPeers.set(peerId, true);
-            state.rejectOpen = null;
-            state.resolveOpen?.();
-            state.resolveOpen = null;
+            this.resolveOpenWaiters(state);
             this.emit('connection-status', peerId, true);
         };
 
@@ -209,12 +411,12 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         };
 
         dataChannel.onerror = (event) => {
-            console.error(`[WRTC] DataChannel error with ${peerId}:`, event);
+            this.logger.error(`DataChannel error with ${peerId}:`, event);
         };
 
         dataChannel.onmessage = (event: MessageEvent) => {
             void this.handleMessage(peerId, event.data).catch((error) => {
-                console.warn(`[WRTC] Failed to read message from ${peerId}:`, error);
+                this.logger.warn(`Failed to read message from ${peerId}:`, error);
             });
         };
     }
@@ -228,9 +430,9 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             clearTimeout(state.openTimer);
             state.openTimer = null;
         }
-        state.rejectOpen?.(new Error(`WebRTC connection to ${peerId} was closed`));
-        state.resolveOpen = null;
-        state.rejectOpen = null;
+        this.clearIceDisconnectTimer(state);
+
+        this.rejectOpenWaiters(state, new Error(`WebRTC connection to ${peerId} was closed`));
 
         const wasConnected = this.connectedPeers.get(peerId) === true;
         this.connectedPeers.set(peerId, false);
@@ -248,6 +450,29 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
 
         if (notify && wasConnected) {
             this.emit('connection-status', peerId, false);
+        }
+    }
+
+    private clearIceDisconnectTimer(state: PeerState): void {
+        if (state.iceDisconnectTimer !== null) {
+            clearTimeout(state.iceDisconnectTimer);
+            state.iceDisconnectTimer = null;
+        }
+    }
+
+    private resolveOpenWaiters(state: PeerState): void {
+        const resolvers = state.openResolvers.splice(0);
+        state.openRejecters.length = 0;
+        for (const resolve of resolvers) {
+            resolve();
+        }
+    }
+
+    private rejectOpenWaiters(state: PeerState, error: Error): void {
+        const rejecters = state.openRejecters.splice(0);
+        state.openResolvers.length = 0;
+        for (const reject of rejecters) {
+            reject(error);
         }
     }
 
@@ -284,7 +509,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
                 await this.handleCandidate(fromId, message.content as RTCIceCandidateInit);
                 return;
             default:
-                console.warn(`[WRTC] Unknown signaling message type: ${message.type}`);
+                this.logger.warn(`Unknown signaling message type: ${message.type}`);
         }
     }
 
@@ -292,17 +517,72 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         fromId: NodeId,
         description: RTCSessionDescriptionInit,
     ): Promise<void> {
+        const polite = this.localNodeId < fromId;
         const existing = this.peers.get(fromId);
-        if (existing) {
-            if (existing.opened) {
-                console.warn(`[WRTC] Ignoring duplicate offer from connected peer ${fromId}`);
+
+        // 既に接続済みのピアからの offer: インプレース再ネゴシエーション（ICE 再起動など、#24）
+        if (existing && existing.opened) {
+            if (existing.awaitingAnswer && !polite) {
+                this.logger.debug(
+                    `Ignoring colliding renegotiation offer from ${fromId} (impolite peer)`,
+                );
                 return;
             }
-            // 接続試行中の再オファーは既存のものを破棄して作り直す
+            existing.awaitingAnswer = false;
+            this.logger.info(`Handling renegotiation / ICE restart offer from ${fromId}`);
+
+            if (this.options.iceServersProvider) {
+                const freshServers = await this.resolveIceServers();
+                if (this.closed || this.peers.get(fromId) !== existing) return;
+                if (typeof existing.connection.setConfiguration === 'function') {
+                    existing.connection.setConfiguration({ iceServers: freshServers });
+                }
+            }
+
+            await existing.connection.setRemoteDescription(description);
+            existing.remoteDescriptionSet = true;
+            await this.flushCandidates(fromId, existing);
+
+            const answer = await existing.connection.createAnswer();
+            await existing.connection.setLocalDescription(answer);
+            await this.sendSignal(
+                fromId,
+                'answer',
+                existing.connection.localDescription ?? answer,
+            );
+            existing.restartingIce = false;
+            return;
+        }
+
+        // 未確立ピアとの同時接続（glare）: polite / impolite ルールで解決する（#32）
+        let inheritedResolvers: Array<() => void> = [];
+        let inheritedRejecters: Array<(error: Error) => void> = [];
+
+        if (existing) {
+            if (existing.isInitiator && !polite) {
+                this.logger.debug(
+                    `Ignoring colliding initial offer from ${fromId} (impolite peer)`,
+                );
+                return;
+            }
+            // polite 側: 待機中の connect() Promise を新ピアへ引き継ぐ
+            inheritedResolvers = existing.openResolvers.splice(0);
+            inheritedRejecters = existing.openRejecters.splice(0);
             this.destroyPeer(fromId, existing, false);
         }
 
-        const state = this.createPeer(fromId);
+        const iceServers = await this.resolveIceServers();
+        if (this.closed) {
+            for (const reject of inheritedRejecters) {
+                reject(new Error('WebRTCChannel is closed'));
+            }
+            return;
+        }
+
+        const state = this.createPeer(fromId, false, iceServers);
+        state.openResolvers.push(...inheritedResolvers);
+        state.openRejecters.push(...inheritedRejecters);
+
         state.connection.ondatachannel = (event) => {
             this.attachDataChannel(fromId, state, event.channel);
         };
@@ -314,11 +594,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
 
             const answer = await state.connection.createAnswer();
             await state.connection.setLocalDescription(answer);
-            await this.sendSignal(
-                fromId,
-                'answer',
-                state.connection.localDescription ?? answer,
-            );
+            await this.sendSignal(fromId, 'answer', state.connection.localDescription ?? answer);
         } catch (error) {
             this.destroyPeer(fromId, state, false);
             throw error;
@@ -331,16 +607,18 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     ): Promise<void> {
         const state = this.peers.get(fromId);
         if (!state) {
-            console.warn(`[WRTC] Received answer from unknown peer ${fromId}`);
+            this.logger.warn(`Received answer from unknown peer ${fromId}`);
             return;
         }
-        if (state.remoteDescriptionSet) {
-            // 再送された answer は無視する
+        if (!state.awaitingAnswer) {
+            // 重複または不要な answer は無視する
             return;
         }
 
+        state.awaitingAnswer = false;
         await state.connection.setRemoteDescription(description);
         state.remoteDescriptionSet = true;
+        state.restartingIce = false;
         await this.flushCandidates(fromId, state);
     }
 
@@ -360,7 +638,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         try {
             await state.connection.addIceCandidate(candidate);
         } catch (error) {
-            console.warn(`[WRTC] Failed to add ICE candidate from ${fromId}:`, error);
+            this.logger.warn(`Failed to add ICE candidate from ${fromId}:`, error);
         }
     }
 
@@ -372,7 +650,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             try {
                 await state.connection.addIceCandidate(candidate);
             } catch (error) {
-                console.warn(`[WRTC] Failed to add queued ICE candidate from ${fromId}:`, error);
+                this.logger.warn(`Failed to add queued ICE candidate from ${fromId}:`, error);
             }
         }
     }
@@ -398,6 +676,6 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             return;
         }
 
-        console.warn(`[WRTC] Unsupported message type from ${peerId}`);
+        this.logger.warn(`Unsupported message type from ${peerId}`);
     }
 }

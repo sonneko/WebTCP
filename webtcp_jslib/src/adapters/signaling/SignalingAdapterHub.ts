@@ -1,5 +1,6 @@
 import { ISignalingAdapter, SignalMessage } from '../../core/link/ISignalingAdapter.js';
 import { NodeId } from '../../core/types/protocol.js';
+import { LogLevel, Logger, createScopedLogger, resolveLogger } from '../../core/util/Logger.js';
 import { generateNodeId } from '../../core/util/id.js';
 
 export interface SignalingAdapterHubOptions {
@@ -11,6 +12,10 @@ export interface SignalingAdapterHubOptions {
     pollIntervalMs?: number;
     /** fetch の実装（テスト用に差し替え可能）。 */
     fetchImpl?: typeof fetch;
+    /** ロガー（任意）。 */
+    logger?: Logger;
+    /** 既定コンソールロガーのログレベル（任意。既定 `'warn'`）。 */
+    logLevel?: LogLevel;
 }
 
 interface HubMessage {
@@ -34,6 +39,7 @@ export class SignalingAdapterHub implements ISignalingAdapter {
     private readonly nodeId: NodeId;
     private readonly pollIntervalMs: number;
     private readonly fetchImpl: typeof fetch;
+    private readonly logger: Logger;
 
     private callback: ((fromId: NodeId, message: SignalMessage) => void) | null = null;
     private cursor = 0;
@@ -48,6 +54,10 @@ export class SignalingAdapterHub implements ISignalingAdapter {
         this.baseUrl = options.url.replace(/\/+$/, '');
         this.nodeId = options.nodeId ?? generateNodeId();
         this.pollIntervalMs = options.pollIntervalMs ?? 1000;
+        this.logger = createScopedLogger(
+            resolveLogger(options.logger, options.logLevel),
+            'SignalingHub',
+        );
 
         const fetchImpl = options.fetchImpl ?? globalThis.fetch;
         if (typeof fetchImpl !== 'function') {
@@ -138,7 +148,7 @@ export class SignalingAdapterHub implements ISignalingAdapter {
                 try {
                     this.callback(entry.fromId, entry.message);
                 } catch (error) {
-                    console.error('[SignalingHub] listener threw:', error);
+                    this.logger.error('listener threw:', error);
                 }
             }
         } catch (error) {
@@ -146,7 +156,7 @@ export class SignalingAdapterHub implements ISignalingAdapter {
                 this.running = false;
                 throw error;
             }
-            console.warn('[SignalingHub] Polling failed (will retry):', error);
+            this.logger.warn('Polling failed (will retry):', error);
         } finally {
             this.polling = false;
             this.schedule();

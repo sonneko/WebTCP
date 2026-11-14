@@ -12,9 +12,9 @@ export interface WebTCPPacket {
     senderId: NodeId;
     /** 最終宛先ノードID。 */
     destinationId: NodeId;
-    /** Time-to-Live（ホップごとにデクリメント）。 */
+    /** Time-to-Live（中継ホップごとにデクリメント）。 */
     ttl: number;
-    /** senderId による署名。M1では空。 */
+    /** senderId による署名。M1–M2では空。 */
     signature: Signature;
 
     // === L4 (Transport Layer) ヘッダー ===
@@ -24,12 +24,12 @@ export interface WebTCPPacket {
     destinationPort: VirtualPort;
     /** SYN, ACK, FIN, RST, DATA, RT_UPDATE などのフラグ。 */
     flags: WebTCPFlags;
-    /** シーケンス番号（パケット単位）。 */
+    /** バイト単位のシーケンス番号（mod 2^32）。 */
     seqNum: SequenceNumber;
-    /** 次に期待する受信シーケンス番号。 */
+    /** 次に期待する受信バイトのシーケンス番号（mod 2^32）。 */
     ackNum: SequenceNumber;
 
-    // === L7 (Payload) ===
-    /** 実際のデータ（アプリケーションデータまたは制御情報）。 */
+    // === L7 / Control Payload ===
+    /** 実際のデータ（アプリケーションデータ、RT_UPDATE JSON、または ACK の SACK オプション）。 */
     payload: Uint8Array;
 }

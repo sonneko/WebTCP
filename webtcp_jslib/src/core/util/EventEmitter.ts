@@ -1,3 +1,5 @@
+import { Logger, defaultLogger } from './Logger.js';
+
 /**
  * ブラウザ・Node.jsのどちらでも動作する最小の EventEmitter。
  *
@@ -14,6 +16,11 @@ interface ListenerEntry {
 
 export class EventEmitter {
     private readonly listeners = new Map<string, ListenerEntry[]>();
+    protected eventLogger: Logger;
+
+    constructor(logger: Logger = defaultLogger) {
+        this.eventLogger = logger;
+    }
 
     /** リスナーを登録する。 */
     public on(event: string, listener: EventListener): this {
@@ -61,7 +68,7 @@ export class EventEmitter {
 
     /**
      * イベントを発火する。
-     * リスナー内の例外は他のリスナーの実行を妨げないよう捕捉し、コンソールに出力する。
+     * リスナー内の例外は他のリスナーの実行を妨げないよう捕捉し、ロガーへ出力する。
      * @returns リスナーが1つ以上呼ばれた場合は true
      */
     public emit(event: string, ...args: any[]): boolean {
@@ -76,7 +83,7 @@ export class EventEmitter {
             try {
                 entry.listener(...args);
             } catch (error) {
-                console.error(`[EventEmitter] listener for "${event}" threw:`, error);
+                this.eventLogger.error(`[EventEmitter] listener for "${event}" threw:`, error);
             }
         }
         return true;
