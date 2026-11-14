@@ -108,7 +108,17 @@ export class WebTCPNetwork extends EventEmitter {
         localPort?: VirtualPort,
     ): Promise<VirtualStream> {
         if (this.closed) throw new Error('WebTCPNetwork is closed');
-        await this.connectToPeer(remoteId);
+        if (remoteId === this.localNodeId) {
+            throw new Error('Cannot connect to self');
+        }
+
+        // 直接のリンクが無く、経路も未学習の場合のみリンク確立を試みる。
+        // マルチホップの経路が既に分かっている場合は、中継ノードに任せる。
+        const route = this.getRoutingTable().getEntry(remoteId);
+        if (!route || route.cost === 0) {
+            await this.connectToPeer(remoteId);
+        }
+
         return this.transportLayer.connect(remoteId, remotePort, localPort);
     }
 

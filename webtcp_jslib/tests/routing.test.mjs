@@ -38,8 +38,8 @@ test('routing: a 3-node chain forwards packets via the middle node', async () =>
         });
     });
 
-    // マルチホップであることを明示するため、リンク自動確立を経由せずトランスポート層へ直接要求する
-    const stream = await a.transportLayer.connect(C, 9000, 51000);
+    // A-C は直接つながっていないが、経路が学習済みなので公開APIからマルチホップ接続できる
+    const stream = await a.connect(C, 9000, 51000);
     let reply = null;
     stream.on('data', (data) => {
         reply = decode(data);

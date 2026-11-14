@@ -197,6 +197,12 @@ async function serveStatic(url, res, headOnly) {
         return;
     }
 
+    // パストラバーサルを拒否する（多層防御）
+    if (pathname.split('/').some((segment) => segment === '..' || segment === '.')) {
+        sendJson(res, 400, { error: 'invalid path' });
+        return;
+    }
+
     // 配信対象を限定する（.git や node_modules を公開しない）
     const allowed =
         pathname.startsWith('/examples/') ||
