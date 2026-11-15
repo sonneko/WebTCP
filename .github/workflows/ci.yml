@@ -74,11 +74,14 @@ jobs:
 
       - name: Verify 2-tab browser demo (real WebRTC)
         run: |
-          set -o pipefail
-          node examples/verify-browser.mjs 2>&1 | tee e2e.log
-          code=$?
+          code=0
+          node examples/verify-browser.mjs > e2e.log 2>&1 || code=$?
           if [ "$code" -ne 0 ]; then
-            msg=$(tail -c 3000 e2e.log | tr '\n' ' ' | sed -e 's/%/%25/g' -e 's/:/%3A/g')
+            msg=$(tail -c 3500 e2e.log | tr '\n' ' ' | sed -e 's/%/%25/g' -e 's/:/%3A/g')
             echo "::error title=E2E log tail::${msg}"
+            printf '===== e2e.log (head) =====\n'
+            head -40 e2e.log
+            printf '===== e2e.log (tail) =====\n'
+            tail -60 e2e.log
           fi
           exit "$code"
