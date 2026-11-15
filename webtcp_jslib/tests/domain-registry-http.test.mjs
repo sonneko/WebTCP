@@ -396,3 +396,30 @@ test('domain-registry: a node serves an ANCHORED record that peers verify throug
     }
 });
 
+test('domain-registry: a detached, receiver-sensitive fetch still works (browser `window.fetch`)', async () => {
+    // Chromium の `fetch` はレシーバ（Window）を要求し、切り離して呼ぶと
+    // "Illegal invocation" になる。クライアントがバインドして保持していることの回帰検査。
+    const owner = await NodeKeyManager.create();
+    const log = await NodeKeyManager.create();
+    const ledger = createDomainLedger({ keyManager: log, logger: noopLogger });
+    const { fetchImpl } = makeRegistry(ledger);
+    const windowLike = {
+        async fetch(input, init) {
+            if (this !== globalThis) {
+                throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+            }
+            return fetchImpl(input, init);
+        },
+    };
+    const client = createHttpDomainRegistryClient({
+        baseUrl: 'http://registry.test',
+        fetchImpl: windowLike.fetch,
+        logger: noopLogger,
+    });
+    const record = await createDomainOwnershipRecord({ domain: 'bound.domain.global', keyManager: owner, serial: 1 });
+    const submitted = await client.submit(record);
+    assert.equal(submitted.accepted, true);
+    assert.equal((await client.lookupByDomain('bound.domain.global'))[0].body.nodeId, owner.nodeId);
+    assert.equal((await client.logInfo()).logId, ledger.logId);
+});
+

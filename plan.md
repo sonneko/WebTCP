@@ -113,6 +113,7 @@
 - [x] **参照レジストリの実装**（§13.6）: `examples/server.mjs` に `/domain/*`（登録・検索・チェックポイント）、`HttpDomainRegistryClient` アダプタ
 - [x] **#40 修正**: 問い合わせを `AbortController` で統一し、`connect()` 宙吊りでもデッドラインを守る（最初の成功 or 全体タイムアウトで return、待機残は破棄）
 - [x] **#41 修正**: `WebTCPNetwork` が注入 `serializer` を検証器へ伝播、`serializeForSigning` 非実装時の黙ったフォールバックを構築時エラーへ変更
+- [x] **CI が拾った実バグ修正**: `HttpDomainRegistryClient` が `fetch` をレシーバ切り離しで保持しており、実ブラウザ（Chromium）で `POST /domain/record` が `Illegal invocation` で失敗した。`SignalingAdapterHub` / `EntranceSearcherAdapterHub` と同じく `bind(globalThis)` に統一し、レシーバを要求する `fetch` を渡す回帰テストを追加（Node のみで通るテストではこの種のバグは出てこない）
 - [x] デモ拡張: セクション 3 で「自分のドメインクレームに署名 → 参照台帳へ submit → アンカー付きで `registerDomain()` →ピア経由で解決」を手動操作でき、1 タブ自己チェックのステップ **1d** が同じ流れを自動化する（(a) 台帳経由、(b) 既知ノードの `wantOwnership` 応答のみ、(c) 未登録名前の fail-closed、(d) 改ざんの 400 拒否）。`examples/verify-browser.mjs` は 1d の成功を必須化した
       ※ 2 タブ自動モード（`?role=…&autostart=1`）は M4 までのフローのまま残している。ドメイン登録は手動ボタンと自己チェック 1d のみで自動実行しない（自動モード側へ足す価値は低いが、差は認識しておく）
 - [x] README / docs/layer / webtcp_website を同期（新ガイド `guides/domain-ownership.md`、API リファレンス、ロードマップ、仕様サマリー）

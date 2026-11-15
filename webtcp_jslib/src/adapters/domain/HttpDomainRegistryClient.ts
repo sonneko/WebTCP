@@ -90,15 +90,13 @@ export class HttpDomainRegistryClient implements IDomainRecordSource, DomainChec
             throw new DomainRegistryError('HttpDomainRegistryClient requires a baseUrl');
         }
         this.baseUrl = options.baseUrl.replace(/\/+$/, '');
-        const injected =
-            options.fetchImpl ??
-            (typeof globalThis.fetch === 'function'
-                ? (globalThis.fetch as unknown as RegistryFetch)
-                : null);
-        if (!injected) {
+        const injected = options.fetchImpl ?? globalThis.fetch;
+        if (typeof injected !== 'function') {
             throw new DomainRegistryError('no fetch implementation is available for the domain registry');
         }
-        this.fetchImpl = injected;
+        // `fetch` はレシーバ（ブラウザでは `Window`）を要求する。切り離して保持すると
+        // Chrome で "Illegal invocation" になるため、`SignalingAdapterHub` と同じくバインドして持つ。
+        this.fetchImpl = (injected as unknown as RegistryFetch).bind(globalThis) as unknown as RegistryFetch;
         this.timeoutMs = Number.isFinite(options.timeoutMs ?? 5000) ? (options.timeoutMs ?? 5000) : 5000;
         this.tolerateNotFound = options.tolerateNotFound !== false;
         this.logger = createScopedLogger(options.logger ?? defaultLogger, 'DOMAIN-REGISTRY');
