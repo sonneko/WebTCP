@@ -27,7 +27,7 @@
 | M2 | TCP セマンティクスの完成と運用基盤 | ✅ 完了 | バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close・ロガー・`bootstrap()`・TURN/ICE 再起動・ドキュメントサイト・実ブラウザ検証 |
 | M3 | セキュリティ | ✅ 完了（#34 マージ済み） | Ed25519 署名（プロトコル v2）・NodeId の鍵指紋化・`KeyManager`（IndexedDB / node:crypto）・公開鍵の配布（#28） |
 | **M4** | **NameServer と webtcp:// URL** | ✅ 完了（#39 マージ済み） | NameServer（A/CNAME・ローカル登録・既知ノード問い合わせ）、`webtcp://`、永続 NodeId と衝突検出、デモ/サイト（#25） |
-| **M5** | **`domain.global` と検証可能なドメイン所有権証明** | **実装済み（PR レビュー待ち）** | 署名付き所有権レコード、追記型台帳の Merkle / チェックポイント検証、プラガブルな検証インターフェース、`NameServer` 統合、参照レジストリ（HTTP）、デモ（#25 / #40 / #41）。RPF 厳格化・SSE/WebSocket・鍵ライフサイクル等は #42〜#49 へ切り出し |
+| **M5** | **`domain.global` と検証可能なドメイン所有権証明** | **実装済み（PR #53・レビュー待ち）** | 署名付き所有権レコード、追記型台帳の Merkle / チェックポイント検証、プラガブルな検証インターフェース、`NameServer` 統合、参照レジストリ（HTTP）、デモ（#25 / #40 / #41）。RPF 厳格化・SSE/WebSocket・鍵ライフサイクル等は #42〜#49 へ切り出し |
 | M6 | 分散ドメインの実運用化とネットワーク強化 | 未着手 | 実チェーン検証（#42）、ガバナンス（#43）、RPF 厳格化（#46）、SSE/WebSocket（#45）、鍵ライフサイクル（#47）、リプレイ強化（#48）、パッケージ公開（#49） |
 
 ## 3. 完了済みマイルストーンのスコープ
@@ -99,7 +99,7 @@
 
 **M4 スコープ外**: `domain.global` へのドメイン登録、ブロックチェーンによるドメイン所有権証明 → M5 で実装（§3.5）。
 
-### 3.5 M5（本サイクル / #25 残り）
+### 3.5 M5（実装済み / PR #53 レビュー待ち・#25 残り）
 
 着手前に main（`b4a9c54` = PR #39 マージ後）でドキュメントと実装の網羅同期チェックを行い、新規発見分を #40（`NameServer.resolve()` のデッドライン未遵守）と #41（`Ed25519PacketVerifier` のシリアライザ非同一性）へ整理した。M4 で修正済みだった #35〜#38 は内容確認のうえ close した。
 
@@ -234,7 +234,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 
 | # | 種別 | 内容 | 扱い |
 | :--- | :--- | :--- | :--- |
-| #25 | enhancement | NameServer / `webtcp://` / `domain.global` / ブロックチェーン連携 | M5 で完遂 → 本 PR で close |
+| #25 | enhancement | NameServer / `webtcp://` / `domain.global` / ブロックチェーン連携 | M5 で完遂 → PR #53 で close |
 | #40 | bug | `NameServer.resolve()` が `resolveTimeoutMs` / `AbortSignal` を `connect()` 宙吊り中に無視する | 本 PR で修正 |
 | #41 | bug | `Ed25519PacketVerifier` が注入シリアライザを無視し、`serializeForSigning` 欠落時に v1 署名対象へ黙ってフォールバック | 本 PR で修正 |
 | #42 | enhancement | 実チェーン（Namecoin / L1 / SPV / EVM 証明）によるアンカー検証 | M6（スコープ外） |
