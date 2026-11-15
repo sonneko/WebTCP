@@ -95,7 +95,7 @@
     <p class="lead">
         このページを 2 つのタブ（または 2 つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
         下部の「自己チェック」では 1 タブ内で 2 つの実 <code>RTCPeerConnection</code> を使い、自動ブートストラップ・大容量自動分割・Half-Close を一括検証できます。
-        パケットは既定で <strong>Ed25519 署名（プロトコル v2）</strong> され、NodeId は公開鍵の指紋です（秘密鍵は IndexedDB に非抽出 CryptoKey として保存）。M4 では <code>NameServer</code> による名前解決と <code>webtcp://</code> URL 接続も試せます。
+        パケットは既定で <strong>Ed25519 署名（プロトコル v2）</strong> され、NodeId は公開鍵の指紋です（秘密鍵は IndexedDB に非抽出 CryptoKey として保存）。M4 では <code>NameServer</code> による名前解決と <code>webtcp://</code> URL 接続、M5 では <code>domain.global</code> の<strong>所有権レコード + 追記型台帳の検証</strong>を試せます。
     </p>
     <div class="meta mono">
         <div>NodeId: <span id="node-id">(起動中...)</span></div>
@@ -170,9 +170,29 @@
     </div>
 
     <section class="panel wide">
-        <h2>3. 実ブラウザ自己チェック（Self-Check）</h2>
+        <h2>3. `domain.global` と所有権レコード（M5 / #25）</h2>
         <div class="row">
-            <button id="selftest-btn" class="ok">自己チェックを実行（実 WebRTC 2 ピア）</button>
+            <input id="domain-input" type="text" value="webtcp-demo" />
+            <button id="domain-register-btn">自分のドメインを台帳へ登録</button>
+            <button id="domain-resolve-btn">ドメインを検証して解決</button>
+            <span id="domain-status" class="status">未実行</span>
+        </div>
+        <pre id="domain-log" class="log"></pre>
+        <div class="hint">
+            完全名は <code>&lt;入力&gt;-&lt;nodeId 先頭 8 桁&gt;.domain.global</code> です。登録は (1) 自分の Ed25519 鍵で
+            所有権レコードへ署名、(2) <code>POST /domain/record</code> で台帳へ追加（Merkle 葉 + 署名済みチェックポイントを
+            受領）、(3) <code>NameServer.registerDomain()</code> で <code>ownership</code> 付き応答を開始 — の順に進みます。
+            解決側は <code>GET /domain/log</code> のログ鍵でチェックポイント検証を <strong>必須</strong>（fail-closed）に
+            するため、台帳に無い・検証不能な名前では接続を確立できません。サーバーを再起動するとログ鍵が変わるため、
+            既存レコードのチェックポイント検証は失敗します（デモ用の恒久化なし台帳 /
+            <a href="../../specification.md#137-セキュリティ境界と未達">specification.md §13.7</a>）。
+        </div>
+    </section>
+
+    <section class="panel wide">
+        <h2>4. 実ブラウザ自己チェック（Self-Check）</h2>
+        <div class="row">
+            <button id="selftest-btn" class="ok">自己チェックを実行（実 WebRTC 2 ピア + 台帳検証）</button>
             <span id="selftest-status" class="status">未実行（<code>?selftest=1</code> で自動実行）</span>
         </div>
         <ul id="selftest-list" class="checklist mono"></ul>

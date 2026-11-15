@@ -16,12 +16,15 @@ import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createDomainRegistry } from './domain-registry.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 const SIGNAL_TTL_MS = 60_000;
 const PRESENCE_TTL_MS = 60_000;
 const MAX_BODY_BYTES = 1 << 20;
+/** `/domain/record` のリクエストボディ上限（レコード 1 件 + 多少の余裕、specification.md §13.6）。 */
+const MAX_RECORD_BODY_BYTES = 64 * 1024;
 
 const CONTENT_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -45,6 +48,8 @@ export function createDemoServer() {
     /** @type {Map<string, number>} */
     const presence = new Map();
     let nextMessageId = 1;
+    /** `domain.global` の参照レジストリ（specification.md §13.6）。 */
+    const domains = createDomainRegistry();
 
     function sendJson(res, status, body) {
         res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -141,6 +146,60 @@ export function createDemoServer() {
         }
 
         sendJson(res, 200, { messages });
+    }
+
+    /** JSON ボディを読みながら `/domain/*` を処理する（specification.md §13.6）。 */
+    async function handleDomain(request, url, res) {
+        const route = url.pathname;
+        if (route === '/domain/record' && request.method === 'POST') {
+            let raw = '';
+            let tooLarge = false;
+            await new Promise((resolveBody) => {
+                request.on('data', (chunk) => {
+                    raw += chunk;
+                    if (raw.length > MAX_RECORD_BODY_BYTES) {
+                        tooLarge = true;
+                        request.destroy();
+                        resolveBody();
+                    }
+                });
+                request.on('end', resolveBody);
+                request.on('error', resolveBody);
+            });
+            if (tooLarge) {
+                sendJson(res, 413, { error: `request body exceeds ${MAX_RECORD_BODY_BYTES} bytes` });
+                return;
+            }
+            let body;
+            try {
+                body = raw.length > 0 ? JSON.parse(raw) : null;
+            } catch {
+                sendJson(res, 400, { error: 'invalid json' });
+                return;
+            }
+            const outcome = await domains.submit(body);
+            sendJson(res, outcome.status, outcome.body);
+            return;
+        }
+        if (request.method !== 'GET') {
+            sendJson(res, 405, { error: 'method not allowed' });
+            return;
+        }
+        const outcome =
+            route === '/domain/record'
+                ? await domains.lookup(url.searchParams)
+                : route === '/domain/checkpoint'
+                  ? await domains.checkpoint()
+                  : route === '/domain/checkpoints'
+                    ? await domains.checkpoints(url.searchParams)
+                    : route === '/domain/log'
+                      ? await domains.log()
+                      : null;
+        if (!outcome) {
+            sendJson(res, 404, { error: 'no such domain endpoint' });
+            return;
+        }
+        sendJson(res, outcome.status, outcome.body);
     }
 
     function handleEntrances(url, res) {
@@ -241,6 +300,12 @@ export function createDemoServer() {
             handleEntrances(url, res);
             return;
         }
+        if (url.pathname.startsWith('/domain/')) {
+            void handleDomain(req, url, res).catch((error) => {
+                sendJson(res, 500, { error: String(error?.message ?? error) });
+            });
+            return;
+        }
 
         if (req.method !== 'GET' && req.method !== 'HEAD') {
             sendJson(res, 405, { error: 'method not allowed' });
@@ -272,5 +337,6 @@ if (isMain) {
         console.log(`[WebTCP demo] http://localhost:${PORT}/examples/demo/`);
         console.log(`[WebTCP demo] self-test: http://localhost:${PORT}/examples/demo/?selftest=1`);
         console.log(`[WebTCP demo] signaling hub: POST /signal, GET /messages, GET /entrances`);
+        console.log(`[WebTCP demo] domain registry: POST /domain/record, GET /domain/record|checkpoint|checkpoints|log`);
     });
 }

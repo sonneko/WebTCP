@@ -68,16 +68,26 @@ TTL は 0 に正規化されるため、送信元が 1 度署名すれば中継�
 
 `core/naming` は L7 アプリケーション層サービスとして `WebTCPNetwork` の公開 API に依存します。L3/L4 へ名前を漏らさず、既存の署名付き `VirtualStream` 上で JSON 要求/応答を運びます。
 ローカル登録を権威データとし、クライアント側で CNAME を反復解決します。サーバーは他ノードへ再帰問い合わせしないため、問い合わせループと増幅を抑えます。
-`parseWebTCPUrl()` は非特殊スキームの環境依存を避けるため明示的な検証でパースし、`connectURL()` は名前なら NameServer、NodeId なら直接 `connect()` へ振り分けます。
+`parseWebTCPUrl()` は非特殊スキームの環境依存を避けるため明示的な検証でパースし、`connectURL()` は名前なら NameServer、NodeId なら直接 `connect()` へ振り分けます。 `parseWebTCPUrl()` はゾーン名を `zone` として保持し、`.domain.global` を NameServer の権威側へ流します（M5）。
 
 ### 永続 NodeId と RT_UPDATE の信頼境界（M4 / #36, #37）
 
 ブラウザ鍵復元時は公開鍵指紋だけでなく署名チャレンジで秘密鍵との対応を検証します。Node.js は `NodeKeyManager.open({ keyFile })` で PKCS#8 PEM を `0600` ・原子的に保存します。
 `RT_UPDATE` は直接隣接・sender 一致・自ノード宛・正 TTL・制御ポート 0 のみ受理し、中継しません。`entries[].publicKey` で既知鍵を経路とともに伝播し、受信側は指紋検証して `KeyDirectory` へ登録します。
 
+### domain.global 所有権レコードと台帳検証（M5 / #25）
+
+`core/domain` は「名前をその NodeId に束縛できるのは誰か」を、**検証可能なレコード**として扱います。ブラウザにブロックチェーンクライアントは入れず、次の 3 点にスコープしました。
+
+1. **所有者署名付きレコード** (`DomainOwnershipRecord`): canonical バイト列（固定長ヘッダ + 長さ接頭辞文字列）への Ed25519 署名。SHA-256 による 32 バイトの commitment が台帳に載り、レコード本体は carrier です。
+2. **追記専用台帳とチェックポイント** (`DomainLedger` / `DomainCheckpoint`): リーフは `H(0x00 || commitment)`、ルートは `H(0x02 || uint64BE(treeSize) || top)` と**ツリーサイズに束縛**されるので、別のサイズの包含証明を通せません。チェックポイントはログ鍵が署名し、`prevHash` で連結されます。読取時に再署名しないため、`prevHash` の自己一致性が保たれます。
+3. **差し替え可能な検証器** (`IDomainOwnershipVerifier` / `IChainAnchorVerifier`): 検証順序は fail-closed で固定（形式 → 指紋とゾーン → 所有者署名 → 有効期間 → serial と失効 → 衝突 → アンカー → 収集元全滅は `resolution-unavailable`）。信頼の根拠は**ピン留めされたログ鍵**であり、未知の台帳のアンカーは `anchor-untrusted-log` で棄却されます。
+
+`DomainAuthority` が収集元（ローカル → HTTP レジストリ → 既知ノードの `wantOwnership` 応答）から候補をあつめ、検証を通ったものだけを残します。`core/domain` はストリーム I/O を知らず、NameServer 側の JSON プロトコルは後方互換拡張（`wantOwnership` / `ownership`）にとどめています。チェックポイントは**追記専用**なので、受理済みの `treeSize` より古いチェックポイントを見たら `anchor-rollback` で拒否します（読み取りのたびに作り直さない MUST があるのはこのためです）。
+
 ### 差し替え可能な署名検証とロガー
 
-- **署名検証（`IPacketVerifier`）**: 既定は `Ed25519PacketVerifier`（プロトコル v2、#28）。`keyManager` を渡すと署名必須になります。`NullPacketVerifier` は v1 後方互換専用として残置しています。
+- **署名検証（`IPacketVerifier`）**: `keyManager`（または `Ed25519PacketVerifier`）を渡すとプロトコル v2 の署名必須になります。どちらも渡さない既定構成は `NullPacketVerifier` で、v1 パケットを無検証で通します（実験・相互運用モード、#28）。`Ed25519PacketVerifier` は署名対象のシリアライザを必須注入とし、無い場合は構築時に失敗します（#41 — 検証側が独自に近似すると、片側だけ通る署名になります）。
 - **ロガー（`Logger`）**: コア・アダプタ全体から `console.*` の直書きを廃止し、`WebTCPNetwork` へ注入したロガーを全層へ伝播します（既定 `warn` 以上）。
 
 ## 接続・通信・切断シーケンス

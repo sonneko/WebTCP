@@ -24,6 +24,10 @@ import {
     BrowserKeyManager,
     KeyDirectory,
     createBrowserNetwork,
+    commitDomainRecord,
+    createDomainAuthority,
+    createDomainOwnershipRecord,
+    createHttpDomainRegistryClient,
     createLogger,
     deriveNodeId,
     NameServer,
@@ -33,6 +37,8 @@ import {
 const SERVER_PORT = 8080;
 const DEMO_SERVICE_NAME = 'demo-service';
 const DEMO_ALIAS_NAME = 'demo-alias';
+/** M5 のデモドメイン（`<prefix>-<nodeId 先頭 8 桁>.domain.global`）。 */
+const DEMO_DOMAIN_PREFIX = 'webtcp-demo';
 const LARGE_TEST_BYTES = 80 * 1024 + 123; // > 60 KiB
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -69,10 +75,19 @@ const els = {
     selftestBtn: document.getElementById('selftest-btn'),
     selftestStatus: document.getElementById('selftest-status'),
     selftestList: document.getElementById('selftest-list'),
+    domainInput: document.getElementById('domain-input'),
+    domainRegisterBtn: document.getElementById('domain-register-btn'),
+    domainResolveBtn: document.getElementById('domain-resolve-btn'),
+    domainStatus: document.getElementById('domain-status'),
+    domainLog: document.getElementById('domain-log'),
 };
 
 let network = null;
 let nameServer = null;
+/** M5: 参照レジストリ（`examples/server.mjs` の `/domain/*`）へのクライアントと権威。 */
+let domainAuthority = null;
+let domainRegistryClient = null;
+let domainRegistryPinned = false;
 let signaling = null;
 let clientStream = null;
 let listening = false;
@@ -121,6 +136,141 @@ function describeIdentity(keys) {
     return `Ed25519: 有効（プロトコル v2・署名必須 / 公開鍵 ${keys.nodeId.slice(0, 8)}…）`;
 }
 
+/** M5: ノードごとに一意なデモドメイン名（LDH ラベル + `domain.global`）。 */
+function demoDomainName(nodeId, label) {
+    const cleaned = String(label ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+    const base = cleaned.length > 0 ? cleaned : DEMO_DOMAIN_PREFIX;
+    return cleaned.includes('.') ? cleaned : `${base}-${nodeId.slice(0, 8)}.domain.global`;
+}
+
+/**
+ * 参照レジストリへ接続し、`domain.global` 権威を作る（specification.md §13.5 / §13.6）。
+ *
+ * ログ鍵は起動のたびに `GET /domain/log` から得る（TOFU ピン留め）。取得できない場合は
+ * アンカー検証なしの権威にする（その場合でも所有者署名と有効期間は必ず検証される）。
+ */
+async function createDomainRegistryAuthority(logger) {
+    const client = createHttpDomainRegistryClient({ baseUrl: location.origin, logger, timeoutMs: 6000 });
+    const options = { sources: [client], logger };
+    try {
+        const response = await fetch(`${location.origin}/domain/log`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const info = await response.json();
+        if (typeof info?.logId !== 'string' || typeof info.publicKey !== 'string') {
+            throw new Error('the registry did not publish a log key');
+        }
+        options.verifierOptions = {
+            requireAnchor: true,
+            logKeys: { [info.logId]: info.publicKey },
+            logger,
+        };
+        options.checkpointChain = client;
+        domainRegistryPinned = true;
+        logDomain(`台帳に接続しました（logId ${info.logId.slice(0, 8)}… / チェックポイント検証は必須）`);
+    } catch (error) {
+        domainRegistryPinned = false;
+        options.verifierOptions = { requireAnchor: false, logger };
+        logger.warn('domain registry unavailable; resolving without ledger anchors:', error);
+        logDomain(`台帳に接続できません（${error.message}）。所有者署名の検証だけで進めます`);
+    }
+    domainRegistryClient = client;
+    return createDomainAuthority(options);
+}
+
+/** `domain.global` パネルのログ（パネルが無いときはサーバーログへ流す）。 */
+function logDomain(message) {
+    const target = els.domainLog ?? els.serverLog;
+    if (target) log(target, message);
+}
+
+/** 入力欄から解決対象の完全名を作る（`.` を含めばそのまま、無ければノード固有名）。 */
+function requestedDomain(nodeId) {
+    const raw = (els.domainInput?.value ?? '').trim().toLowerCase();
+    return raw.includes('.') ? raw : demoDomainName(nodeId, raw);
+}
+
+async function onDomainRegister() {
+    if (!network || !nameServer) {
+        setStatus(els.domainStatus, '先にネットワークを起動してください', 'err');
+        return;
+    }
+    await loadIdentity();
+    if (!identity) {
+        setStatus(els.domainStatus, 'Ed25519 鍵が無いため所有権レコードを署名できません', 'err');
+        return;
+    }
+    els.domainRegisterBtn.disabled = true;
+    setStatus(els.domainStatus, '登録中...', 'warn');
+    try {
+        const domain = requestedDomain(network.localNodeId);
+        const existing = domainRegistryClient
+            ? await domainRegistryClient.lookupByDomain(domain).catch(() => [])
+            : [];
+        const serial = existing.reduce((max, entry) => Math.max(max, entry.body.serial), 0) + 1;
+        const record = await createDomainOwnershipRecord({
+            domain,
+            keyManager: identity,
+            serial,
+            port: SERVER_PORT,
+            txt: 'webtcp browser demo',
+            lifetimeMs: 24 * 60 * 60 * 1000,
+        });
+        logDomain(`${domain} のレコードを署名しました（serial ${serial}）`);
+        let anchored = record;
+        if (domainRegistryClient) {
+            const submitted = await domainRegistryClient.submit(record);
+            if (!submitted.accepted) {
+                throw new Error(`台帳が拒否しました: ${submitted.error ?? 'unknown'}`);
+            }
+            if (submitted.anchor) anchored = { ...record, anchor: submitted.anchor };
+            logDomain(`台帳leaf=${submitted.leafIndex} / treeSize=${submitted.treeSize}`);
+        }
+        const resolution = await nameServer.registerDomain(anchored);
+        if (!resolution.ok) throw new Error(`検証に失敗しました: ${resolution.code} ${resolution.message ?? ''}`);
+        const commitment = await commitDomainRecord(anchored.body);
+        logDomain(`commitment ${commitment.slice(0, 16)}… / 所有権付きで ${domain} を提供中`);
+        setStatus(els.domainStatus, `${domain} を登録しました`, 'ok');
+    } catch (error) {
+        logDomain(`登録失敗: ${error.message}`);
+        setStatus(els.domainStatus, '登録に失敗しました', 'err');
+    } finally {
+        els.domainRegisterBtn.disabled = false;
+    }
+}
+
+async function onDomainResolve() {
+    if (!network || !nameServer) {
+        setStatus(els.domainStatus, '先にネットワークを起動してください', 'err');
+        return;
+    }
+    els.domainResolveBtn.disabled = true;
+    setStatus(els.domainStatus, '解決中...', 'warn');
+    try {
+        const domain = requestedDomain(network.localNodeId);
+        const resolution = await nameServer.resolve(domain);
+        const proof = resolution.proof ?? {};
+        logDomain(
+            `解決: ${domain} -> ${resolution.nodeId.slice(0, 8)}… (source=${resolution.source}, serial=${
+                resolution.record?.body.serial
+            }, anchor=${proof.anchorVerified ? 'verified' : 'none'}, chain=${
+                proof.chainVerified === true ? 'verified' : proof.chainVerified === false ? 'failed' : 'unchecked'
+            })`,
+        );
+        els.urlInput.value = `webtcp://${domain}:${SERVER_PORT}/`;
+        setStatus(els.domainStatus, `${domain} を検証付きで解決しました`, 'ok');
+    } catch (error) {
+        logDomain(`解決失敗: ${error.name}: ${error.message}`);
+        setStatus(els.domainStatus, '解決に失敗しました（fail-closed）', 'err');
+    } finally {
+        els.domainResolveBtn.disabled = false;
+    }
+}
+
 function log(element, message) {
     const timestamp = new Date().toLocaleTimeString();
     element.textContent += `[${timestamp}] ${message}\n`;
@@ -152,6 +302,10 @@ async function initNetwork() {
     if (nameServer) {
         nameServer.close();
         nameServer = null;
+    }
+    if (domainAuthority) {
+        domainAuthority.close();
+        domainAuthority = null;
     }
     if (network) {
         network.close();
@@ -201,7 +355,8 @@ async function initNetwork() {
         });
 
         await network.start();
-        nameServer = new NameServer(network, { logger: currentLogger });
+        domainAuthority = await createDomainRegistryAuthority(currentLogger);
+        nameServer = new NameServer(network, { logger: currentLogger, domains: domainAuthority });
         nameServer.listen();
         els.nodeId.textContent = network.localNodeId;
         if (els.identity) {
@@ -698,7 +853,32 @@ async function runSelfTest() {
 
         let serverStream = null;
         let serverSawEnd = false;
-        const nsServer = new NameServer(netServer, { logger });
+        // M5: 参照レジストリ（`/domain/*`）へ接続した `domain.global` 権威を作る。
+        // サーバー側 NameServer は自分の所有権レコードをこの権威で検証してから登録し、
+        // ピアからの wantOwnership 問い合わせに同じ検証付きで答える (§13.5)。
+        const domainRegistry = createHttpDomainRegistryClient({ baseUrl: location.origin, logger });
+        let domainLogInfo = null;
+        let domainVerifierOptions = { requireAnchor: false, logger };
+        try {
+            const response = await fetch(`${location.origin}/domain/log`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const info = await response.json();
+            if (typeof info?.logId !== 'string' || typeof info.publicKey !== 'string') {
+                throw new Error('the registry did not publish a log key');
+            }
+            domainLogInfo = info;
+            domainVerifierOptions = { requireAnchor: true, logKeys: { [info.logId]: info.publicKey }, logger };
+        } catch (error) {
+            logger.warn('domain registry unavailable; the self-test will run without ledger anchors:', error);
+        }
+        const nsServer = new NameServer(netServer, {
+            logger,
+            domains: createDomainAuthority({
+                sources: [domainRegistry],
+                verifierOptions: domainVerifierOptions,
+                logger,
+            }),
+        });
         const nsClient = new NameServer(netClient, { logger, queryTimeoutMs: 1500, resolveTimeoutMs: 4000 });
         nsServer.registerA(DEMO_SERVICE_NAME, netServer.localNodeId);
         nsServer.registerCNAME(DEMO_ALIAS_NAME, DEMO_SERVICE_NAME);
@@ -757,6 +937,101 @@ async function runSelfTest() {
                 throw new Error('webtcp:// URL パースが不正です');
             }
             return `${DEMO_ALIAS_NAME} -> ${resolved.nodeId.slice(0, 8)}… (${resolved.source})`;
+        });
+
+        // 1d. domain.global 所有権レコード + 台帳アンカー検証（M5 / #25）
+        await runStep('1d. domain.global 所有権レコードと台帳アンカー検証 (M5)', async () => {
+            if (!keysServer) {
+                return 'Ed25519 非対応のためスキップ（所有権レコードは署名必須）';
+            }
+            const domain = `m5-${netServer.localNodeId.slice(0, 8)}-${Date.now().toString(36)}.domain.global`;
+            if (!domainLogInfo) {
+                throw new Error('参照レジストリがログ鍵を公開していません（`npm run build` 後にデモサーバーを起動してください）');
+            }
+            const registry = domainRegistry;
+            const verifierOptions = domainVerifierOptions;
+            const record = await createDomainOwnershipRecord({
+                domain,
+                keyManager: keysServer,
+                serial: 1,
+                port: SERVER_PORT,
+                txt: 'self-test',
+                lifetimeMs: 3_600_000,
+            });
+            // 改ざんは台帳が 400 で拒否する (§13.4 の 1〜6 をレジストリも実施)
+            const forged = { ...record, body: { ...record.body, txt: 'tampered' } };
+            const forgedResponse = await fetch(`${location.origin}/domain/record`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ record: forged }),
+            });
+            if (forgedResponse.status !== 400) {
+                throw new Error(`改ざんレコードが拒否されませんでした (HTTP ${forgedResponse.status})`);
+            }
+            const submitted = await registry.submit(record);
+            if (!submitted.accepted || !submitted.anchor) {
+                throw new Error(`台帳が受理しませんでした: ${submitted.error ?? 'no anchor'}`);
+            }
+            const anchored = { ...record, anchor: submitted.anchor };
+            const registered = await nsServer.registerDomain(anchored);
+            if (!registered.ok) {
+                throw new Error(`自分のレコードを登録できません: ${registered.code} ${registered.message}`);
+            }
+
+            // (a) レジストリ（台帳）を引いて解決する
+            const ledgerNameServer = new NameServer(netClient, {
+                logger,
+                queryTimeoutMs: 1500,
+                resolveTimeoutMs: 4000,
+                domains: createDomainAuthority({ sources: [registry], verifierOptions, logger }),
+            });
+            const viaLedger = await ledgerNameServer.resolve(domain);
+            ledgerNameServer.close();
+
+            // (b) 台帳を引かず、既知ノードの wantOwnership 応答だけで解決する (§12.2 / §13.5 の (3))
+            const peerNameServer = new NameServer(netClient, {
+                logger,
+                queryTimeoutMs: 1500,
+                resolveTimeoutMs: 4000,
+                domains: createDomainAuthority({ verifierOptions, logger }),
+            });
+            const viaPeers = await peerNameServer.resolve(domain);
+            peerNameServer.close();
+
+            for (const [label, resolved] of [['ledger', viaLedger], ['peers', viaPeers]]) {
+                if (resolved.nodeId !== netServer.localNodeId) {
+                    throw new Error(`${label} 経由の解決先が不一致: ${resolved.nodeId}`);
+                }
+                if (resolved.source !== 'domain') {
+                    throw new Error(`${label} 経由の解決ソースが 'domain' ではありません: ${resolved.source}`);
+                }
+                if (resolved.proof?.anchorVerified !== true) {
+                    throw new Error(`${label} 経由で台帳アンカーの検証が通りませんでした`);
+                }
+            }
+
+            // (c) 台帳にも既知ノードにも無い名前は fail-closed で失敗する
+            const missingNameServer = new NameServer(netClient, {
+                logger,
+                queryTimeoutMs: 1000,
+                resolveTimeoutMs: 2000,
+                domains: createDomainAuthority({ sources: [registry], verifierOptions, logger }),
+            });
+            let failure = null;
+            try {
+                await missingNameServer.resolve('not-in-the-ledger.domain.global');
+            } catch (error) {
+                failure = error;
+            }
+            missingNameServer.close();
+            if (!failure) {
+                throw new Error('未登録のドメインが解決できてしまいました（fail-closed でありません）');
+            }
+            if (failure.name === 'NameNotFoundError') {
+                throw new Error(`未登録名前の区別ができません: ${failure.message}`);
+            }
+            const commitment = await commitDomainRecord(anchored.body);
+            return `leaf=${submitted.leafIndex} treeSize=${submitted.treeSize} commitment=${commitment.slice(0, 8)}… / 台帳・既知ノードの両方で anchor=verified / 改ざんは 400 / 未登録は ${failure.name}`;
         });
 
         // 2. 仮想 TCP 接続（ランダム ISN & ESTABLISHED）を webtcp:// URL で確立
@@ -938,6 +1213,8 @@ async function main() {
     els.sendBtn.addEventListener('click', onSend);
     els.sendLargeBtn.addEventListener('click', onSendLarge);
     els.selftestBtn.addEventListener('click', runSelfTest);
+    els.domainRegisterBtn?.addEventListener('click', () => void onDomainRegister());
+    els.domainResolveBtn?.addEventListener('click', () => void onDomainResolve());
     els.messageInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') void onSend();
     });
@@ -956,6 +1233,7 @@ async function main() {
 
 window.addEventListener('beforeunload', () => {
     stopStatsPolling();
+    domainAuthority?.close();
     nameServer?.close();
     network?.close();
     signaling?.close();

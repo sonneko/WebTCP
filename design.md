@@ -2,8 +2,8 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.4.0 |
-| 対応仕様 | `specification.md` 0.4.0 / プロトコル v2（v1 後方互換） |
+| 文書バージョン | 0.5.0 |
+| 対応仕様 | `specification.md` 0.5.0 / プロトコル v2（v1 後方互換） |
 | 最終更新 | 2026-11-14 |
 
 本書は `specification.md` を満たすための**実装構造と技術判断**を記述する。
@@ -68,9 +68,20 @@ WebTCP/
     │   │   │   ├── VirtualStream.ts     # フル TCP セマンティクス（M2）
     │   │   │   ├── TransportLayer.ts
     │   │   │   └── index.ts
-    │   │   ├── naming/                  # M4 / #25
+    │   │   ├── naming/                  # M4 / #25、M5 で domain 統合
     │   │   │   ├── url.ts               # parseWebTCPUrl / formatWebTCPUrl
-    │   │   │   ├── NameServer.ts        # A/CNAME・キャッシュ・問い合わせサービス
+    │   │   │   ├── NameServer.ts        # A/CNAME・キャッシュ・問い合わせ・所有権移譲
+    │   │   │   └── index.ts
+    │   │   ├── domain/                  # M5 / #25
+    │   │   │   ├── names.ts             # domain.global ゾーンの正規化・検証（§13.1）
+    │   │   │   ├── crypto.ts            # SHA-256 / Ed25519 検証の最小ラッパ（Web Crypto）
+    │   │   │   ├── record.ts            # 所有権レコードの canonical 形式と厳格パース（§13.2）
+    │   │   │   ├── merkle.ts            # 領域分離付き Merkle 木・包含証明（§13.3）
+    │   │   │   ├── checkpoint.ts        # チェックポイント署名・prevHash 連鎖（§13.3）
+    │   │   │   ├── ledger.ts            # 参照台帳（追記ストア + 証明発行）
+    │   │   │   ├── verifier.ts          # IDomainOwnershipVerifier と既定実装（§13.4）
+    │   │   │   ├── authority.ts         # DomainAuthority・解決フロー（§13.5）
+    │   │   │   ├── errors.ts            # DomainRecordError / DomainOwnershipError / 衝突
     │   │   │   └── index.ts
     │   │   └── network/
     │   │       ├── WebTCPNetwork.ts     # listen / connect / connectURL / bootstrap
@@ -92,9 +103,12 @@ WebTCP/
     │       ├── signaling/
     │       │   ├── SignalingAdapterHub.ts    # HTTP ポーリング型ハブクライアント
     │       │   └── index.ts
-    │       └── entrance-searcher/
-    │           ├── IEntranceSearcher.ts      # core/link からの re-export
-    │           ├── EntranceSearcherAdapterHub.ts
+    │       ├── entrance-searcher/
+    │       │   ├── IEntranceSearcher.ts      # core/link からの re-export
+    │       │   ├── EntranceSearcherAdapterHub.ts
+    │       │   └── index.ts
+    │       └── domain/                       # M5 / #25
+    │           ├── HttpDomainRegistryClient.ts  # §13.6 の HTTP レジストリクライアント
     │           └── index.ts
     └── tests/            # node:test（dist を import）
         ├── helpers/      # LoopbackChannel, FakeRTCPeerConnection, FakeIndexedDB, test hub
@@ -107,6 +121,11 @@ WebTCP/
         ├── nameserver-network.test.mjs # 実スタック名前解決 / マルチホップ
         ├── identity-persistence.test.mjs # Node keyFile / Browser 復元 / 衝突
         ├── lifecycle-regressions.test.mjs # 起動再試行 / end 状態 / ICE / cwnd (#38)
+        ├── domain-record.test.mjs         # ゾーン規則・canonical 形式・厳格パース・署名（§13.1/§13.2）
+        ├── domain-merkle.test.mjs         # Merkle ルート / 包含証明 / チェックポイント連鎖（§13.3）
+        ├── domain-verify.test.mjs         # 検証器の成否・fail-closed・ログ鍵・衝突（§13.4）
+        ├── domain-ledger.test.mjs         # 参照台帳の追記・serial・証明発行（§13.3/§13.6）
+        ├── domain-resolution.test.mjs     # DomainAuthority と NameServer 統合（§13.5、#40 の回帰）
         ├── e2e.test.mjs
         ├── tcp-semantics.test.mjs
         ├── routing.test.mjs
@@ -248,11 +267,11 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 
 ### 3.18 NameServer と `webtcp://` URL（M4 / #25）
 
-**配置**: `core/naming` は L7 アプリケーション層サービスとして `WebTCPNetwork` の公開 API のみに依存する。L3/L4 へ名前を漏らさない。新しいワイヤーフラグは追加せず、既存の署名付き `VirtualStream` 上で JSON 要求/応答を運ぶ。これにより v2 のセキュリティ境界をそのまま利用する。
+**配置**: `core/naming` は L7 アプリケーション層サービスとして `WebTCPNetwork` の公開 API のみに依存する（M5 で `core/domain` を追加してもこの不変条件は変えない）。L3/L4 へ名前を漏らさない。新しいワイヤーフラグは追加せず、既存の署名付き `VirtualStream` 上で JSON 要求/応答を運ぶ。これにより v2 のセキュリティ境界をそのまま利用する。
 
 **解決モデル**: ローカル登録を権威データとし、クライアント側で反復解決する。サーバーはローカル登録のみを返し、他ノードへ再帰問い合わせしない。問い合わせ先は明示リゾルバ、隣接、経路表宛先から重複除外で選ぶ。CNAME はクライアントが最大 8 段辿り、訪問済み名前で拒否する。ノード間再帰を使わないため問い合わせ増幅とループを抑える。
 
-**キャッシュ**: 名前ごとの A/CNAME レコードを TTL 付きで保持し、最大 1024 件。ローカル登録が常に優先。リモートの名前応答は所有権証明ではないため、グローバルな名前衝突解決は M5 の `domain.global` / ブロックチェーンに委ねる。
+**キャッシュ**: 名前ごとの A/CNAME レコードを TTL 付きで保持し、最大 1024 件。ローカル登録が常に優先。リモートの名前応答は所有権証明ではないため、ゾーン内名前は §3.21 の所有権検証を経る（M5）。ゾーン外名のグローバル衝突解決は対象外のままとし、`plan.md` §4.3 に記録する。
 
 **URL**: `URL` コンストラクタは非特殊スキームのホスト/ポート解釈が環境依存になるため、`webtcp://` は明示的な正規表現と検証でパースする。ポートは必須、パス省略時は `/`。`connectURL()` は名前なら NameServer、NodeId なら直接 `connect()` へ振り分ける。パス/クエリ/フラグメントは接続先ルーティングには使わずアプリケーションへ返す。
 
@@ -269,6 +288,33 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 
 `RT_UPDATE` は直接隣接からのみ、外側 sender・payload sender・受信元が一致し、外側 destination が自ノードで、正の TTL・制御ポート 0 の場合のみ受理する。中継しない。`entries[].publicKey` に既知鍵を同梱して経路と一緒に伝播し、受信側は各鍵の指紋を検証して `KeyDirectory` へ登録する。これにより事前鍵共有なしのマルチホップ v2 通信を可能にする。送信側は `entries` / `withdrawals` を各 256 件以内的 `RT_UPDATE` に分割する。
 
+### 3.21 `domain.global` の所有権証明を「検証可能な設計」に縮小する（M5 / #25）
+
+**課題**: ブロックチェーンによるドメイン所有権を、依存ゼロ・バンドラ不要のブラウザライブラリで実現する。フルクライアント（ヘッダー同期、状態ツリー、コンセンサス）を載せるのは現実的でない。
+
+**判断**: 信頼の根元を「チェーンそのもの」ではなく **検証可能な 3 点セット** に置き換える。
+
+1. **自己署名クレーム**: レコードは所有者の Ed25519 鍵で署名され、`nodeId = 指紋(ownerPublicKey)` を要求する。したがって第三者は「他人の NodeId にドメインを紐づけるレコード」を**作れない**（M3 の鍵指紋化がそのまま効く）。誰もが発行できる代わりに、誰もが始末できない。
+2. **追記型台帳の包含証明**: 台帳はレコードの commitment を Merkle 木へ積上げ、`{ treeSize, root, prevHash, timestamp }` をログ鍵で署名する。クライアントは (a) 包含証明、(b) チェックポイント署名（**設定済みログ鍵でのみ**信任）、(c) `treeSize` 単調性、(d) 必要なら `prevHash` 連鎖の追跡を行う。これだけで「ログが過去を書換えた」ことを PIN 以降に検出できる。SHA-256 は Web Crypto が提供するため**依存ゼロで検証できる**。
+3. **プラガブルな実チェーン検証**: `IChainAnchorVerifier` が `anchor.chain`（txId・blockHeight・network）を実データへ突き合わせる。未設定なら `chainVerified: null`（＝オフライン検証範囲）として**正直に区別**し、`requireChainAnchor: true` で fail-closed にできる。Namecoin / EVM 証明の実装は #42 に切り出した（keccak-256 依存をコアへ入れたくない）。
+
+**canonical バイト列の方式**: JSON のキー順に頼ると環境差で署名が壊れるため、**固定キー順で再シリアライズした結果のみ**を署名対象とする。受信時は生バイトではなく必ず再正規化したバイト列で検証する（未知キー混入の oracle を防ぐ）。厳格パース（未知キー拒否）とセットで仕様に明記した（§13.2）。
+
+**なぜハッシュチェーンで十分か**: 本ライブラリの脅威モデルでは「レジストリ運用者を信頼しない」ことが重要で、「チェーンが正しい」ことは要求しない。ログ鍵が嘘をつけば**そのログの信頼は失われる**が、誤った所有者情報を受け入れる代わりに検証失敗となる（fail-closed）。複数ログの M-of-N 合意に拡張する余地を残す（#43）。
+
+### 3.22 NameServer からの分離と統合（M5）
+
+- `core/domain` は `core/naming` に依存しない（逆方向のみ）。`NameServer` は `DomainAuthority` を**注入される側**で、権威側はネットワークを知らない。既知ノードへの問い合わせは `DomainQueryTransport`（関数）として NameServer が実装を渡す。これにより core の依存方向（アプリケーション → トランスポート）を保つ。
+- ワイヤー変更はしない。`protocol: 1` の JSON に `wantOwnership` / `ownership` を**追加フィールドとして**足すだけ（旧実装は未知フィールドを無視）。権威が裏へ回っても既存の A/CNAME 解决は不変。
+- ゾーン内名前は `registerA()` / `registerCNAME()` を**構造的に禁止**し、`registerDomain()`（検証必須）のみを通す。これで「ローカル登録が常に優先」する現行モデルでも `.domain.global` の squat が起きない。
+- 解決の勝敗は `serial` → `anchor.leafIndex` → commitment の決定的順序で決め、同 serial 異内容なら **勝者を決めずに失敗**する（§13.4.3）。「早く返った方を信じる」を禁止すると仕様に書いた（§12.1 との違いは失敗側へ厳しくした）。
+- 失敗キャッシュ（`negativeTtlMs`）を持つが、成功より長くしてはならない。DoS の足掛かり（解決不能な名前の増殖）を防ぐため、収集元数・1 名あたりレコード数・全体タイムアウト・キャッシュ件数に上限を設ける。
+
+### 3.23 停滞ノードに強い解決と、署名対象のシリアライザ同一性（#40 / #41）
+
+- **#40**: `NameServer` の問い合わせは「`connect()` 待機」「応答待機」を区別せず、**同じ AbortController でまとめる**。`queryKnownNodes()` は `Promise.all` をやめ、*最初の成功* または *デッドライン* で返す（残りのワーカーは abort してストリームを `destroy()`）。`resolve()` は各 `await` 後に中断・超過を再評価し、`NameResolutionTimeoutError` を返す。宙吊り `connect()` を殺せない TransportLayer の制約（#44）は、**待たずに返す**ことでユーザー体感として解決する（内部的に残りが解決しても無視する）。
+- **#41**: `Ed25519PacketVerifier` は署名対象を `serializer.serializeForSigning()` からのみ得る。`WebTCPNetwork` は注入された `serializer` を検証器へも渡す。`serializeForSigning` 欠落時に v1 ヘッダーで近似していた黙ったフォールバックは削除し、構築時エラーへ置き換える（誤った署名対象で署名し続ける状態を作らない）。
+
 ## 4. クラス責務
 
 | クラス | 責務 | 依存 |
@@ -277,6 +323,10 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 | `NameServer` | A/CNAME ローカル登録、TTL キャッシュ、既知ノードへの反復問い合わせ | `WebTCPNetwork`, `Logger` |
 | `parseWebTCPUrl` / `formatWebTCPUrl` | `webtcp://` の厳格パースと正規整形 | `NodeId` 検証 |
 | `NodeIdentityStorage` | Node.js 秘密鍵 PEM の 0600 永続化・原子的作成 | `node:fs/promises` |
+| `DomainAuthority` | ゾーン内名の収集・検証・勝敗決定・キャッシュ | `IDomainRecordSource`, `IDomainOwnershipVerifier`, `DomainQueryTransport`, `Logger` |
+| `createDomainOwnershipVerifier` | レコード構造・指紋・署名・有効期間・台帳アンカーの検証（fail-closed） | `Ed25519` 検証, `IChainAnchorVerifier` |
+| `DomainLedger` | commitment の追記、Merkle ルート/証明発行、チェックポイント署名、serial 単調性 | `Ed25519KeyManager`（ログ鍵）, `merkle.ts` |
+| `HttpDomainRegistryClient` | §13.6 の HTTP 契約でレコード送受・証明取得 | `fetch`, `parseDomainOwnershipRecord` |
 | `LinkManager` | 近隣集合の維持、`WebTCPPacket` ⇄ バイト列、IChannel への送信 | `IChannel`, `IPacketSerializer`, `Logger` |
 | `RoutingLayer` | 宛先判定、転送、TTL、RPF、RT_UPDATE の振り分け、署名の付与と検証 | `LinkManager`, `RoutingTable`, `IPacketVerifier`, `KeyDirectory`, `Logger` |
 | `Ed25519PacketVerifier` | 署名の付与、署名対象バイト列の導出、指紋照合つき検証 | `Ed25519KeyManager`, `KeyDirectory`, `IPacketSerializer` |
@@ -380,7 +430,12 @@ Client (ESTABLISHED)                          Server (ESTABLISHED)
 - **鍵管理アダプタ（#28 / M4）**: `NodeKeyManager`（PEM / シード復元・指紋照合・keyFile 永続化・衝突）、`BrowserKeyManager`
   （IndexedDB への非抽出 CryptoKey 保存・復元・署名チャレンジ・再生成・IndexedDB 無しのセッション限定動作。テストは `FakeIndexedDB` シムを使用）。
 - **名前解決（M4 / #25）**: URL 正常/異常、A/CNAME、ループ・深度上限、TTL キャッシュ、ローカル優先、問い合わせタイムアウト/中断、実スタック 2 ノード解決、事前鍵共有なし 3 ノードの名前解決と URL 接続。
-- **アダプタ**: `SignalingAdapterHub`、`EntranceSearcherAdapterHub`（`exclude` 対応）、`examples/server.mjs` の配信・API 検証。
+- **ドメイン所有権（M5 / #25）**: canonical バイト列の決定性と未知キー拒否、署名・指紋・有効期間・serial ルール、
+  台帳の包含証明（木サイズ 1〜8、奇数 promote）、チェックポイント署名と `treeSize` 後退拒否、`prevHash` 連鎖追跡、
+  ログ鍵未設定時の fail-closed、`requireChainAnchor` の切り替え、同 serial 異内容の衝突、
+  `NameServer` 統合（ゾーン名の `registerA` 拒否・`registerDomain`・`source: 'domain'`・所有権なし応答の拒否）、
+  停滞ノードを含む解決が `resolveTimeoutMs` に収まること（#40 の回帰）。
+- **アダプタ**: `SignalingAdapterHub`、`EntranceSearcherAdapterHub`（`exclude` 対応）、`examples/server.mjs` の配信・API 検証（`/domain/*` を含む）。
 - **WebRTC 経路（FakeRTCPeerConnection）**: Offer/Answer/DataChannel、動的 TURN 資格情報（`iceServersProvider`）、ICE 障害時の自動 ICE 再起動と資格情報更新、再起動上限超過時の切断、同時接続 Glare 解決。
 - **実ブラウザ検証**:
   - ブラウザ内蔵の自己チェックモード（`/examples/demo/?selftest=1` および `?role=server/client&autostart=1`）。
@@ -397,13 +452,14 @@ Client (ESTABLISHED)                          Server (ESTABLISHED)
 | `LinkManager` のダミー `IChannel` | `IChannel` 実装の注入 | 実通信不可だったため。 |
 | `WebTCPNetwork(adapter, keyManager)` | `WebTCPNetwork(options)` | オプション形式への統一。 |
 
-## 10. 既知の制約（M4 時点）
+## 10. 既知の制約（M5 時点）
 
 - **鍵管理を渡さない場合は v1（署名なし）で動く**: 既定の `WebTCPNetwork(options)` は後方互換のため `NullPacketVerifier`。
   署名必須にするには `keyManager` または `Ed25519PacketVerifier` を注入する（`createBrowserNetwork({ keyManager })` など）。
 - **Ed25519 非対応ブラウザ**: Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+。デモは v1 へ自動フォールバックする。
 - **鍵ローテーション・E2E 暗号化・リプレイ検知の強化は未実装**: `specification.md` §10.7 を参照。
 - **RPF は緩和版**: 経路未学習の直接隣接からの受信を許可している。本格なマルチホップ強化は M5 以降。
-- **名前解決はローカル信頼モデル（M4）**: `NameServer` と `webtcp://` は実装済みだが、グローバルな名前所有権・`domain.global`・ブロックチェーン連携は M5（#25）。
+- **`domain.global` は「検証可能」まで（M5）**: 所有権レコードの署名・指紋・有効期間・追記台帳の包含証明までは検証する。実チェーン（SPV / EVM 証明 / Namecoin RPC）との突き合わせは未同梱で、`IChainAnchorVerifier` の実装は #42。単一ログの信頼モデルであり、複数ログ合意・紛争裁定・IDNA は #43。
+- **ゾーン外の名前は依然としてローカル信頼**: `my-service` のような NameServer ローカル名に所有権はない（§12.1）。
 - **Node.js 鍵ファイルは平文 PEM**: `0600` で保存するが、ディスク暗号化やバックアップは利用者の責任。
 - **Node.js 向け WebRTC 実装は非同梱**: `NodeWebRTCChannel` へ利用者が注入する設計。

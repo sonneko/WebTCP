@@ -98,8 +98,13 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `unregister(name)` / `clearCache()` | ローカル登録の削除 / キャッシュ消去 |
 | `listen()` / `close()` | 問い合わせ受付の開始 / 停止（ネットワークは閉じない） |
 | `resolve(name, { signal?, timeoutMs? })` | ローカル → キャッシュ → 既知ノード問い合わせの順で解決。`NameResolution` を返す |
+| `registerDomain(record, { ttlMs? })` | `domain.global` の所有権レコードを登録（**検証に失敗したレコードは登録しない**）。例外ではなく `DomainResolution` を返す（M5 / #25） |
+| `unregisterDomain(domain)` | ゾーン内の提供を取り下げる（`boolean`） |
+| `servedDomainRecords()` | 提供中の所有権レコード一覧（診断・可視化用） |
 
-`NameServerOptions`: `port`, `defaultTtlMs`（60000）, `queryTimeoutMs`（2000）, `resolveTimeoutMs`（5000）, `maxCnameDepth`（8）, `maxCacheEntries`（1024）, `maxQueriedNodes`（16）, `queryConcurrency`（4）, `resolvers`, `logger`。
+`NameServerOptions`: `port`, `defaultTtlMs`（60000）, `queryTimeoutMs`（2000）, `resolveTimeoutMs`（5000）, `maxCnameDepth`（8）, `maxCacheEntries`（1024）, `maxQueriedNodes`（16）, `queryConcurrency`（4）, `resolvers`, `domains`（`DomainAuthority`、M5）, `logger`。
+
+`NameResolution` は `name`, `nodeId`, `ttlMs`, `source`（`local` / `cache` / `remote` / **`domain`**）, `chain`, およびゾーン名解決のとき `record`（検証済みレコード）と `proof`（`code` / `anchorVerified` / `chainVerified`）。
 
 エラー: `NameNotFoundError` / `NameResolutionTimeoutError` / `NameLoopError`。
 
@@ -111,7 +116,49 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `formatWebTCPUrl(url)` | `WebTCPUrl` を正規形文字列へ整形 |
 | `normalizeWebTCPName(value)` | 名前を小文字化・末尾ドット除去・LDH 検証。NodeId リテラルは予約 |
 
-`WebTCPUrl`: `host`, `nodeId?`, `name?`, `port`, `path`, `search`, `hash`。
+`WebTCPUrl`: `host`, `nodeId?`, `name?`, `zone?`（`domain.global` のとき設定、M5）, `port`, `path`, `search`, `hash`。
+
+## 所有権ドメイン API（M5 / #25）
+
+`domain.global` の検証器・台帳・権威はすべてルートの `@sonneko/webtcp-tunneler` から export されています。
+
+### レコード
+
+| API | 説明 |
+| :--- | :--- |
+| `createDomainOwnershipRecord({ domain, keyManager, serial, lifetimeMs?, expiresAt?, revoked?, port?, txt?, anchor?, issuedAt? })` | canonical バイト列へ Ed25519 署名を付与して `DomainOwnershipRecord` を発行（既定寿命 30 日、上限 365 日） |
+| `parseDomainOwnershipRecord(value, options?)` | 未知の JSON を検証付きでパース（16 KiB 上限、未知フィールドは拒否） |
+| `domainRecordToJSON(record)` / `serializeDomainRecord(record)` | HTTP 転送用の JSON / バイト列へ変換 |
+| `canonicalDomainRecordBodyBytes(body)` / `commitDomainRecord(body)` / `domainCommitmentBytes(commitment)` | canonical シリアライズと SHA-256 commitment（64 hex / 32 バイト） |
+| `normalizeDomainName(input)` / `isDomainGlobalName(name)` / `domainZone(name)` / `isValidDomainName(name)` / `domainLabels(name)` / `domainNameInZone(name, zone)` | ゾーンと LDH ルールの判定・正規化（`DOMAIN_GLOBAL_ZONE` = `'domain.global'`） |
+
+### 検証と台帳
+
+| API | 説明 |
+| :--- | :--- |
+| `createDomainOwnershipVerifier(options?)` | `IDomainOwnershipVerifier`。`requireAnchor`（既定 `false`）, `logKeys`（既定なし = fail-closed）, `resolveLogKey`, `checkpointMaxAgeMs`, `maxLifetimeMs`（既定 1 年）, `clockSkewMs`（既定 300000）, `requireChainAnchor`, `chainAnchorVerifier`, `verifySignature`, `hashFn` |
+| `IChainAnchorVerifier` | 実ブロックチェーン等への裏付け検証の差し替え点（参照実装は #42） |
+| `createDomainLedger({ keyManager, logId?, requireOwnerSignature?, maxEntries?, hashFn?, logger? })` | 追記専用 Merkle 台帳。`append()` / `buildAnchor(leafIndex)` / `checkpoint()` / `checkpointsBetween()` / `lookupByDomain()` / `lookupByNodeId()` / `listCurrent()` / `snapshot()` / `clear()` |
+| `verifyDomainRecordSelfSignature(record)` | 所有者自己署名のみの検証（台帳が受理前に使う） |
+| `computeDomainMerkleRoot` / `buildDomainMerkleRoot` / `buildDomainMerkleProof` / `verifyDomainMerkleProof` / `bindDomainMerkleRoot` | ルートは `H(0x02 \|\| uint64BE(treeSize) \|\| top)` でツリーサイズに束縛。証明長上限 32 |
+| `signDomainCheckpoint` / `verifyDomainCheckpoint` / `verifyDomainCheckpointChain` / `checkpointRollsBack` / `parseDomainCheckpoint` / `parseDomainAnchor` | チェックポイントの署名・検証・後退検出（`GENESIS_PREV_HASH` から繋がる） |
+
+### 権威とレジストリ
+
+| API | 説明 |
+| :--- | :--- |
+| `createDomainAuthority(options?)` | `DomainAuthority`。`local`, `sources`, `peers`, `verifier` / `verifierOptions`, `checkpointChain`, `cacheTtlMs`（60000）, `negativeTtlMs`（5000）, `resolveTimeoutMs`（5000）, `queryTimeoutMs`（1500）, `maxRecordsPerDomain`（8）, `pinCheckpoints`（`true`）, `logger` |
+| `resolve` / `settle` / `settleCandidates` | 完全名（またはゾーン外と判定可能な入力）を解決。`settle` は衝突を 1 件に絞り、`settleCandidates` は候補をそのまま返す |
+| `register(record)` / `remember(record)` / `forget(domain)` / `verifyRecord(domain, record)` | 検証付き登録 / 検証のみで缓存 / 削除 / 単一レコードの再検証 |
+| `createPublicKeyResolver(inner?)` | 検証済みレコードから `NodeId -> 公開鍵` を返す `IPublicKeyResolver` bridge（§10.4.3） |
+| `memoryDomainRecordSource({ records? })` / `chainDomainRecordSources(sources)` | `IDomainRecordSource` の簡易実装（`lookupByDomain` / `lookupByNodeId` / `put` / `remove` / `list`） |
+| `createHttpDomainRegistryClient({ baseUrl, fetchImpl?, timeoutMs?, tolerateNotFound?, logger? })` | `examples/domain-registry.mjs` の HTTP 契約（§13.6）に対するクライアント。`lookupByDomain` / `lookupByNodeId` / `submit` / `checkpoint` / `checkpointsBetween` / `logInfo` |
+
+### 型付きエラー
+
+`DomainResolution` の `code`（および `DomainProofCode`）: `ok`, `invalid-record`, `zone-mismatch`, `fingerprint-mismatch`, `bad-signature`, `expired`, `not-yet-valid`, `stale-serial`, `revoked`, `conflict`, `anchor-missing`, `anchor-bad-proof`, `anchor-untrusted-log`, `anchor-bad-checkpoint`, `anchor-rollback`, `chain-unverified`, `resolution-unavailable`。
+
+例外クラス: `DomainRecordError`（解析・形式）, `DomainLedgerAppendError`（台帳が拒否）, `DomainConflictError`（同一シサル内容衝突）, `DomainRegistryError`（HTTP、`status` を保持）, `DomainOwnershipError`（解決時に検証へ失敗）, `DomainResolutionUnavailableError`（収集元が全滅）。
 
 ## セキュリティ API（M3 / #28・M4 / #36）
 

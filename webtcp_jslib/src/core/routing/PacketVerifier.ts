@@ -134,7 +134,16 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
             throw new Error('Ed25519PacketVerifier requires a keyManager');
         }
         this.keys = options.keyManager;
-        this.serializer = options.serializer ?? new BinaryPacketSerializer();
+        const serializer = options.serializer ?? new BinaryPacketSerializer();
+        if (typeof serializer.serializeForSigning !== 'function') {
+            // specification.md §10.3: 署名対象の導出は実際の送信と同一のシリアライザでなければならない。
+            // 近似生成にフォールバックすると、v1 ヘッダーで導出した署名対象が v2 の検証と一致しない (#41)。
+            throw new Error(
+                'Ed25519PacketVerifier requires a serializer implementing serializeForSigning() ' +
+                    '(specification.md §10.3); the packet serializer must be the signing-input serializer',
+            );
+        }
+        this.serializer = serializer;
         this.directory = options.keyDirectory ?? null;
         this.keyWaitTimeoutMs = Math.max(0, options.keyWaitTimeoutMs ?? 5000);
     }
@@ -169,15 +178,11 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
      * specification.md §10.3。
      */
     public signatureInputFor(packet: WebTCPPacket): Uint8Array {
-        if (this.serializer.serializeForSigning) {
-            return this.serializer.serializeForSigning({ ...packet, ttl: 0 });
+        const serializeForSigning = this.serializer.serializeForSigning;
+        if (!serializeForSigning) {
+            throw new Error('packet serializer does not implement serializeForSigning() (§10.3)');
         }
-        return this.serializer.serialize({
-            ...packet,
-            version: undefined,
-            ttl: 0,
-            signature: new Uint8Array(0),
-        });
+        return serializeForSigning.call(this.serializer, { ...packet, ttl: 0 });
     }
 
     // =================================================================
@@ -213,6 +218,7 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
      */
     private signatureInputFromRaw(rawBytes: Uint8Array): Uint8Array {
         if (!this.serializer.signatureInputFromBytes) {
+            // `serializeForSigning()` が保証されているため、復元 → 再導出でも §10.3 の正規形と一致する。
             return this.signatureInputFor(this.serializer.deserialize(rawBytes));
         }
         const input = this.serializer.signatureInputFromBytes(rawBytes);

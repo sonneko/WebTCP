@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.4.0 |
+| 文書バージョン | 0.5.0 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
-| プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決は v2 上のアプリケーション層） |
+| プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決と M5 のドメイン所有権証明は v2 上のアプリケーション層） |
 | ステータス | 実験的（破壊的変更あり） |
 | 最終更新 | 2026-11-14 |
 
@@ -24,6 +24,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 4. 将来のマルチホップルーティングおよび名前解決に耐える**L3 ヘッダー**
 5. 改ざん・なりすましを防ぐ **Ed25519 署名**と、公開鍵の指紋に基づく**自己証明型の NodeId**（v2）
 6. **NameServer** による名前解決と **`webtcp://` URL**、永続ノード識別子（M4）
+7. **`domain.global`** 名前空間と、**検証可能なドメイン所有権レコード**（署名付きレコード + 追記型台帳アンカー + プラガブルな検証器）（M5）
 
 ## 2. 用語
 
@@ -34,6 +35,11 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | 鍵管理 (KeyManager) | Ed25519 の鍵生成・署名・検証・公開鍵解決を担う実装。ブラウザは `BrowserKeyManager`、Node.js は `NodeKeyManager`。 |
 | 公開鍵ディレクトリ (KeyDirectory) | `NodeId -> Ed25519 公開鍵` の対応表。指紋一致を検証して登録する。 |
 | NameServer | 名前を A レコード（NodeId）または CNAME レコード（別名）へ対応付け、ローカル登録と既知ノードへの問い合わせで解決するアプリケーション層サービス。 |
+| `domain.global` | グローバルに一意なドメイン名を割り当てる単一ゾーン。所有権レコード（§13）で裏付けられた名前だけが解決できる（M5）。 |
+| 所有権レコード (DomainOwnershipRecord) | 「ドメイン名 ↔ NodeId（公開鍵指紋）」の対応を、その NodeId の所有者が署名した自己証明型のクレーム。§13.2。 |
+| 台帳アンカー (DomainAnchor) | 所有権レコードが追記型台帳のいつ・どの位置に記録されたかを表す Merkle 包含証明と署名済みチェックポイント。§13.3。 |
+| チェックポイント (DomainCheckpoint) | 台帳の木サイズ・ルート・時刻をログ鍵で署名したもの。`prevHash` による連結で書換え（ロールバック）を検出できる。§13.3。 |
+| 所有権検証器 (IDomainOwnershipVerifier) | 所有権レコードの妥当性を判定する差し替え可能なコンポーネント。自己署名検証のほかに台帳・実チェーン検証を委任できる。§13.4。 |
 | WebTCP URL | `webtcp://<NodeId または 名前>:<port>/path?query#fragment` 形式の接続先指定。 |
 | 隣接ノード (Neighbor) | データチャネルが直接確立している相手ノード。 |
 | 仮想ストリーム (VirtualStream) | 仮想 TCP セッション。`(remoteNodeId, localPort, remotePort)` で一意。 |
@@ -117,6 +123,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 - `KeyDirectory` は同一 NodeId に異なる公開鍵が提示された場合、既存鍵を保持する。非同期 `addPublicKey()` は `false` を返し、同期 `setPublicKey()` は `NodeIdCollisionError` を投げる。`setPublicKey()` は**指紋検証済みの鍵のみ**を受け付ける後方互換 API である。
 - `WebTCPNetwork` は鍵管理と公開鍵ディレクトリを併用する場合、ローカル NodeId に既に異なる鍵が登録されていれば `NodeIdCollisionError` を投げなければならない (MUST)。
 - ブラウザで IndexedDB が利用できない場合はセッション限定のメモリ身元へ縮退してよい (MAY)。ストレージ障害は警告する。鍵の再生成は `regenerate` / `BrowserKeyManager.regenerate()` の明示操作に限定する。
+- `domain.global` ゾーンでは、**NodeId をドメイン名へ束縛するには所有権レコードの署名検証に成功しなければならない**（§13）。永続化された身元そのものは所有権を付与しない。
 
 ## 6. パケット形式（プロトコルバージョン 2 / v1 互換）
 
@@ -153,7 +160,7 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 - `signature` が 64 バイトなら **v2**。
 - `signature` が空なら **v1**。
 
-したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§13）。
+したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§15）。
 
 ### 6.2 受信時の検証
 
@@ -169,7 +176,9 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 8. `version == 2` なら `senderId` が `^[0-9a-f]{32}$` に一致する。違反は破棄 (MUST)。
 9. `version == 2` なら署名検証（§10）に成功する。失敗は破棄し `warn` ログを出す (MUST)。
 
-7 はシリアライザが構文検証として実施する。8〜9 はルーティング層（`RoutingLayer`）が担う。
+7 はシリアライザが構文検証として実施する。8〜9 はルーティング層が呼ぶ**署名検証器**（`Ed25519PacketVerifier`）が担う。
+したがって `NullPacketVerifier`（v1 後方互換モード）を注入したノードでは 8〜9 は適用されない (MAY)。v2 ノード間で
+のみ一貫して強制される点に注意すること（§10.2）。
 
 ### 6.3 フラグ
 
@@ -538,6 +547,8 @@ interface PublicKeyPayload {
 | **中継ノードによる内容閲覧** | 中継ノードは署名検証はできるが、ペイロードは DTLS 終端で復号される | ❌ 未対応（E2E 暗号化は非目標） |
 | **鍵の漏洩** | ブラウザは非抽出 CryptoKey（IndexedDB）、Node.js は PKCS#8 を利用者が保護 | ⚠️ 実装依存 |
 | **DoS（署名計算の浪費）** | デシリアライズ段階で長さ・バージョン・`signatureLen` を検証してから署名検証に入る | ⚠️ 部分的 |
+| **ドメイン名の乗っ取り**（他人の `domain.global` 名を自分が所有すると騙る） | 所有者の Ed25519 署名 + 指紋照合 + 台帳チェックポイント検証（§13.2 / §13.3）。検証器は既定で fail-closed | ✅ 検証可能な範囲で防止（実チェーン未検証の限界は §13.7） |
+| **名前解決の偽応答**（NameServer へのうそ） | `.domain.global` は所有権レコード必須、それ以外のローカル名は信頼モデルのまま（§12.1 / §13.5） | ⚠️ ゾーン内のみ |
 
 **保証しないもの**:
 
@@ -586,6 +597,10 @@ signatureInput = magic | version | ttl(0 固定) | flags | sourcePort | destinat
 - 実装は `BinaryPacketSerializer.serializeForSigning(packet)`（送信側）と
   `signatureInputFromBytes(rawBytes)`（受信側、署名フィールドを除去）で提供する。
 - 受信側は `signatureInputFromBytes()` の結果の TTL バイト（オフセット 2）を **0 に上書き**してから検証しなければならない (MUST)。送信側は署名前に TTL を 0 にして `serializeForSigning()` を呼ぶ。この正規化後、両経路は同一の結果を返さなければならない (MUST)。
+- **署名対象を導出するシリアライザは、実際の送信に使うシリアライザと同一でなければならない (MUST)**。
+  `WebTCPNetwork` は `serializer` を注入された場合、自動生成する `Ed25519PacketVerifier` へ同じインスタンスを渡す。
+  `IPacketSerializer` が `serializeForSigning()` を実装しない場合、`Ed25519PacketVerifier` は**構築時に失敗しなければならない (MUST)**。
+  署名対象を別経路で黙って近似生成してよいことにはならない（v1 ヘッダーで導出した署名対象は v2 の検証と一致しない）。
 
 ### 10.4 公開鍵の配布
 
@@ -682,6 +697,11 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | 再送上限超過 | `error` イベント発火後 `CLOSED`。 |
 | ストリーム `send()` が送信不可状態 | `Cannot send data. State is ...` で reject。 |
 | 送信バッファ超過 | `Send buffer full` で reject。 |
+| 名前解決の全体デッドライン超過 | `NameResolutionTimeoutError` で reject。**問い合わせ先が `connect()` 宙吊りでもデッドラインと `AbortSignal` を守る**（§12.2、#40）。 |
+| 名前解決の明示的中断 | `WebTCP name resolution aborted` で reject（デッドライン到達とは区別する）。 |
+| ドメイン所有権レコードの検証失敗 | `DomainOwnershipError`（`code` で理由を判別。§13.4）。解決は失敗し、結果はキャッシュしない。 |
+| `domain.global` 名の不正なローカル登録 | `registerA` / `registerCNAME` が `throw`（§13.5）。 |
+| 同一シリアルで内容の異なるレコードが並存 | `DomainOwnershipError(code: 'conflict')`。勝者を決めずに失敗する（fail-closed）。 |
 
 ### 11.3 既定値
 
@@ -715,6 +735,13 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | CNAME 最大連鎖 / キャッシュ最大件数 | 8 / 1024 |
 | 問い合わせ既知ノード上限 / 並列数 | 16 / 4 |
 | 署名必須化 (`requireSignatures`) | 鍵管理または `Ed25519PacketVerifier` 指定時 `true` |
+| ゾーン | `domain.global`（唯一） |
+| レコード形式バージョン | 1 |
+| レコード最大寿命 | 365 日（`expiresAt - issuedAt`） |
+| 時刻ずれ猶予 (`clockSkewMs`) | 300 000 ms |
+| 台帳の木サイズ上限 / 1 名あたり保持レコード | 65 536 / 8 |
+| 検証済みレコードキャッシュ TTL / 失敗キャッシュ TTL | 60 s / 5 s |
+| ドメイン解決の全体タイムアウト | 5 000 ms |
 
 ## 12. 名前解決と WebTCP URL（M4 / #25）
 
@@ -722,9 +749,10 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 
 - 名前は ASCII の LDH ラベル（英数字とハイフン）をドットで区切る。各ラベル 1–63 文字、全体 253 文字以下。ラベルの先頭/末尾ハイフンは禁止。大文字は小文字へ正規化し、末尾のルートドットは除去する。
 - 32 文字小文字 hex の名前は NodeId リテラルとして予約し、名前登録には使えない。
+- **`domain.global` を末尾に持つ名前はゾーン予約語であり、`registerA()` / `registerCNAME()` では登録できない（MUST NOT）**。その名の解決は §13 の所有権レコードを通じて行う。CNAME の**到達先**がゾーン内に入ることは許すが、その場合は最終解決時に所有権検証が必須となる (MUST)。
 - A レコード相当: `name -> NodeId`。CNAME レコード相当: `name -> canonical name`。
 - レコードは TTL（ミリ秒）を持つ。既定 60 000 ms、最大 86 400 000 ms。ローカル登録は明示的に削除・更新するまで有効。リモート応答と解決結果は TTL 経過までキャッシュする。
-- ローカル登録が常に優先する。リモート応答は「応答ノードがその名前をこう登録している」という情報であり、**グローバルな所有権証明ではない**。同一名前に複数の異なる応答がある場合は最初に受理した結果を TTL までキャッシュする。
+- ローカル登録が常に優先する。リモート応答は「応答ノードがその名前をこう登録している」という情報であり、**グローバルな所有権証明ではない**。同一名前に複数の異なる応答がある場合は最初に受理した結果を TTL までキャッシュする。ゾーン内名前は例外（§13.5）。
 
 ### 12.2 NameServer
 
@@ -733,21 +761,29 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 API:
 
 ```ts
-const ns = new NameServer(network, { port?, defaultTtlMs?, queryTimeoutMs?, resolveTimeoutMs?, maxCnameDepth?, maxCacheEntries?, maxQueriedNodes?, queryConcurrency?, resolvers?, logger? })
+const ns = new NameServer(network, {
+  port?, defaultTtlMs?, queryTimeoutMs?, resolveTimeoutMs?, maxCnameDepth?, maxCacheEntries?,
+  maxQueriedNodes?, queryConcurrency?, resolvers?, domains?, logger?,
+})
 ns.registerA(name, nodeId, ttlMs?): void
 ns.registerCNAME(name, target, ttlMs?): void
 ns.unregister(name): boolean
+await ns.registerDomain(record, options?): Promise<DomainResolution>   // M5 / §13.5
+ns.unregisterDomain(domain): boolean
+ns.servedDomainRecords(): DomainOwnershipRecord[]
 ns.listen(): void
 ns.close(): void
 await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 ```
 
-- `listen()` は_network の仮想ポートを待ち受け、`close()` は自身が登録したハンドラを解除する。ネットワーク自体は閉じない。
+- `listen()` は `network` の仮想ポートを待ち受け、`close()` は自身が登録したハンドラを解除する。ネットワーク自体は閉じない。
 - 解決順序は (1) ローカル登録、(2) 有効なキャッシュ、(3) 既知ノードへの問い合わせ。CNAME は最大 8 段まで辿り、訪問済み名前への再訪はループとして拒否する。
 - 既知ノードは明示 `resolvers`、直接隣接、経路表の宛先から重複を除いて作る。自身は除外し、最大 16 ノードへ最大 4 並列で問い合わせる。問い合わせは `network.connect()` を用いるため、マルチホップ経路と v2 署名検証を利用する。
 - サーバーは自分のローカル登録のみを権威データとして返す。再帰問い合わせはしない。クライアントが CNAME 連鎖を反復解決するため、ノード間の問い合わせループを作らない。
-- 要求/応答は最大 16 KiB。応答は要求 ID と名前が一致しなければならない。不正・タイムアウト応答は無視し、全体タイムアウトまたは中断で reject する。
-- キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。
+- 要求/応答は最大 16 KiB。応答は要求 ID と名前が一致しなければならない。不正・タイムアウト応答は無視する。
+- **デッドラインと中断は絶対である (MUST)**。`resolveTimeoutMs`（既定 5 000 ms）と `AbortSignal` は、問い合わせ先列挙・`network.connect()` の宙吊り・応答待機の**いずれの局面でも**守られなければならない（#40）。単一ノードの停滞が `resolve()` 全体を遅らせてはならない (MUST NOT)。デッドライン到達は `NameResolutionTimeoutError`、呼び出し側の明示中断は区別可能なエラーで reject する。
+- キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。検証に失敗したドメイン解決結果はキャッシュしてはならない (MUST NOT)（失敗は §13.5 の短 TTL 失敗キャッシュのみ）。
+- `domains`（`DomainAuthority`、§13.5）を渡した場合、ゾーン内名前の解決と応答は権威へ移譲される。渡さない場合、ゾーン内名前の解決は `DomainResolutionUnavailableError` で失敗する (MUST)。
 
 問い合わせプロトコル（JSON）:
 
@@ -761,6 +797,14 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 
 不在時は `{"protocol":1,"type":"error","id":"…","name":"…","code":"NXDOMAIN"}`。不正要求は `INVALID`。`record.type` は `A` または `CNAME`。クライアントは要求を送って `end()` し、サーバーは EOF 後に応答して `end()` する（Half-Close）。
 
+**所有権拡張（M5 / #25、`protocol` は 1 のまま）**。要求は `wantOwnership: true` を運べる (MAY)。ゾーン内名前への応答は `record` に加えて `ownership`（§13.2 の正規形式の配列）を 1 件以上添えなければならない (MUST)。受信側は未知のフィールドを無視してよい (MAY) ため、旧実装が返す素の `A` 応答もデコードできる。ただし**所有権レコードを伴わないゾーン内名前の応答は解決に使用してはならない** (MUST NOT)。
+
+```json
+{ "protocol": 1, "type": "answer", "id": "…", "name": "shop.domain.global",
+  "record": { "type": "A", "name": "shop.domain.global", "target": "<NodeId>", "ttlMs": 60000 },
+  "ownership": [ { "version": 1, "body": { "…": "…" }, "signature": "…", "anchor": { "…": "…" } } ] }
+```
+
 ### 12.3 `webtcp://` URL
 
 形式:
@@ -773,7 +817,8 @@ webtcp://<host>:<port><path>?<query>#<fragment>
 - `port` は必須。1–65535 の整数。既定ポートは無い。
 - `path` は省略時 `/`。`query` と `fragment` は保持するが、WebTCP 接続自体には送信しない。HTTP セマンティクスは定義しない。
 - userinfo、IPv6 アドレス、ホスト内のパーセントエンコード、空白・制御文字、バックスラッシュ、空ホスト、不正ポートは拒否する。
-- `parseWebTCPUrl()` は `WebTCPUrl`（`host`, `nodeId?`, `name?`, `port`, `path`, `search`, `hash`）を返す。`formatWebTCPUrl()` は正規形を返す。
+- `parseWebTCPUrl()` は `WebTCPUrl`（`host`, `nodeId?`, `name?`, `zone?`, `port`, `path`, `search`, `hash`）を返す。`formatWebTCPUrl()` は正規形を返す。
+- `host` が §13.1 のゾーン内名前である場合、`name` は正規化済みの完全名、`zone` はゾーン名（`domain.global`）になる。ゾーン外の名前は `zone` を持たない。URL 構文はゾーン内外で共通であり、`zone` は判定結果の提示であって新しい文法を導入しない (§13.1)。
 - `network.connectURL(url, { nameServer?, localPort?, signal? })` は NodeId 指定なら直接接続し、名前指定なら `nameServer.resolve()` 経由で NodeId を得て接続する。名前指定で NameServer が無ければ reject する。戻り値は `VirtualStream`。パス等はアプリケーションが `parseWebTCPUrl()` の結果から利用する。
 - `webtcp://` はブラウザのナビゲーション可能スキームではない。ライブラリ API としてパース・接続する。
 
@@ -783,9 +828,217 @@ webtcp://<host>:<port><path>?<query>#<fragment>
 - `domain.global` への登録、ブロックチェーンによる所有権証明、グローバルな名前衝突解決は **M5** の対象（`plan.md`）。
 - 名前問い合わせは増幅を避けるため問い合わせ先数・並列数・メッセージサイズ・CNAME 深度・キャッシュ件数を制限する。
 
-## 13. 公開 API
+## 13. `domain.global` とドメイン所有権証明（M5 / #25）
 
-### 13.1 WebTCPNetwork
+本章は「名前でサービスを発見する」最終段階として、**グローバルに一意なドメイン名と、その所有権の検証可能性**を定義する。設計方針は 2 つである。
+
+1. **ブラウザにブロックチェーンのフルクライアントを載せない。** 所有権の証明は「誰もが発行できる自己署名クレーム」+「検証可能な追記型台帳の包含証明」として定義し、実チェーンとの接続は**プラガブルな検証インターフェース**（`IChainAnchorVerifier`）に委ねる。
+2. **既定で fail-closed。** レコード形式・署名・指紋・有効期間・台帳アンカーのうち 1 つでも検証できない場合、解決は失敗する。「検証できなかったが許容する」モードは利用者が明示的に選択する。
+
+### 13.1 ゾーンと名前規則
+
+- ゾーンは **`domain.global`** の 1 つだけとする (MUST)。将来の追加ゾーンは本書の対象外（§16）。
+- 完全名は `<label>(.<label>)*.domain.global`。ラベルは §12.1 と同じ ASCII LDH（1–63 文字、先頭/末尾ハイフン不可）。ゾーン名を含む全体で 253 文字以下。
+- 正規化は小文字化と末尾ルートドットの除去のみ。IDNA / Punycode・homoglyph 対策は**未実装**（`plan.md` §4.3、#43）。
+- `isDomainGlobalName(name)` がゾーン内名前を判定する。ゾーン内名前は §12.1 のとおりローカル登録 reserved。
+
+### 13.2 所有権レコード（`DomainOwnershipRecord`）
+
+レコードは「ドメイン名 ↔ NodeId」の対応を、その NodeId を生む公開鍵の所有者が署名した**自己証明型クレーム**である。
+
+```ts
+interface DomainRecordBody {
+  version: 1;
+  domain: string;          // 正規化済み完全名（.domain.global を含む）
+  nodeId: NodeId;          // 所有者の NodeId（= ownerPublicKey の指紋）
+  ownerPublicKey: string;  // 32 バイト Ed25519 公開鍵（Base64url、パディングなし）
+  serial: number;          // 1 以上、ドメインごとに単調増加（書換えの順序付け）
+  issuedAt: number;        // epoch ms
+  expiresAt: number;       // epoch ms。issuedAt < expiresAt かつ寿命は上限以下
+  revoked?: false | true;  // 省略 = false。true で自発的失効（焼却）
+  port?: VirtualPort;      // 推奨サービスポート。ヒントであり connectURL() は必須ポートを要求する
+  txt?: string;            // 1 行の自由記述（255 文字以下）
+}
+interface DomainOwnershipRecord {
+  version: 1;
+  body: DomainRecordBody;
+  signature: string;       // canonicalDomainRecordBodyBytes(body) に対する Ed25519 署名（Base64url、64 B）
+  anchor?: DomainAnchor;   // §13.3 の台帳アンカー
+}
+```
+
+- **canonical バイト列**: `body` を固定キー順（`version, domain, nodeId, ownerPublicKey, serial, issuedAt, expiresAt, revoked, port, txt`）で空白なし JSON にし、UTF-8 エンコードしたもの。未定義キーは拒否する (MUST)。`revoked` は常に書き出す（`false` でも省略しない）。`port` / `txt` は存在時のみ書く。
+- 署名対象は canonical バイト列そのもの。**ハッシュ前処理は行わない**（Ed25519 が内部でハッシュするため）。
+- `commitment = hex(SHA-256(canonical バイト列))` を台帳の葉として使う（§13.3）。
+- 検証側は必ず**受信 JSON を canonical 形式へ再正規化してから**署名を検証しなければならない (MUST)。生バイト列に対する検証は、未知キー混入の余地を残すため禁止 (MUST NOT)。
+- 生成: `createDomainOwnershipRecord({ domain, keyManager, serial, lifetimeMs?, port?, txt?, revoked? })`。`keyManager.nodeId` と `domain` の妥当性を検証する。
+- 解析: `parseDomainOwnershipRecord(value)` は厳格検証（未知キー・型・長さ・Base64url・指紋）を行い、失敗時 `DomainRecordError` を投げる。ネットワーク経由の JSON は必ずこの関数を通す (MUST)。
+
+### 13.3 台帳アンカー（`DomainAnchor`）とチェックポイント連鎖
+
+台帳（registry / transparency log）は受領したレコードの `commitment` を**追記専用の Merkle 木**へ積上げ、木サイズ・ルート・時刻を**ログ鍵で署名**したチェックポイントを発行する。
+
+```ts
+interface DomainAnchor {
+  leafIndex: number;              // 0 起始の葉番号
+  proof: string[];                // 包含証明（兄弟ノードの Base64url SHA-256、葉から根へ）
+  checkpoint: SignedDomainCheckpoint;
+  chain?: {                        // 実チェーンへの追加コミットメント（任意、§13.4.2）
+    network: string;               // 例 "namecoin"、"ethereum:11155111"
+    txId?: string;
+    blockHeight?: number;
+    commitment?: string;           // チェックポイントハッシュ等のオンチェーン値
+  };
+}
+interface DomainCheckpoint {
+  logId: string;                   // 既定はログ鍵の NodeId（公開鍵指紋）
+  treeSize: number;                // 葉数（1 以上）
+  root: string;                    // Base64url SHA-256 ルート
+  prevHash: string;                // 直前チェックポイントの canonical バイト列の SHA-256（ genesis は 32 バイトの 0）
+  timestamp: number;               // epoch ms
+}
+interface SignedDomainCheckpoint extends DomainCheckpoint { signature: string }
+```
+
+- **葉ハッシュ** `H(0x00 || commitmentBytes)`、**内部ノード** `H(0x01 || left || right)`。前缀による領域分離を必須とする (MUST)（第二像攻撃の抑止）。ノード数が奇数の場合、末尾ノードは自分自身とペアにする（promote 規則）。
+- **ルートは木サイズへバインドする**: `root = H(0x02 || uint64BE(treeSize) || top)`。バインドしないと、右端以外の葉に対する包含証明が**別サイズの木**でも成立してしまう（最上位の promote 有無だけが差分になるため）。`verifyDomainMerkleProof()` は各レベルのノード数を `treeSize` から再現し、promote 位置では兄弟が自分自身と一致することも要求する (MUST)。
+- 台帳はチェックポイントを**追記のみ**で発行する（`append` と、最初の `buildAnchor()` 以外で新チェックポイントを作ってはならない MUST NOT）。読み出しのたびに再署名すると `prevHash` 連鎖が自己参照で壊れる。
+- `verifyDomainMerkleProof({ commitment, leafIndex, treeSize, root, proof })` は `leafIndex < treeSize` と `proof` 長さ `= ceil(log2(treeSize))` を確認する。不一致は失敗 (MUST)。`commitment` は 32 バイトの hex（§13.2）で、葉の原料は hex を raw バイトへ戻したものである。
+- `treeSize` は monotonic な履歴としてクライアントへ提示される。クライアントは**前回受理したチェックポイント**を記憶し (SHOULD)、それより小さい `treeSize` を拒否する (MUST)。
+- `prevHash` により、チェックポイントは同一ログ内で**履歴を消せない連結**（append-only chain）を作る。`verifyDomainCheckpointChain({ pinned, target, between })` は `pinned` から `target` への連結を、区間のチェックポイントを受信して検証する (MAY)。台帳が区間を提供できない場合、検証は `unavailable` を返し、利用者の設定で拒否または続行を決める。
+- チェックポイント署名対象は `canonicalDomainCheckpointBytes(checkpoint)`（固定キー順 `logId, treeSize, root, prevHash, timestamp` の空白なし JSON、UTF-8）。`signature` は含めない。
+
+### 13.4 検証インターフェース
+
+#### 13.4.1 `IDomainOwnershipVerifier`
+
+```ts
+interface IDomainOwnershipVerifier {
+  verify(record: DomainOwnershipRecord, context?: DomainVerifyContext): Promise<DomainVerifyResult>;
+}
+interface DomainVerifyContext {
+  nowMs?: number;
+  expectedDomain?: string;   // 解決中の名前と record.body.domain の一致確認
+  knownSerial?: number;      // 既に受理した最大 serial（これ未満のレコードは stale）
+  clockSkewMs?: number;
+  checkpointChain?: DomainCheckpointSource;   // §13.3 の連結検証に使う
+}
+interface DomainVerifyResult {
+  ok: boolean;
+  code: DomainProofCode;     // 'ok' | 'invalid-record' | 'zone-mismatch' | 'fingerprint-mismatch'
+                             // | 'bad-signature' | 'expired' | 'not-yet-valid' | 'stale-serial'
+                             // | 'revoked' | 'conflict' | 'anchor-missing' | 'anchor-bad-proof'
+                             // | 'anchor-untrusted-log' | 'anchor-bad-checkpoint' | 'anchor-rollback'
+                             // | 'chain-unverified' | 'resolution-unavailable'
+  message?: string;
+  anchorVerified?: boolean;
+  chainVerified?: boolean | null;   // null = 検証手段なし（未確認）
+}
+```
+
+既定実装 `createDomainOwnershipVerifier(options)` の検証順序（すべて MUST）:
+
+1. `parseDomainOwnershipRecord()` による構造検証（未知キー拒否を含む）。失敗 → `invalid-record`。
+2. `domain` の正規化とゾーン所属。`context.expectedDomain` と不一致 → `zone-mismatch`。
+3. `ownerPublicKey`（32 B）から指紋を導出し `body.nodeId` と一致させる。不一致 → `fingerprint-mismatch`。
+4. canonical バイト列に対する Ed25519 署名検証。失敗 → `bad-signature`。
+5. 有効期間: `issuedAt - clockSkewMs <= now <= expiresAt`、`expiresAt - issuedAt <= maxLifetimeMs`。前者下 → `not-yet-valid`、上 → `expired`、後者超 → `invalid-record`。
+6. リプレイ/ロールバック: `context.knownSerial` があれば `body.serial >= knownSerial` を要求し、未満は `stale-serial`。`revoked: true` は `revoked`。
+7. アンカー方針: `requireAnchor` 時に `anchor` を要求（欠落は `anchor-missing`）。`anchor` がある場合、ログ鍵（`logKeys[logId]`）が既知でなければ `anchor-untrusted-log`、包含証明・チェックポイント署名・`treeSize` 整合のいずれか失敗で `anchor-bad-proof` / `anchor-bad-checkpoint` / `anchor-rollback` を返す。
+8. `anchor.chain` がある場合 `IChainAnchorVerifier` を呼ぶ。未設定なら `chainVerified: null`（`requireChainAnchor: true` なら `chain-unverified`）、設定時は `verified: false` で `chain-unverified`。
+
+- ログ鍵は `logKeys: Record<logId, publicKey>` の静的設定、または `resolveLogKey(logId)` による遅延解決（§10.4 の `KeyDirectory` を再利用できる）。**信任は TOFU に頼らず、設定済みの鍵のみ受け付ける** (MUST)。
+- 検証器は例外を投げず、常に `DomainVerifyResult` を返す (MUST)。
+
+#### 13.4.2 `IChainAnchorVerifier`（実チェーンへの差し替え点）
+
+```ts
+interface IChainAnchorVerifier {
+  readonly name?: string;
+  verify(input: { commitment: string; checkpointHash: string; chain: DomainAnchorChainRef }): Promise<{
+    verified: boolean; finality?: number; detail?: string;
+  }>;
+}
+```
+
+本仕様は**参照実装を定義しない**（SPV ヘッダー検証、keccak-256 / RLP による EVM 証明、Namecoin の `name_firstupdate` 照会は #42 として切り出す）。実装側は未設定時に `chainVerified: null` を返すことをもって「オフライン検証範囲」と明示する。
+
+#### 13.4.3 衝突解決
+
+同一ドメインに対して**複数の有効レコード**が提示された場合（§13.5 の解決フロー）、勝者は
+
+```
+max(serial) で勝つ → 同 serial なら commitment が同一なら同一視、相違あれば conflict（fail-closed）
+```
+
+で決める。`anchor` がある場合は「より小さい `leafIndex`（＝先に台帳へ入った）」を決定的なタイブレークとする。人間による裁定・競売・マルチシグ承認は未定義（#43）。
+
+### 13.5 解決フロー（`DomainAuthority`）
+
+```ts
+const domains = createDomainAuthority({
+  verifier?, verifierOptions?, local?, sources?, peers?, checkpointChain?,
+  cacheTtlMs?, negativeTtlMs?, maxCacheEntries?, resolveTimeoutMs?, queryTimeoutMs?,
+  maxRecordsPerDomain?, pinCheckpoints?, logger?,
+});
+await domains.resolve(name, { signal?, timeoutMs?, skipCache?, }): Promise<DomainResolution>
+await domains.settle(name, options): Promise<DomainResolution>   // 例外を投げない解決
+await domains.settleCandidates(name, records): Promise<DomainResolution>  // 呼び出し側が得た候補だけを検証
+await domains.register(record): Promise<DomainResolution>       // 検証 + ローカル保管
+await domains.remember(record): Promise<DomainVerifyResult>     // ローカル信託（検証は必ず通す）
+domains.forget(name): boolean
+domains.close(): void
+domains.createPublicKeyResolver(inner?): IPublicKeyResolver     // §10.4.3 への bridge
+
+interface DomainResolution { /* 成功 */ ok: true; domain; nodeId; record; proof; pinnedCheckpoint?; port?; candidates; via }
+                            /* 失敗 */ | { ok: false; domain; code: DomainProofCode; message; record?; proof? }
+interface IDomainRecordSource {
+  readonly name?: string;
+  lookupByDomain(domain, context?: { signal?, deadline? }): Promise<DomainOwnershipRecord[] | DomainOwnershipRecord | null>;
+  lookupByNodeId?(nodeId): Promise<DomainOwnershipRecord[]>;
+}
+```
+
+- 収集元（`IDomainRecordSource`）は (1) ローカルストア `local`、(2) 明示 `sources`（HTTP レジストリ等）、(3) 既知ノードへの `wantOwnership` 問い合わせ（§12.2）である。**ストリーム I/O を `core/domain` は知らない** — (3) は `NameServer` が `settleCandidates()` へ候補を渡す形で供給する（`WebTCPNetwork.connect` を使うため、v2 署名検証とマルチホップ経路がそのまま効く）。収集は**並列・全体デッドライン付き**で、1 つの停滞が解決を止めてはならない (MUST NOT)。
+- 各候補は §13.4 で検証し、**検証に成功したもののみ** §13.4.3 で勝者を決める。勝者の `body.nodeId` を解決結果とし、`NameResolution.source` は `'domain'`、`record` と `proof` を添える。
+- 候補が 0 件は `DomainResolutionUnavailableError`、候補はあるが全滅（検証失敗）は `DomainOwnershipError`（最後の `code` を伝播）で、**名前不存在と検証失敗を区別する** (MUST)。`settle()` は例外を投げず `ok: false` を返す。
+- `resolve()` / `settle()` は成功を `cacheTtlMs`、失敗を `negativeTtlMs` で cache するため、`NameServer` は 2 段階（権威 → 既知ノード）の照会を 1 回に絞れる。キャッシュを避けたい診断は `skipCache: true` を使う。
+- 成功結果は `cacheTtlMs`（既定 60 000 ms）で、失敗は `negativeTtlMs`（既定 5 000 ms、**成功より短くなければならない** MUST）でキャッシュする。キャッシュは `maxCacheEntries`（既定 256）上限。
+- `pinCheckpoints: true`（既定 `true`）の場合、受理したチェックポイントをログ単位で記憶し、より古い `treeSize` を持つチェックポイントを `anchor-rollback` で拒否する。
+- **ゾーン内名前の解決に `DomainAuthority` が無ければ失敗する**（§12.2）。`NameServer` はゾーン内名の `registerA` / `registerCNAME` を拒否し (MUST)、`registerDomain()` のみ受け付ける。
+- `ns.registerDomain(record)` は (1) 検証、(2) ローカル A レコード登録（TTL はレコード残存期間と §12.1 上限の小さいほう）、(3) 応答用のレコード保管 の順で行い、検証に失敗したレコードは登録しない (MUST)。権威が未設定のときは組み込み検証器（`requireAnchor: false`）で自己署名・指紋・有効期間だけを確認する。
+- ローカル登録済みのゾーン名を `resolve()` するときも、失効・焼却を見落とさないよう**毎回レコードを再検証**する (MUST)。
+
+### 13.6 参照レジストリの HTTP 契約（オプショナル）
+
+ライブラリ同梱のデモ実装（`examples/server.mjs`）と `HttpDomainRegistryClient` は次の契約を使う。**仕様として必須ではない**（`IDomainRecordSource` を実装すれば任意のバックエンドでよい）。
+
+| メソッド | パス | リクエスト | レスポンス |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/domain/record` | `{ "record": DomainOwnershipRecord }` | `200 { accepted, leafIndex, treeSize, checkpoint, anchor }` / `409 { accepted:false, error, code }` / `400 { error }` |
+| `GET` | `/domain/record?name=<domain>` | — | `{ "records": [ … ] }`（アンカー込み。存在せず 1 件のみなら `200 records: []` ではなく `404` でもよい。クライアントは 404 を「候補 0 件」と解釈する） |
+| `GET` | `/domain/record?nodeId=<NodeId>` | — | `{ "records": [ … ] }`（逆引き。鍵配布の bridge が使う） |
+| `GET` | `/domain/checkpoint` | — | `{ "checkpoint": … }` |
+| `GET` | `/domain/checkpoints?after=<treeSize>&to=<treeSize>` | — | `{ "checkpoints": [ … ] }` |
+| `GET` | `/domain/log` | — | `{ "logId", "publicKey" }`（ログ鍵の TOFU ピン留め用） |
+
+- レジストリはレコードの検証（§13.4 の 1〜6）に成功した場合のみ受理する。`serial` が既知の最大値以下なら `409 stale-serial` を返す (SHOULD)。
+- 応答の上限は 1 名前あたり 8 件、1 レコードあたり 16 KiB、1 応答あたり 1 MiB。超過分は切り捨てず `413`（リクエスト側は `400` / `413`）を返す。
+- クライアント実装 `HttpDomainRegistryClient`（`adapters/domain/`）は `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装し、`checkpointChain` として注入できる。請求ごとに `timeoutMs` と `AbortSignal` を適用し、失敗は `DomainRegistryError`（`status` を運ぶ型）へ正規化する。
+- レジストリは**信頼の根元ではない**。レコードの真正性は所有者署名と（設定時の）台帳検証で決まるため、レジストリが嘘を書いても解決は壊れない（§13.7）。
+
+### 13.7 セキュリティ境界と未達
+
+- 検証者が信頼するのは**設定されたログ鍵と所有者公開鍵だけ**。シグナリングハブ、中継ノード、HTTP レジストリは信頼不要（指紋照合が全てを自己証明化する）。
+- **チェックポイントの信憑性はログ鍵の署名に依存する**。「その名の真の所有者が台帳へ提出した」までの保証であり、**台帳の公正性（二重記載しないこと）は検証しない**。単一ログの横書きは §13.3 の `prevHash` 連結で検出できるが、ログ全体を書換えた場合は検出できない。複数ログの M-of-N 合意は未実装（#43）。
+- `anchor.chain` が無い／未設定の場合、**オンチェーン検証は行われない**（`chainVerified: null`）。ブラウザにフルクライアントを載せない設計上の帰結であり、実チェーン接続は #42。
+- ドメイン名そのものの紛争裁定、失効回収の自動化、IDNA は未定義（#43）。
+- 問い合わせは既知ノード全体へ平文（署名付き）で拡散する。問い合わせ秘匿（段階的開示・暗号化）は未実装。
+
+## 14. 公開 API
+
+### 14.1 WebTCPNetwork
+
 
 ```ts
 new WebTCPNetwork({
@@ -824,11 +1077,12 @@ close(): void
 - `keyManager` / `keyDirectory` / `requireSignatures` は M3（#28）で追加された。
   `keyManager` を渡すと自動的にプロトコル v2（署名必須）になり、`verifier` も `Ed25519PacketVerifier` が組まれる。
 - `connect()` は必要に応じてリンクを確立してから仮想接続を開始する。
-- `connectURL()` は M4 で追加。名前指定には `options.nameServer` が必要。
+- `connectURL()` は M4 で追加。名前指定には `options.nameServer` が必要。`options.nameServer.domains` 設定時、ゾーン内名前は所有権検証を通る（§13.5）。
+- `serializer` を注入した場合、自動生成される `Ed25519PacketVerifier` にも**同じインスタンス**が渡される（#41）。注入シリアライザが `serializeForSigning()` を実装しない場合、鍵管理併用は構築時に失敗する（§10.3）。
 - `bootstrap()` はエントランス探索結果から候補へ順次接続を試み、失敗時は指数バックオフでリトライする。
 - 起動完了時に `'ready'` イベントを発火する。
 
-### 13.2 VirtualStream
+### 14.2 VirtualStream
 
 ```ts
 send(data: Uint8Array | string): Promise<void>
@@ -853,7 +1107,7 @@ on('connect' | 'data' | 'readable' | 'end' | 'close' | 'drain' | 'error', listen
 - `drain` は送信バッファおよび未 ACK キューが空になったときに発火する。
 - `close` は `CLOSED` 遷移時に一度だけ発火する。
 
-### 13.3 セキュリティ API（M3 / #28）
+### 14.3 セキュリティ API（M3 / #28）
 
 ```ts
 // NodeId = Ed25519 公開鍵の指紋
@@ -893,7 +1147,70 @@ directory.waitForPublicKey(nodeId, timeoutMs?): Promise<Uint8Array | null>
 | `NodeIdCollisionError` | 同一 NodeId に異なる鍵/身元が対応する衝突を表す型付きエラー |
 | `IPublicKeyResolver` | 分散ストレージ等への差し替えポイント（§10.4.3） |
 
-## 14. バージョニング
+### 14.4 名前解決とドメイン所有権 API（M4 / M5・#25）
+
+```ts
+// 名前空間（§13.1）
+DOMAIN_GLOBAL_ZONE: 'domain.global'
+isDomainGlobalName(name): boolean
+normalizeDomainName(input): string          // 失敗時 DomainRecordError
+prepareDomainName / isValidDomainName / domainLabels / domainZone / domainNameInZone
+
+// レコード（§13.2）
+canonicalDomainRecordBodyBytes(body): Uint8Array
+canonicalDomainCheckpointBytes(checkpoint): Uint8Array
+await commitDomainRecord(body): Promise<string>          // hex SHA-256
+domainCommitmentBytes(commitmentHex): Uint8Array
+await parseDomainOwnershipRecord(value, { verifyFingerprint? }): DomainOwnershipRecord
+parseDomainRecordBody(value): DomainRecordBody            // 未知キー拒否
+domainRecordToJSON(record) / serializeDomainRecord(record)
+await createDomainOwnershipRecord({ domain, keyManager, serial, lifetimeMs?, port?, txt?, revoked? })
+
+// 台帳（§13.3）
+sha256Domain(bytes) / defaultDomainHash / verifyDomainEd25519(publicKey, data, signature)
+domainMerkleLeafHash(leafBytes) / domainMerkleNodeHash(left, right) / bindDomainMerkleRoot(top, treeSize)
+computeDomainMerkleRoot(leafBytes) / buildDomainMerkleRoot(leafBytes): Promise<string>  // Base64url
+buildDomainMerkleProof(leafBytes, index) / verifyDomainMerkleProof({ commitment, leafIndex, treeSize, root, proof })
+await signDomainCheckpoint(checkpoint, keyManager)
+verifyDomainCheckpoint(checkpoint, { logKeys } | { resolveLogKey, maxAgeMs?, clockSkewMs?, nowMs? })
+verifyDomainCheckpointChain({ pinned, target, between }) / checkpointRollsBack(pinned, candidate)
+parseDomainCheckpoint / parseDomainAnchor / normalizeDomainCheckpoint
+createDomainLedger({ keyManager, logId?, requireOwnerSignature?, maxEntries?, hashFn?, logger? })
+    // → DomainLedger: append / lookupByDomain / lookupByNodeId / buildAnchor / checkpoint /
+    //                 checkpointsBetween / snapshot / root / clear
+
+// 検証（§13.4）
+createDomainOwnershipVerifier({ requireAnchor?, requireChainAnchor?, logKeys?, resolveLogKey?,
+                                checkpointMaxAgeMs?, maxLifetimeMs?, clockSkewMs?, chainAnchorVerifier?,
+                                verifySignature?, hashFn?, logger? })
+createDomainProofCache({ maxEntries? })     // knownSerials / pinned checkpoints / commitments の保持
+conflictVerdict(current, candidate)         // §13.4.3 の勝者判定（'identical' | 'candidate' | 'current' | 'conflict'）
+
+// 解決（§13.5）
+createDomainAuthority({ verifier?, verifierOptions?, local?, sources?, peers?, checkpointChain?,
+                        cacheTtlMs?, negativeTtlMs?, maxCacheEntries?, resolveTimeoutMs?,
+                        queryTimeoutMs?, maxRecordsPerDomain?, pinCheckpoints?, logger? })
+memoryDomainRecordSource({ records?, logger? })   // テスト・ローカル信託用（put / remove / list つき）
+chainDomainRecordSources(sources)
+await new NameServer(network, { domains }).registerDomain(record)   // §12.2
+
+// レジストリアダプタ（§13.6、adapters/domain/）
+createHttpDomainRegistryClient({ baseUrl, fetchImpl?, timeoutMs?, tolerateNotFound?, logger? })
+    // → lookupByDomain / lookupByNodeId / submit / checkpoint / checkpointsBetween / logInfo
+
+// 型
+DomainOwnershipRecord / DomainRecordBody / DomainAnchor / DomainAnchorChainRef
+DomainCheckpoint / SignedDomainCheckpoint / DomainVerifyContext / DomainVerifyResult / DomainProofCode
+IDomainOwnershipVerifier / IChainAnchorVerifier / IDomainRecordSource / DomainSourceContext
+DomainCheckpointSource / DomainResolution / DomainResolution* (Success | Failure)
+DomainRecordError / DomainOwnershipError / DomainConflictError / DomainResolutionUnavailableError
+DomainLedgerAppendError / DomainRegistryError
+
+- `NameServerOptions.domains` に `DomainAuthority` を渡すと、ゾーン内名の解決・応答が §13.5 に従って権威へ移譲される。
+- `HttpDomainRegistryClient`（`adapters/domain/`、§13.6）は `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装する。
+- `core/domain` は `crypto.subtle`（Web Crypto）だけを使う。Ed25519 検証が使えない環境では `verifySignature` を差し替える。
+
+## 15. バージョニング
 
 - パケットの `version` フィールドで判別する。未知バージョンは破棄する。
 - **v1（M1–M2）**: `version = 1`。24 バイト固定ヘッダー、`signatureLen = 0`、NodeId はランダム hex。
@@ -907,14 +1224,16 @@ directory.waitForPublicKey(nodeId, timeoutMs?): Promise<Uint8Array | null>
   - ヘッダーレイアウトが共通のため、v1 と v2 のノードが同一リンク上で併存しても
     デシリアライズ段階では衝突しない（署名検証の可否だけが異なる）。
 
-## 15. 非目標（M4 時点）
+## 16. 非目標（M5 時点）
 
 以下は本仕様の対象外であり、`plan.md` に将来課題として記録する。
 
-- `domain.global` へのドメイン登録、ブロックチェーンによる所有権証明（M5 / #25）
-- NameServer のグローバル名前衝突解決・権威サーバー階層・DNS 相互運用
-- 鍵のローテーション（NodeId を維持したままの鍵更新）と、マルチデバイス間の鍵同期
-- アプリケーションデータの E2E 暗号化（DTLS 終端より上の機密性）
-- セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§10.6 の限界）
-- HTTP/1.1・HTTP/2 の完全な実装
-- ブラウザ外（Node.js）での WebRTC 実装の同梱
+- **実ブロックチェーンへの接続**（SPV ヘッダー検証、EVM の `eth_getProof` / keccak-256 + RLP、Namecoin RPC 照会）。本書が定義するのは「検証可能な所有権レコード + 追記型台帳 + プラガブル検証器」までで、`IChainAnchorVerifier` の参照実装は対象外（#42）。
+- **ドメイン名のガバナンス**（紛争裁定、失効回収、複数ログの M-of-N 合意、IDNA / homoglyph 対策）（#43）。
+- DNS 相互運用、権威サーバー階層、ゾーン委譲（`com.global` のような追加ゾーン）、名前予約のガバナンス。ゾーン外名前のグローバル衝突解決も対象外（§12.4）。
+- 鍵のローテーション（NodeId を維持したままの鍵更新）と、マルチデバイス間の鍵同期（§10.7、#47）。
+- アプリケーションデータの E2E 暗号化（DTLS 終端より上の機密性）。
+- セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§10.6 の限界、#48）。
+- `domain.global` 問い合わせの秘匿（段階的開示・暗号化）。
+- HTTP/1.1・HTTP/2 の完全な実装（README の「HTTP トンネル」構想のうち L7 は未実装のまま）。
+- ブラウザ外（Node.js）での WebRTC 実装の同梱。

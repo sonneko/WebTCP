@@ -411,6 +411,8 @@ export class WebTCPNetwork extends EventEmitter {
                 return new Ed25519PacketVerifier({
                     keyManager: options.keyManager,
                     keyDirectory: this.keyDirectory,
+                    // 署名対象の導出は実際の送信と同一のシリアライザで行う (MUST, §10.3 / #41)
+                    ...(options.serializer ? { serializer: options.serializer } : {}),
                 });
             }
             return options.verifier;
@@ -419,6 +421,8 @@ export class WebTCPNetwork extends EventEmitter {
             return new Ed25519PacketVerifier({
                 keyManager: options.keyManager,
                 ...(this.keyDirectory ? { keyDirectory: this.keyDirectory } : {}),
+                // §10.3 / #41: 送信に使うシリアライザで署名対象も導出する
+                ...(options.serializer ? { serializer: options.serializer } : {}),
             });
         }
         return new NullPacketVerifier();
