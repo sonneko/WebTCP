@@ -138,7 +138,7 @@ const stream = await network.connectURL('webtcp://shop.domain.global:8080/orders
 
 `examples/demo/` のセクション 3「domain.global 所有権レコード」では、このタブのノードでレコードを生成 → レジストリへ submit → 受領したアンカー付きで `registerDomain()` → ピアタブ（または別タブ）で `webtcp://<その名前>:8080/` を解決、という流れをボタン 1 つで試せます。
 
-1 タブ自己チェック（`?selftest=1`）のステップ **1d** も同じ経路を自動化したもので、(a) 台帳経由の解決、(b) 台帳を引かず既知ノードの `wantOwnership` 応答だけの解決、(c) 未登録名前の fail-closed、(d) 改ざんレコードの `400` 拒否を確認します。Playwright のヘッドレス E2E（`examples/verify-browser.mjs`）でもこのステップが必須化されています。
+1 タブ自己チェック（`?selftest=1`）のステップ **1d** も同じ経路を自動化したもので、(a) 台帳経由の解決、(b) 台帳を引かず既知ノードの `wantOwnership` 応答だけの解決、(c) 未登録名前は `NameNotFoundError`（誰も知らない）で、検証に落ちた名前は `DomainOwnershipError`（裏付けはあるが受理できない）で失敗する書き分け、(d) 改ざんレコードの `400` 拒否を確認します。Playwright のヘッドレス E2E（`examples/verify-browser.mjs`）でもこのステップが必須化されています。
 
 ## 制約
 

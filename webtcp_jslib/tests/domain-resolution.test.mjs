@@ -278,10 +278,11 @@ test('domain-resolution: answers for zone names must carry ownership, and peers 
             queryTimeoutMs: 1500,
             resolveTimeoutMs: 4000,
         });
-        // C だけを見ると候補 0 件（MUST NOT により応答を使えない）
+        // C の応答は所有権レコードを添えないので候補 0 件（MUST NOT により素の A レコードは使えない）。
+        // 台帳にも既知ノードにも無いのだから not-found であり、検証失敗（DomainOwnershipError）とは区別される (§13.5)。
         await assert.rejects(
             () => nsNoProof.resolve('other.domain.global'),
-            (error) => error.name === 'NameNotFoundError' || error instanceof DomainResolutionUnavailableError,
+            (error) => error.name === 'NameNotFoundError',
         );
 
         // C が「別ノードに束縛するレコード」で応答しても無視される（target と一致しない）

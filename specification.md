@@ -1001,7 +1001,8 @@ interface IDomainRecordSource {
 
 - 収集元（`IDomainRecordSource`）は (1) ローカルストア `local`、(2) 明示 `sources`（HTTP レジストリ等）、(3) 既知ノードへの `wantOwnership` 問い合わせ（§12.2）である。**ストリーム I/O を `core/domain` は知らない** — (3) は `NameServer` が `settleCandidates()` へ候補を渡す形で供給する（`WebTCPNetwork.connect` を使うため、v2 署名検証とマルチホップ経路がそのまま効く）。収集は**並列・全体デッドライン付き**で、1 つの停滞が解決を止めてはならない (MUST NOT)。
 - 各候補は §13.4 で検証し、**検証に成功したもののみ** §13.4.3 で勝者を決める。勝者の `body.nodeId` を解決結果とし、`NameResolution.source` は `'domain'`、`record` と `proof` を添える。
-- 候補が 0 件は `DomainResolutionUnavailableError`、候補はあるが全滅（検証失敗）は `DomainOwnershipError`（最後の `code` を伝播）で、**名前不存在と検証失敗を区別する** (MUST)。`settle()` は例外を投げず `ok: false` を返す。
+- 候補が 0 件のとき権威は `code: 'resolution-unavailable'` を返し、候補はあるが全滅（検証失敗）のときは最後の `code` を返す。`settle()` は例外を投げず `ok: false` を返す。
+- `NameServer.resolve()` はこれを**名前不存在と検証失敗へ書き分ける** (MUST): 権威が `resolution-unavailable` を返し、かつ既知ノードの `wantOwnership` 応答にも候補が無かった場合は `NameNotFoundError`（誰もその名を知らない = NXDOMAIN 相当）、候補があったのに検証を通らなかった場合は `DomainOwnershipError`（`code` を伝播 = 裏付けはあるが受理できない）。`DomainResolutionUnavailableError` は権威 API（`resolve()` / `settle()` の例外系）と、権威自体が未設定のゾーン名解決で返る。収集元が 1 つも応答しなかった場合（通信障害）に「解決できた」ことにしてはならない (MUST NOT)。
 - `resolve()` / `settle()` は成功を `cacheTtlMs`、失敗を `negativeTtlMs` で cache するため、`NameServer` は 2 段階（権威 → 既知ノード）の照会を 1 回に絞れる。キャッシュを避けたい診断は `skipCache: true` を使う。
 - 成功結果は `cacheTtlMs`（既定 60 000 ms）で、失敗は `negativeTtlMs`（既定 5 000 ms、**成功より短くなければならない** MUST）でキャッシュする。キャッシュは `maxCacheEntries`（既定 256）上限。
 - `pinCheckpoints: true`（既定 `true`）の場合、受理したチェックポイントをログ単位で記憶し、より古い `treeSize` を持つチェックポイントを `anchor-rollback` で拒否する。

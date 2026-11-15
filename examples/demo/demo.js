@@ -1027,8 +1027,10 @@ async function runSelfTest() {
             if (!failure) {
                 throw new Error('未登録のドメインが解決できてしまいました（fail-closed でありません）');
             }
-            if (failure.name === 'NameNotFoundError') {
-                throw new Error(`未登録名前の区別ができません: ${failure.message}`);
+            // 台帳も既知ノードもその名前を知らない → 「検証できない」ではなく単なる not-found として
+            // 区別できる (§13.5 の書き分け)。裏付け不足は DomainOwnershipError で返る。
+            if (failure.name !== 'NameNotFoundError') {
+                throw new Error(`未登録名前は NameNotFoundError で失敗すべきでした: ${failure.name}: ${failure.message}`);
             }
             const commitment = await commitDomainRecord(anchored.body);
             return `leaf=${submitted.leafIndex} treeSize=${submitted.treeSize} commitment=${commitment.slice(0, 8)}… / 台帳・既知ノードの両方で anchor=verified / 改ざんは 400 / 未登録は ${failure.name}`;
