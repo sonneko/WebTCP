@@ -148,5 +148,41 @@ await stream.send('hello');
 
 - 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。
 - `webtcp://` のポートは必須（1–65535）。NodeId リテラル（32 文字 hex）なら NameServer なしで接続できます。
-- 名前解決はグローバルな所有権証明ではありません。`domain.global` / ブロックチェーン連携は M5 の将来課題です。
+- ゾーン外の名前解決はグローバルな所有権証明ではありません（応答ノードの自己申告）。`.domain.global` に限って、次節の所有権レコード検証が効きます。
 - 詳しくは [名前解決ガイド](/guides/name-resolution/) を参照してください。
+
+## `domain.global` の所有権を検証する（M5 / #25）
+
+ゾーン名 `*.domain.global` は、所有者の Ed25519 署名付きレコード（と台帳の Merkle アンカー）を通じて検証可能な名前に変わります。
+
+```ts
+import {
+    NameServer,
+    createDomainAuthority,
+    createDomainOwnershipRecord,
+    createHttpDomainRegistryClient,
+} from '@sonneko/webtcp-tunneler';
+
+const registry = createHttpDomainRegistryClient({ baseUrl: 'https://registry.example.com' });
+const record = await createDomainOwnershipRecord({
+    domain: 'shop.domain.global',
+    keyManager: keys,   // NodeId は公開鍵の指紋
+    serial: 1,
+    port: 8080,
+});
+const { anchor } = await registry.submit(record);           // 台帳の包含証明（任意だが推奨）
+
+const authority = createDomainAuthority({
+    sources: [registry],
+    verifierOptions: { requireAnchor: true, logKeys: { [logId]: logPublicKey } },
+});
+const ns = new NameServer(network, { domains: authority });
+await ns.registerDomain({ ...record, anchor });             // 検証に失敗したレコードは登録されない
+
+const resolved = await ns.resolve('shop.domain.global');   // source: 'domain' / proof.anchorVerified: true
+await network.connectURL('webtcp://shop.domain.global:8080/', { nameServer: ns });
+```
+
+- **信頼の根拠はピン留めしたログ鍵**です。`logKeys` に無い台帳のアンカーは `anchor-untrusted-log` で棄却されます（fail-closed）。
+- `logKeys` を設定せず `requireAnchor: false`（既定）なら、所有者署名・有効期間・serial までを検証して受理します。
+- 実ブロックチェーンへの裏付けは #42、レジストリ運用ガバナンスは #43 として切り出しています。詳細は [domain.global と所有権証明](/guides/domain-ownership/) を参照してください。

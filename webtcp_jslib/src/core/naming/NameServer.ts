@@ -4,6 +4,19 @@ import { NodeId, VirtualPort } from '../types/protocol.js';
 import type { VirtualStream } from '../transport/VirtualStream.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { normalizeWebTCPName } from './url.js';
+import { isDomainGlobalName } from '../domain/names.js';
+import { DomainOwnershipError, DomainResolutionUnavailableError } from '../domain/errors.js';
+import {
+    domainRecordToJSON,
+    parseDomainOwnershipRecord,
+    type DomainOwnershipRecord,
+} from '../domain/record.js';
+import {
+    createDomainOwnershipVerifier,
+    type DomainVerifyResult,
+    type IDomainOwnershipVerifier,
+} from '../domain/verifier.js';
+import type { DomainAuthority, DomainResolution } from '../domain/authority.js';
 
 export const DEFAULT_NAME_SERVER_PORT = 5300;
 export const DEFAULT_NAME_TTL_MS = 60_000;
@@ -25,9 +38,14 @@ export interface NameResolution {
     nodeId: NodeId;
     /** Remaining TTL of the answer chain in milliseconds. */
     ttlMs: number;
-    source: 'local' | 'cache' | 'remote';
+    /** `'domain'` = 所有権レコードを検証済みの `domain.global` 解決（specification.md §13.5）。 */
+    source: 'local' | 'cache' | 'remote' | 'domain';
     /** Names traversed, including the queried name and final A name. */
     chain: string[];
+    /** 検証に使用した所有権レコード（ゾーン内名前のときのみ）。 */
+    record?: DomainOwnershipRecord;
+    /** 所有権検証の結果（`source === 'domain'` / ローカル信託時のみ）。 */
+    proof?: DomainVerifyResult;
 }
 
 export interface NameServerOptions {
@@ -41,12 +59,23 @@ export interface NameServerOptions {
     queryConcurrency?: number;
     /** Explicit resolver NodeIds queried before neighbors and routing-table destinations. */
     resolvers?: NodeId[];
+    /**
+     * `domain.global` の権威（specification.md §13.5）。
+     * 未指定の場合、ゾーン内名前の**解決**は `DomainResolutionUnavailableError` で失敗し、
+     * ローカル検証（署名・指紋・有効期間）でのみ `registerDomain()` が使える。
+     */
+    domains?: DomainAuthority | null;
     logger?: Logger;
 }
 
 export interface ResolveOptions {
     signal?: AbortSignal;
     timeoutMs?: number;
+}
+
+export interface RegisterDomainOptions {
+    /** 応答に添える A レコードの TTL。既定はレコード残存期間（上限 86 400 000 ms）。 */
+    ttlMs?: number;
 }
 
 export class NameNotFoundError extends Error {
@@ -71,9 +100,22 @@ export class NameLoopError extends Error {
 }
 
 interface CacheEntry { record: NameRecord; expiresAt: number }
-interface QueryMessage { protocol: 1; type: 'query'; id: string; name: string }
-interface AnswerMessage { protocol: 1; type: 'answer'; id: string; name: string; record: NameRecord }
+interface QueryMessage { protocol: 1; type: 'query'; id: string; name: string; wantOwnership?: true }
+interface AnswerMessage {
+    protocol: 1;
+    type: 'answer';
+    id: string;
+    name: string;
+    record: NameRecord;
+    ownership?: unknown[];
+}
 interface ErrorMessage { protocol: 1; type: 'error'; id: string; name: string; code: 'NXDOMAIN' | 'INVALID' }
+
+/** 1 ノードからの応答（所有権レコードは 0 件以上）。 */
+interface NameAnswer {
+    record: NameRecord;
+    ownership: DomainOwnershipRecord[];
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -82,6 +124,8 @@ const decoder = new TextDecoder();
  * Application-layer NameServer (specification.md §12). Local registrations are
  * authoritative; remote answers are iterative, TTL-cached hints, not global
  * ownership proofs. Uses signed VirtualStreams on a configurable virtual port.
+ *
+ * `domain.global` 内の名前は §13 に従い、常に所有権レコードの検証を伴う。
  */
 export class NameServer {
     public readonly port: VirtualPort;
@@ -95,7 +139,10 @@ export class NameServer {
     private readonly queryConcurrency: number;
     private readonly resolvers: NodeId[];
     private readonly logger: Logger;
+    private readonly domains: DomainAuthority | null;
+    private readonly localVerifier: IDomainOwnershipVerifier;
     private readonly local = new Map<string, NameRecord>();
+    private readonly ownership = new Map<string, DomainOwnershipRecord>();
     private readonly cache = new Map<string, CacheEntry>();
     private readonly active = new Set<VirtualStream>();
     private readonly controllers = new Set<AbortController>();
@@ -118,13 +165,19 @@ export class NameServer {
             return id;
         });
         this.logger = createScopedLogger(options.logger ?? defaultLogger, 'NS');
+        this.domains = options.domains ?? null;
+        // 権威が未指定でも、ローカル登録（自分のレコード）の検証は行う (§13.4)。
+        this.localVerifier = createDomainOwnershipVerifier({});
     }
 
     public get cacheSize(): number { return this.cache.size; }
     public get localSize(): number { return this.local.size; }
+    /** 使用中の `domain.global` 権威（無ければ `null`）。 */
+    public get domainAuthority(): DomainAuthority | null { return this.domains; }
 
     public registerA(name: string, nodeId: NodeId, ttlMs = this.defaultTtlMs): void {
         const normalized = normalizeWebTCPName(name);
+        assertNotZoneName(normalized);
         if (!isValidNodeId(nodeId)) throw new Error(`invalid A record NodeId: ${nodeId}`);
         this.assertOpen();
         this.local.set(normalized, { type: 'A', name: normalized, target: nodeId, ttlMs: validTtl(ttlMs) });
@@ -133,6 +186,7 @@ export class NameServer {
 
     public registerCNAME(name: string, target: string, ttlMs = this.defaultTtlMs): void {
         const normalized = normalizeWebTCPName(name);
+        assertNotZoneName(normalized);
         const canonical = normalizeWebTCPName(target);
         if (normalized === canonical) throw new NameLoopError(normalized);
         this.assertOpen();
@@ -143,7 +197,69 @@ export class NameServer {
     public unregister(name: string): boolean {
         const normalized = normalizeWebTCPName(name);
         this.cache.delete(normalized);
-        return this.local.delete(normalized);
+        const owned = this.ownership.delete(normalized);
+        const removed = this.local.delete(normalized);
+        return removed || owned;
+    }
+
+    /**
+     * 所有権レコードからゾーン内名前の提供を始める（specification.md §12.2 / §13.5）。
+     *
+     * 検証 → ローカル A レコード登録 → 応答用レコードの保管の順で行い、
+     * **検証に失敗したレコードは登録しない** (MUST)。
+     */
+    public async registerDomain(
+        input: DomainOwnershipRecord | unknown,
+        options: RegisterDomainOptions = {},
+    ): Promise<DomainResolution> {
+        this.assertOpen();
+        const parsed = await parseDomainOwnershipRecord(input);
+        const resolution = this.domains
+            ? await this.domains.register(parsed)
+            : await verifyWith(this.localVerifier, parsed);
+        if (!resolution.ok) {
+            this.logger.warn(`registerDomain rejected ${parsed.body.domain}: ${resolution.message}`);
+            return resolution;
+        }
+        const remaining = resolution.record.body.expiresAt - Date.now();
+        if (remaining <= 0) {
+            return {
+                ok: false,
+                domain: resolution.domain,
+                code: 'expired',
+                message: `ownership record for ${resolution.domain} is already expired`,
+                record: resolution.record,
+            };
+        }
+        // 名前レコードの TTL は §12.1 の上限 (86 400 000 ms) とレコード残存期間の小さいほう。
+        const ttlMs = validTtl(Math.min(options.ttlMs ?? remaining, remaining, MAX_NAME_TTL_MS));
+        this.local.set(resolution.domain, {
+            type: 'A',
+            name: resolution.domain,
+            target: resolution.record.body.nodeId,
+            ttlMs,
+        });
+        this.ownership.set(resolution.domain, resolution.record);
+        this.cache.delete(resolution.domain);
+        this.logger.info(
+            `registered ${resolution.domain} -> ${resolution.record.body.nodeId} (serial ${resolution.record.body.serial})`,
+        );
+        return resolution;
+    }
+
+    /** ゾーン内名前の提供を取り消す。 */
+    public unregisterDomain(domain: string): boolean {
+        const normalized = normalizeWebTCPName(domain);
+        if (!isDomainGlobalName(normalized)) throw new Error(`${normalized} is not a domain.global name`);
+        this.cache.delete(normalized);
+        const owned = this.ownership.delete(normalized);
+        const removed = this.local.delete(normalized);
+        return owned || removed;
+    }
+
+    /** このサーバーが所有権レコード付きで提供している名前の一覧。 */
+    public servedDomainRecords(): DomainOwnershipRecord[] {
+        return [...this.ownership.values()].sort((a, b) => (a.body.domain < b.body.domain ? -1 : 1));
     }
 
     public clearCache(): void { this.cache.clear(); }
@@ -175,50 +291,179 @@ export class NameServer {
         const controller = new AbortController();
         this.controllers.add(controller);
         const timeoutMs = positive(options.timeoutMs ?? this.resolveTimeoutMs, 'timeoutMs');
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let timedOut = false;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, timeoutMs);
         const onAbort = (): void => controller.abort();
         options.signal?.addEventListener('abort', onAbort, { once: true });
         if (options.signal?.aborted) controller.abort();
         const deadline = Date.now() + timeoutMs;
+        // デッドラインと中断は絶対である (MUST, §12.2 / #40): 問い合わせ先が
+        // `connect()` で宙吊りになっても、この guard が reject して解決を打ち切る。
+        let rejectGuard: ((error: Error) => void) | null = null;
+        const guard = new Promise<never>((_, reject) => {
+            rejectGuard = reject;
+        });
+        const abortGuard = (): void => {
+            rejectGuard?.(
+                timedOut
+                    ? new NameResolutionTimeoutError(original)
+                    : new Error('WebTCP name resolution aborted'),
+            );
+        };
+        controller.signal.addEventListener('abort', abortGuard, { once: true });
+        if (controller.signal.aborted) abortGuard();
+        try {
+            return await Promise.race([
+                this.resolveChain(original, controller.signal, deadline),
+                guard,
+            ]);
+        } finally {
+            clearTimeout(timer);
+            controller.signal.removeEventListener('abort', abortGuard);
+            options.signal?.removeEventListener('abort', onAbort);
+            this.controllers.delete(controller);
+        }
+    }
+
+    private async resolveChain(
+        original: string,
+        signal: AbortSignal,
+        deadline: number,
+    ): Promise<NameResolution> {
         const visited = new Set<string>();
         const chain: string[] = [];
         let current = original;
         let ttlMs = MAX_NAME_TTL_MS;
         let source: NameResolution['source'] = 'local';
-        try {
-            for (let depth = 0; depth <= this.maxCnameDepth; depth += 1) {
-                if (controller.signal.aborted) {
-                    if (options.signal?.aborted) throw new Error('WebTCP name resolution aborted');
-                    throw new NameResolutionTimeoutError(original);
-                }
-                if (visited.has(current)) throw new NameLoopError(current);
-                visited.add(current);
-                chain.push(current);
-                const found = this.lookup(current);
-                let record: NameRecord;
-                if (found) {
-                    record = found.record;
-                    ttlMs = Math.min(ttlMs, found.ttlMs);
-                    if (found.source === 'cache' && source === 'local') source = 'cache';
-                } else {
-                    const remote = await this.queryKnownNodes(current, controller.signal, deadline);
-                    if (!remote) throw new NameNotFoundError(current);
-                    record = remote;
-                    source = 'remote';
-                    ttlMs = Math.min(ttlMs, record.ttlMs);
-                    this.putCache(record);
-                }
-                if (record.type === 'A') {
-                    return { name: original, nodeId: record.target, ttlMs, source, chain };
-                }
-                current = normalizeWebTCPName(record.target);
+        for (let depth = 0; depth <= this.maxCnameDepth; depth += 1) {
+            if (signal.aborted) {
+                if (Date.now() >= deadline) throw new NameResolutionTimeoutError(original);
+                throw new Error('WebTCP name resolution aborted');
             }
-            throw new NameLoopError(original);
-        } finally {
-            clearTimeout(timer);
-            options.signal?.removeEventListener('abort', onAbort);
-            this.controllers.delete(controller);
+            if (visited.has(current)) throw new NameLoopError(current);
+            visited.add(current);
+            chain.push(current);
+            const found = this.lookup(current);
+            if (found && isDomainGlobalName(current)) {
+                // ローカル登録でも所有権レコードの再検証（失効・焼却）を必須とする (§13.4)。
+                const owned = this.ownership.get(current);
+                if (!owned) {
+                    throw new DomainResolutionUnavailableError(
+                        current,
+                        `${current} is registered locally without an ownership record`,
+                    );
+                }
+                return this.finishDomain(original, current, owned, chain, Math.min(ttlMs, found.ttlMs), 'local');
+            }
+            let record: NameRecord;
+            if (found) {
+                record = found.record;
+                ttlMs = Math.min(ttlMs, found.ttlMs);
+                if (found.source === 'cache' && source === 'local') source = 'cache';
+            } else if (isDomainGlobalName(current)) {
+                return this.resolveDomainName(original, current, chain, signal, deadline, ttlMs);
+            } else {
+                const answers = await this.queryKnownNodes(current, signal, deadline, false);
+                const answer = answers[0];
+                if (!answer) throw new NameNotFoundError(current);
+                record = answer.record;
+                source = 'remote';
+                ttlMs = Math.min(ttlMs, record.ttlMs);
+                this.putCache(record);
+            }
+            if (record.type === 'A') {
+                return { name: original, nodeId: record.target, ttlMs, source, chain };
+            }
+            current = normalizeWebTCPName(record.target);
         }
+        throw new NameLoopError(original);
+    }
+
+    /**
+     * `domain.global` 名の解決（specification.md §13.5）。
+     *
+     * (1) 権威自身の収集元（HTTP レジストリ等）、(2) 既知ノードの `wantOwnership` 応答、
+     * の順で候補を集め、**検証を通った候補のみ**で勝者を決める。
+     */
+    private async resolveDomainName(
+        original: string,
+        domain: string,
+        chain: string[],
+        signal: AbortSignal,
+        deadline: number,
+        ttlMs: number,
+    ): Promise<NameResolution> {
+        if (!this.domains) {
+            throw new DomainResolutionUnavailableError(
+                domain,
+                `resolving ${domain} requires a DomainAuthority (NameServerOptions.domains, §13.5)`,
+            );
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new NameResolutionTimeoutError(original);
+        const authorityOutcome: DomainResolution = await this.domains.settle(domain, {
+            signal,
+            timeoutMs: remaining,
+        });
+        if (authorityOutcome.ok) {
+            return this.toResolution(original, authorityOutcome, chain, ttlMs);
+        }
+        const answers = await this.queryKnownNodes(domain, signal, deadline, true);
+        const candidates = collectOwnershipCandidates(answers);
+        if (candidates.length === 0) {
+            if (authorityOutcome.code !== 'resolution-unavailable') {
+                throw new DomainOwnershipError(domain, authorityOutcome.code, authorityOutcome.message);
+            }
+            throw new NameNotFoundError(domain);
+        }
+        const resolution = await this.domains.settleCandidates(domain, candidates);
+        if (!resolution.ok) {
+            throw new DomainOwnershipError(domain, resolution.code, resolution.message);
+        }
+        return this.toResolution(original, resolution, chain, ttlMs);
+    }
+
+    /** ローカル登録済みのゾーン名を再検証して解決結果へ変換する（§13.4 の失効・焼却確認）。 */
+    private async finishDomain(
+        original: string,
+        domain: string,
+        record: DomainOwnershipRecord,
+        chain: string[],
+        ttlMs: number,
+        source: 'local',
+    ): Promise<NameResolution> {
+        const proof = this.domains
+            ? await this.domains.verifyRecord(domain, record)
+            : await this.localVerifier.verify(record, { expectedDomain: domain });
+        if (!proof.ok) {
+            throw new DomainOwnershipError(domain, proof.code, proof.message);
+        }
+        return { name: original, nodeId: record.body.nodeId, ttlMs, source, chain, record, proof };
+    }
+
+    private toResolution(
+        original: string,
+        resolution: DomainResolution,
+        chain: string[],
+        ttlMs: number,
+        source: NameResolution['source'] = 'domain',
+    ): NameResolution {
+        if (!resolution.ok) {
+            throw new DomainOwnershipError(resolution.domain, resolution.code, resolution.message);
+        }
+        const recordTtl = resolution.record.body.expiresAt - Date.now();
+        return {
+            name: original,
+            nodeId: resolution.nodeId,
+            ttlMs: Math.max(1, Math.min(ttlMs, recordTtl)),
+            source,
+            chain,
+            record: resolution.record,
+            proof: resolution.proof,
+        };
     }
 
     private lookup(name: string): { record: NameRecord; ttlMs: number; source: 'local' | 'cache' } | null {
@@ -248,16 +493,29 @@ export class NameServer {
         return [...new Set(ids)].filter((id) => id !== this.network.localNodeId && isValidNodeId(id)).slice(0, this.maxQueriedNodes);
     }
 
-    private async queryKnownNodes(name: string, signal: AbortSignal, deadline: number): Promise<NameRecord | null> {
+    /**
+     * 既知ノードへ問い合わせる。`wantOwnership` 時は**全応答を集める**（候補の競合解決に使うため）。
+     * 単一ノードの停滞が全体を遅らせてはならない (MUST NOT, §12.2 / #40) ので、
+     * 応答は `queryTimeoutMs` と `deadline` の早いほうで打ち切る。
+     */
+    private async queryKnownNodes(
+        name: string,
+        signal: AbortSignal,
+        deadline: number,
+        wantOwnership: boolean,
+    ): Promise<NameAnswer[]> {
         const candidates = this.knownNodes();
+        if (candidates.length === 0) return [];
         let next = 0;
-        let answer: NameRecord | null = null;
+        const answers: NameAnswer[] = [];
+        const collectAll = wantOwnership;
         const worker = async (): Promise<void> => {
-            while (!signal.aborted && answer === null && next < candidates.length) {
-                const nodeId = candidates[next++]!;
+            while (!signal.aborted && Date.now() < deadline && (collectAll || answers.length === 0)) {
+                const nodeId = candidates[next++];
+                if (nodeId === undefined) return;
                 try {
-                    const record = await this.queryNode(nodeId, name, signal, deadline);
-                    if (record && answer === null) answer = record;
+                    const answer = await this.queryNode(nodeId, name, signal, deadline, wantOwnership);
+                    if (answer && (collectAll || answers.length === 0)) answers.push(answer);
                 } catch (error) {
                     if (signal.aborted) return;
                     this.logger.debug(`Name query to ${nodeId} failed:`, error);
@@ -265,33 +523,71 @@ export class NameServer {
             }
         };
         await Promise.all(Array.from({ length: Math.min(this.queryConcurrency, candidates.length) }, () => worker()));
-        if (signal.aborted) return null;
-        return answer;
+        return answers;
     }
 
-    private async queryNode(nodeId: NodeId, name: string, signal: AbortSignal, deadline: number): Promise<NameRecord | null> {
+    private async queryNode(
+        nodeId: NodeId,
+        name: string,
+        signal: AbortSignal,
+        deadline: number,
+        wantOwnership: boolean,
+    ): Promise<NameAnswer | null> {
         const remaining = Math.min(this.queryTimeoutMs, deadline - Date.now());
         if (remaining <= 0 || signal.aborted) throw new Error('query deadline exceeded');
         const controller = new AbortController();
-        let stream: VirtualStream | null = null;
-        const onAbort = (): void => { controller.abort(); stream?.destroy(); };
+        // `stream` は非同期の `connect()` 完了後に入るため、制御流れ解析に頼まないよう箱に入れる。
+        const holder: { stream: VirtualStream | null } = { stream: null };
+        let timedOut = false;
+        const onAbort = (): void => {
+            controller.abort();
+            holder.stream?.destroy();
+        };
         signal.addEventListener('abort', onAbort, { once: true });
-        const timer = setTimeout(() => { controller.abort(); stream?.destroy(); }, remaining);
         const id = randomId();
-        try {
-            stream = await this.network.connect(nodeId, this.port);
+        // `connect()` 自体は中断を受け取れない (#44) ため、宙吊りもここで打ち切る。
+        const attempt = (async (): Promise<NameAnswer | null> => {
+            holder.stream = await this.network.connect(nodeId, this.port);
+            const stream = holder.stream;
             if (controller.signal.aborted) { stream.destroy(); throw new Error('query aborted'); }
             this.active.add(stream);
-            const request: QueryMessage = { protocol: 1, type: 'query', id, name };
+            const request: QueryMessage = {
+                protocol: 1,
+                type: 'query',
+                id,
+                name,
+                ...(wantOwnership ? { wantOwnership: true } : {}),
+            };
             const responsePromise = readMessage(stream, MAX_NAME_MESSAGE_BYTES);
             await stream.send(JSON.stringify(request));
             stream.end();
-            const response = await responsePromise;
-            return parseResponse(response, id, name);
+            return parseResponse(await responsePromise, id, name);
+        })();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const outcome = await Promise.race([
+                attempt,
+                new Promise<'deadline'>((resolve) => {
+                    timer = setTimeout(() => resolve('deadline'), remaining);
+                }),
+            ]);
+            if (outcome === 'deadline') {
+                timedOut = true;
+                controller.abort();
+                holder.stream?.destroy();
+                // 後から届いたストリームは必ず閉じる（リーク防止）。
+                void attempt.catch(() => undefined).then(() => {
+                    const late = holder.stream;
+                    if (late) { this.active.delete(late); late.destroy(); }
+                });
+                throw new Error('query timed out');
+            }
+            return outcome;
         } finally {
-            clearTimeout(timer);
+            if (timer !== undefined) clearTimeout(timer);
             signal.removeEventListener('abort', onAbort);
-            if (stream) { this.active.delete(stream); stream.destroy(); }
+            const opened = holder.stream;
+            if (opened && !timedOut) { this.active.delete(opened); opened.destroy(); }
         }
     }
 
@@ -307,9 +603,25 @@ export class NameServer {
                 return;
             }
             const record = this.local.get(request.name);
-            const response: AnswerMessage | ErrorMessage = record
-                ? { protocol: 1, type: 'answer', id: request.id, name: request.name, record }
-                : { protocol: 1, type: 'error', id: request.id, name: request.name, code: 'NXDOMAIN' };
+            if (!record) {
+                await this.respond(stream, { protocol: 1, type: 'error', id: request.id, name: request.name, code: 'NXDOMAIN' });
+                return;
+            }
+            const isZoneName = isDomainGlobalName(request.name);
+            const owned = isZoneName ? this.ownership.get(request.name) : undefined;
+            if (isZoneName && !owned) {
+                // 所有権レコード無しでゾーン内名前に応答してはならない (MUST NOT, §12.2)。
+                await this.respond(stream, { protocol: 1, type: 'error', id: request.id, name: request.name, code: 'NXDOMAIN' });
+                return;
+            }
+            const response: AnswerMessage = {
+                protocol: 1,
+                type: 'answer',
+                id: request.id,
+                name: request.name,
+                record,
+                ...(owned ? { ownership: [domainRecordToJSON(owned)] } : {}),
+            };
             await this.respond(stream, response);
         } catch (error) {
             this.logger.debug('NameServer stream failed:', error);
@@ -329,15 +641,76 @@ export class NameServer {
     private assertOpen(): void { if (this.closed) throw new Error('NameServer is closed'); }
 }
 
+/** `domain.global` のラベルを持つ名前はローカル登録できない (MUST NOT, §12.1)。 */
+function assertNotZoneName(name: string): void {
+    if (isDomainGlobalName(name)) {
+        throw new Error(
+            `"${name}" belongs to the ${'domain.global'} zone and cannot be registered with registerA()/registerCNAME(); ` +
+                'use registerDomain() with a signed ownership record (specification.md §12.1 / §13.5)',
+        );
+    }
+}
+
+async function verifyWith(
+    verifier: IDomainOwnershipVerifier,
+    record: DomainOwnershipRecord,
+): Promise<DomainResolution> {
+    const proof = await verifier.verify(record, { expectedDomain: record.body.domain });
+    if (proof.ok) {
+        return {
+            ok: true,
+            domain: record.body.domain,
+            nodeId: record.body.nodeId,
+            record,
+            proof,
+            candidates: 1,
+            via: 'local',
+        };
+    }
+    return {
+        ok: false,
+        domain: record.body.domain,
+        code: proof.code,
+        message: proof.message ?? 'domain ownership verification failed',
+        record,
+        proof,
+    };
+}
+
+/** 応答から解決に使える候補だけを抜き出す（`A` 応答の target と一致するレコードのみ）。 */
+function collectOwnershipCandidates(answers: readonly NameAnswer[]): DomainOwnershipRecord[] {
+    const out: DomainOwnershipRecord[] = [];
+    const seen = new Set<string>();
+    for (const answer of answers) {
+        if (answer.record.type !== 'A') continue;
+        for (const record of answer.ownership) {
+            if (record.body.domain !== answer.record.name) continue;
+            if (record.body.nodeId !== answer.record.target) continue;
+            const key = `${record.body.domain}/${record.body.serial}/${record.signature}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(record);
+        }
+    }
+    return out;
+}
+
 function parseQuery(raw: Uint8Array): QueryMessage {
     const value = JSON.parse(decoder.decode(raw)) as Partial<QueryMessage>;
     if (value.protocol !== 1 || value.type !== 'query' || typeof value.id !== 'string' || value.id.length === 0 || value.id.length > 64 || typeof value.name !== 'string') {
         throw new Error('invalid name query');
     }
-    return { protocol: 1, type: 'query', id: value.id, name: normalizeWebTCPName(value.name) };
+    const name = normalizeWebTCPName(value.name);
+    return {
+        protocol: 1,
+        type: 'query',
+        id: value.id,
+        name,
+        ...(value.wantOwnership === true && isDomainGlobalName(name) ? { wantOwnership: true } : {}),
+    };
 }
 
-function parseResponse(raw: Uint8Array, id: string, name: string): NameRecord | null {
+async function parseResponse(raw: Uint8Array, id: string, name: string): Promise<NameAnswer | null> {
     const value = JSON.parse(decoder.decode(raw)) as Record<string, unknown>;
     if (value.protocol !== 1 || value.id !== id || value.name !== name) throw new Error('mismatched name response');
     if (value.type === 'error') {
@@ -349,14 +722,49 @@ function parseResponse(raw: Uint8Array, id: string, name: string): NameRecord | 
     if (record.name !== name || typeof record.target !== 'string' || typeof record.ttlMs !== 'number' || !Number.isInteger(record.ttlMs) || record.ttlMs < 0 || record.ttlMs > MAX_NAME_TTL_MS) {
         throw new Error('invalid name record');
     }
+    let parsed: NameRecord;
     if (record.type === 'A') {
         if (!isValidNodeId(record.target)) throw new Error('invalid A target');
-        return { type: 'A', name, target: record.target, ttlMs: record.ttlMs };
+        parsed = { type: 'A', name, target: record.target, ttlMs: record.ttlMs };
+    } else if (record.type === 'CNAME') {
+        parsed = { type: 'CNAME', name, target: normalizeWebTCPName(record.target), ttlMs: record.ttlMs };
+    } else {
+        throw new Error('unknown record type');
     }
-    if (record.type === 'CNAME') {
-        return { type: 'CNAME', name, target: normalizeWebTCPName(record.target), ttlMs: record.ttlMs };
+    const ownership = await parseOwnershipAnswer(value.ownership, name, parsed, isDomainGlobalName(name));
+    return { record: parsed, ownership };
+}
+
+/**
+ * 応答の `ownership` 配列を厳格検証する（specification.md §12.2 / §13.2）。
+ *
+ * ゾーン内名前の応答に所有権レコードが無い場合、その応答は解決に**使用できない** (MUST NOT)。
+ */
+async function parseOwnershipAnswer(
+    value: unknown,
+    name: string,
+    record: NameRecord,
+    isZoneName: boolean,
+): Promise<DomainOwnershipRecord[]> {
+    if (value === undefined) {
+        if (isZoneName) {
+            throw new Error(`answer for ${name} carries no ownership record (required by §12.2)`);
+        }
+        return [];
     }
-    throw new Error('unknown record type');
+    if (!Array.isArray(value) || value.length === 0) {
+        throw new Error('ownership answer must be a non-empty array');
+    }
+    const out: DomainOwnershipRecord[] = [];
+    for (const entry of value) {
+        const parsed = await parseDomainOwnershipRecord(entry);
+        if (parsed.body.domain !== name) throw new Error('ownership record name mismatch');
+        if (record.type === 'A' && parsed.body.nodeId !== record.target) {
+            throw new Error('ownership record does not bind the answered NodeId');
+        }
+        out.push(parsed);
+    }
+    return out;
 }
 
 function readMessage(stream: VirtualStream, maxBytes: number): Promise<Uint8Array> {

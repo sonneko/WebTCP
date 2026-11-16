@@ -12,12 +12,14 @@ export * from './core/routing/index.js';
 export * from './core/transport/index.js';
 export * from './core/network/index.js';
 export * from './core/naming/index.js';
+export * from './core/domain/index.js';
 
 // アダプタ
 export * from './adapters/webrtc/index.js';
 export * from './adapters/signaling/index.js';
 export * from './adapters/entrance-searcher/index.js';
 export * from './adapters/keys/index.js';
+export * from './adapters/domain/index.js';
 
 // ブラウザ向けヘルパー
 export * from './browser.js';

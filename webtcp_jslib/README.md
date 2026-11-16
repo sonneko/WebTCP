@@ -1,9 +1,9 @@
 # @sonneko/webtcp-tunneler
 
-WebRTC データチャネル上にバイトストリーム指向の仮想 TCP/HTTP トンネルを構築する実験的ライブラリです。M4 で `NameServer`（A/CNAME 名前解決）と `webtcp://` URL、永続 NodeId に対応しました。
+WebRTC データチャネル上にバイトストリーム指向の仮想 TCP/HTTP トンネルを構築する実験的ライブラリです。M4 で `NameServer`（A/CNAME 名前解決）と `webtcp://` URL、永続 NodeId に、M5 で `domain.global` の所有権レコード検証（Ed25519 署名 + 追記専用 Merkle 台帳）に対応しました。
 
 - リポジトリ全体の説明・デモ: [github.com/sonneko/WebTCP](https://github.com/sonneko/WebTCP)
-- プロトコル仕様: [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md)（0.4.0）
+- プロトコル仕様: [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md)（0.5.0）
 - 設計: [design.md](https://github.com/sonneko/WebTCP/blob/main/design.md)
 
 > このパッケージはまだ npm に公開されていません。利用するにはリポジトリをビルドするか、公開後に `npm install @sonneko/webtcp-tunneler` を実行してください。
@@ -100,9 +100,45 @@ const stream = await network.connectURL('webtcp://alias:8080/path', { nameServer
 - 解決順序: ローカル登録 → TTL キャッシュ → 既知ノード（`resolvers` / 隣接 / 経路表）への反復問い合わせ。
 - `webtcp://` はポート必須（1–65535）。NodeId リテラルなら NameServer なしで接続できます。
 - `path` / `query` / `fragment` はアプリケーション用で、接続自体には送信しません。
-- グローバルな名前所有権（`domain.global` / ブロックチェーン）は M5 の将来課題です。
+- ゾーン外の名前は上記のとおり自己申告です。`.domain.global` に限って、次節の所有権レコード検証が効きます。
 
 > `keyManager` を渡さない場合、後方互換のためプロトコル v1（署名なし・`NullPacketVerifier`）で動作します。
+
+## `domain.global` の所有権（M5 / #25）
+
+```ts
+import {
+    NameServer,
+    createDomainAuthority,
+    createDomainOwnershipRecord,
+    createHttpDomainRegistryClient,
+} from '@sonneko/webtcp-tunneler';
+
+// 所有者: canonical バイト列への Ed25519 署名でレコードを発行する
+const record = await createDomainOwnershipRecord({
+    domain: 'shop.domain.global',
+    keyManager: keys,
+    serial: 1,
+    port: 8080,
+});
+
+// 台帳（任意・推奨）: 受理されると Merkle 包含証明 `anchor` が付く
+const registry = createHttpDomainRegistryClient({ baseUrl: 'https://registry.example.com' });
+const { anchor } = await registry.submit(record);
+
+// 検証にはピン留めしたログ鍵が必須（未知の台帳は anchor-untrusted-log で棄却）
+const authority = createDomainAuthority({
+    sources: [registry],
+    verifierOptions: { requireAnchor: true, logKeys: { [logId]: logPublicKey } },
+});
+
+const ns = new NameServer(network, { domains: authority });
+await ns.registerDomain({ ...record, anchor }); // 検証に失敗したレコードは登録されない
+const resolved = await ns.resolve('shop.domain.global'); // source: 'domain' / proof.anchorVerified: true
+```
+
+- レコード形式・検証順序・HTTP 契約は [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md) §13 に規範的に定義しています。
+- 実ブロックチェーンへの裏付け（#42）とレジストリ運用ガバナンス（#43）は未実装です。ブラウザにチェーンクライアントは組み込みません。
 
 ## セキュリティ（M3 / #28）
 
@@ -115,6 +151,7 @@ const stream = await network.connectURL('webtcp://alias:8080/path', { nameServer
 | 衝突検出 | `NodeIdCollisionError` — 同一 NodeId に異なる鍵/身元が対応する場合に送出 |
 | 公開鍵配布 | シグナリング `public-key` 交換 + `RT_UPDATE.publicKey` / `entries[].publicKey`（どちらも指紋照合必須） |
 | 必要環境 | Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+（Ed25519 非対応時は v1 へフォールバック） |
+| ドメイン所有権（M5） | 所有者 Ed25519 署名 + SHA-256 commitment + 台帳の Merkle アンカー。信頼根拠はピン留めしたログ鍵で、未 PIN は fail-closed（`specification.md` §13） |
 
 ## ビルド・テスト・デモ
 

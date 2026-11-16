@@ -1,9 +1,9 @@
 ---
 title: プロトコル仕様サマリー
-description: specification.md（0.4.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、シグナリング契約の要約。
+description: specification.md（0.5.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、シグナリング契約の要約。
 ---
 
-このページはリポジトリの `specification.md`（バージョン 0.4.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
+このページはリポジトリの `specification.md`（バージョン 0.5.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
 
 ## バイナリパケット形式（固定 24 バイトヘッダー）
 
@@ -85,4 +85,16 @@ DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'pu
 - レコードは A（`name -> NodeId`）と CNAME（`name -> canonical name`）。TTL 既定 60 秒、最大 86400 秒。
 - 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。サーバーはローカル登録のみを返し、再帰問い合わせしません。
 - `webtcp://<host>:<port><path>?<query>#<fragment>` はポート必須（1–65535）。host は NodeId リテラルまたは LDH 名。`parseWebTCPUrl()` / `formatWebTCPUrl()` / `network.connectURL()` を提供します。
-- 名前解決はグローバルな所有権証明ではありません。`domain.global` とブロックチェーン連携は M5 です。
+- ゾーン外の名前解決はグローバルな所有権証明ではありません（応答ノードの自己申告）。所有権は次節の `domain.global` に限って検証可能です。
+
+## `domain.global` と所有権証明（M5 / #25・仕様 §13）
+
+- **ゾーン**: `domain.global` 直下 1 ラベルのみ（LDH、1 ラベル 1–63 文字、完全名 253 文字まで）。ゾーン名そのものは登録不可。
+- **レコード**: `DomainOwnershipRecord` は `body`（domain / nodeId / ownerPublicKey / serial / issuedAt / expiresAt / revoked / port / txt）+ `anchor` + Ed25519 `signature`。署名対象は canonical バイト列（固定長ヘッダ + 長さ接頭辞文字列）。サイズ上限 16 KiB、寿命は既定 30 日・上限 365 日。
+- **commitment が真実**: 台帳が保持するのは `SHA-256(canonical body)` の 32 バイトのみで、レコード本体は carrier として運ばれます。
+- **台帳とチェックポイント**: リーフは `H(0x00 || commitment)`、ルートは `H(0x02 || uint64BE(treeSize) || top)` でツリーサイズに束縛。チェックポイント（`treeSize` ごとにログ鍵が署名、`prevHash` で連結）は**追記専用**で、読み取りのたびに再署名してはなりません (MUST NOT)。
+- **検証は fail-closed・順序固定**: 形式 → 指紋とゾーン → 所有者署名 → 有効期間（`clockSkewMs` 既定 300 秒）→ serial 単調増加と失効 → 同一 serial 衝突 → 台帳アンカー（包含証明 → チェックポイント署名 → ピン留め後退拒否 → 必要なら連結追跡）→ 収集元全滅は `resolution-unavailable`。
+- **信頼の根拠はピン留めされたログ鍵**（`logKeys` / `resolveLogKey`）。未知の台帳のアンカーは `anchor-untrusted-log` で棄却され、HTTP で取得した文字列を信頼することはありません。
+- **ワイヤー拡張**: 名前問い合わせ JSON に `wantOwnership`（要求）と `ownership`（応答）を追加した後方互換拡張です。L3/L4 フラグは増やしません。
+- **HTTP レジストリ（オプショナル）**: `POST /domain/record`、`GET /domain/record?name=|?nodeId=`、`GET /domain/checkpoint`、`GET /domain/checkpoints?after=&to=`、`GET /domain/log`。改ざんは `400`、`serial` 衝突は `409`、0 件は `404`。
+- **未実装**: 実ブロックチェーンへの裏付け（#42）、レジストリ運用ガバナンス（#43）。

@@ -10,7 +10,7 @@ WebTCPは、ブラウザを単なるクライアントではなく、**自己完
 
 ブラウザの制限付きの`fetch`を使っているわけではないので、TCPレイヤーから自由に通信を操ることができます。
 
-> **現在のステータス**: **M4（NameServer / `webtcp://` URL / 永続 NodeId）実装済み**。M3 の Ed25519 署名（プロトコル v2）と NodeId の鍵指紋化に加え、**NameServer（A/CNAME・TTL キャッシュ・既知ノードへの反復問い合わせ）・`webtcp://` URL パースと `connectURL()`・鍵の永続化と衝突検出**に対応しています。`domain.global` とブロックチェーンによる所有権証明は M5（#25）の将来課題です。詳細は [plan.md](./plan.md) を参照してください。
+> **現在のステータス**: **M5（`domain.global` の所有権検証）実装済み**。M4 までの NameServer / `webtcp://` URL / 永続 NodeId に加え、**所有者署名付きドメインレコード（Ed25519 + canonical commitment）・追記専用 Merkle 台帳とチェックポイント検証・fail-closed な `DomainAuthority`・参照 HTTP レジストリ**に対応しました。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43 として切り出し）。詳細は [plan.md](./plan.md) と [仕様 §13](./specification.md) を参照してください。
 
 ## 主な機能
 
@@ -23,6 +23,7 @@ WebTCPは、ブラウザを単なるクライアントではなく、**自己完
 7. **ブラウザで直接動き、ロガー注入可能**: コアは `Buffer` や `events` に非依存。`tsc` の出力を `<script type="module">` から直接読み込め、レベル付きロガー（既定 `warn` 以上）を注入できます。
 8. **プラットフォーム別の鍵管理と永続 NodeId**: ブラウザは **Web Crypto + IndexedDB（非抽出 CryptoKey）**、Node.js は **`node:crypto`**。ブラウザの秘密鍵は生バイトとしてエクスポートされません。Node.js は `NodeKeyManager.open({ keyFile })` で PKCS#8 PEM を `0600` で永続化し、再起動後も同じ NodeId を再利用します。
 9. **NameServer と `webtcp://` URL（M4 / #25）**: `NameServer` が A/CNAME 相当のローカル登録と既知ノードへの問い合わせで名前を NodeId へ解決します。`parseWebTCPUrl()` と `network.connectURL()` で `webtcp://nodeId:port/path` または `webtcp://name:port/path` に接続できます。
+10. **`domain.global` の所有権証明（M5 / #25）**: ゾーン内名前は「誰がその名前をその NodeId に束縛しているか」を示す**所有者署名付きレコード**で扱います。レコードは canonical バイト列への Ed25519 署名、SHA-256 commitment、台帳が発行する Merkle 包含証明（ツリーサイズに束縛されたルート + 署名済みチェックポイント）を検証してから受理します。検証器は差し替え可能で、未知の台帳は fail-closed に拒否されます。
 
 ## 仕組み
 
@@ -124,16 +125,38 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 - **永続化と衝突検出**: ブラウザ復元時は署名チャレンジで秘密鍵と公開鍵の対応を検証。Node.js は `NodeKeyManager.open({ keyFile })`。同一 NodeId に異なる鍵が対応する場合は `NodeIdCollisionError`。
 - `keyManager` を渡さない場合は後方互換のため v1（署名なし）で動作します。
 
-### 現状の制約（M4）
+### 現状の制約（M5）
 
 - 鍵のローテーション（同一 NodeId のままの鍵更新）、アプリケーションデータの E2E 暗号化、明示的なリプレイ検知の強化は未実装です（[specification.md](./specification.md) §10.7）。
 - Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+ です。非対応環境では v1 にフォールバックします。
-- NameServer と `webtcp://` URL は実装済みですが、名前解決はローカル信頼モデルです。`domain.global` / ブロックチェーン連携 / グローバル名前所有権は未実装です（M5 / #25）。
+- `domain.global` は「検証できる」段階までです（M5 / #25）。**公開ブロックチェーンへの裏付け（#42）**、**レジストリの運用ガバナンス（紛争解決・失効回収・IDNA、#43）**、台帳の永続化は未実装で、同梱の参照レジストリは起動のたびにログ鍵を作り直す実験用プロセスです。ゾーン外の名前はいまも応答ノードの自己申告（ローカル信頼モデル）です。
+- RPF 厳格化と距離ベクトルの収束強化（#46）、SSE / WebSocket シグナリング（#45）は未着手です。
 - TURN サーバー自体は同梱していません（`iceServers` / `iceServersProvider` で利用者側サーバーを指定）。
+
+## ビジョンはどこまで実現したか（率直な評価）
+
+冒頭の主張を、実装と照らして切り分けます。
+
+**実現できている部分**
+
+- ブラウザ同士で、中継サーバー無しに TCP 相当の双方向通信ができます（仮想ポート多重化、3 ウェイハンドシェイク、Half-Close、自動分割、動的 RTO / 輻輳制御 / SACK）。
+- ノードは身元（Ed25519 鍵と指紋から導出した NodeId）を自己証明でき、パケットは改ざん検知されます。中継ノードを信頼せずに公開鍵を学習できます。
+- 名前を NodeId へ解決でき（M4）、M5 以降は `.domain.global` に限って「その名前をその NodeId に束縛する権利を持つ鍵」まで検証できます。サーバー役のブラウザは `listen()` するだけで、インフラはシグナリング用の HTTP ハブのみです。
+
+**できていない部分（ビジョンに対して正直な穴）**
+
+1. **「HTTP トンネル」の HTTP が無い**（[#50](https://github.com/sonneko/WebTCP/issues/50)）。L4 相当（仮想 TCP）までで、リクエスト/レスポンスの約束を定義していません。`webtcp://` URL の `path` / `query` はパースしますが転送しません。既存の Web 資産をブラウザ上のサービスへそのまま載せられません。
+2. **ブラウザは「サーバーとして生き残れない**（[#51](https://github.com/sonneko/WebTCP/issues/51)）。タブが非可視になればサスペンドされ、リロードすると待ち受け・名前登録・提供中の所有権レコードはすべて消えます（鍵だけが IndexedDB / PEM で永続する、という非対称）。 Wake Lock も Service Worker も使っていません。
+3. **入口が WebRTC を話せる相手に限られる**（[#52](https://github.com/sonneko/WebTCP/issues/52)）。curl や既存アプリがブラウザ上のサービスへ入るためのブリッジ（ローカル TCP リッスン → トンネル）が無く、Node 側の WebRTC 実装も非同梱です。
+4. **所有権は「検証可能」であって「分散的に正しい」とは限らない**。参照レジストリは単一プロセス・メモリ保持・合意なしで、ログ鍵の信頼分配（監視、CT 風の散発収集、複数鍵）は未設計です（#42 / #43）。
+5. **マルチホップは動く范围が限定的**です。RPF 厳格化と距離ベクトルの収束強化は #46、SSE / WebSocket シグナリングは #45 で未着手。転送をともなう構成は実験扱いしてください。
+6. **配布が未整備**（[#49](https://github.com/sonneko/WebTCP/issues/49)）。`@sonneko/webtcp-tunneler` は npm に未公開で、リポジトリからビルドする必要があります。
+
+要するに「ブラウザを自己完結型のサーバー実行環境に」という主張に対して、**プロトコル層（TCP 相当・身元・名前・所有権の検証）は揃い、運用層（稼働時間・既存クライアントとの接続・信頼の分配・配布）がまだ無い**という状態です。1 と 2 が最大のギャップだと考えています。
 
 ## インストール
 
-> `@sonneko/webtcp-tunneler` はまだ npm に公開されていません（registry では未登録）。現時点ではこのリポジトリからビルドして利用してください。公開時にパッケージバージョンを決定します（文書バージョン 0.4.0 とは別管理）。
+> `@sonneko/webtcp-tunneler` はまだ npm に公開されていません（registry では未登録）。現時点ではこのリポジトリからビルドして利用してください。公開時にパッケージバージョンを決定します（文書バージョン 0.5.0 とは別管理）。
 
 このリポジトリから直接ビルドする場合:
 
@@ -270,7 +293,46 @@ await stream.send('hello');
 
 - 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。
 - `webtcp://` のポートは必須（1–65535）。NodeId リテラル（32 文字 hex）なら NameServer なしで接続できます。
-- 名前解決はグローバルな所有権証明ではありません。`domain.global` / ブロックチェーン連携は M5 です。
+- 名前解決はゾーン外ではいまも応答ノードの自己申告です。`.domain.global` に限って M5 の所有権レコード検証が効きます（次節）。
+
+### `domain.global` の所有権レコード（M5 / #25）
+
+```ts
+import {
+    createDomainAuthority,
+    createDomainOwnershipRecord,
+    createHttpDomainRegistryClient,
+    NameServer,
+} from '@sonneko/webtcp-tunneler';
+
+// 1) 所有者が自分の NodeId への主張に署名する（NodeId は公開鍵の指紋）
+const record = await createDomainOwnershipRecord({
+    domain: 'shop.domain.global',
+    keyManager: keys,
+    serial: 1,
+    port: 8080,
+});
+
+// 2) 台帳（参照レジストリ）へ submit して包含証明を受け取る（任意だが推奨）
+const registry = createHttpDomainRegistryClient({ baseUrl: 'https://registry.example.com' });
+const { anchor } = await registry.submit(record);
+
+// 3) 検証付きで提供開始。検証に失敗したレコードは登録されない (MUST)
+const authority = createDomainAuthority({
+    sources: [registry],
+    verifierOptions: { requireAnchor: true, logKeys: { [logId]: logPublicKey } },
+});
+const ns = new NameServer(network, { domains: authority });
+await ns.registerDomain({ ...record, anchor });
+
+// 4) 相手側は同じ検証を通った結果だけを受理する
+const resolved = await ns.resolve('shop.domain.global');
+// resolved.nodeId / resolved.source === 'domain' / resolved.proof.anchorVerified === true
+```
+
+- 検証順序は fail-closed（形式 → 指紋とゾーン → 所有者署名 → 有効期間 → serial と失効 → 衝突 → 台帳アンカー → 収集元全滅は `resolution-unavailable`）。
+- **信頼の根拠はピン留めしたログ鍵**です。`logKeys` に無い台帳のアンカーは `anchor-untrusted-log` で棄却されるため、実運用ではログ鍵の配布方針が別途必要になります（#42 / #43）。
+- 詳細は [specification.md §13](./specification.md) と公式ドキュメント `guides/domain-ownership` を参照してください。
 
 ### Node.js で NodeId を永続化する
 
@@ -327,24 +389,25 @@ const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' }); //
 
 | 文書 | 内容 |
 | :--- | :--- |
-| [specification.md](./specification.md) | プロトコル仕様 0.4.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §10、**名前解決 §12**） |
+| [specification.md](./specification.md) | プロトコル仕様 0.5.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §10、**名前解決 §12**、**`domain.global` と所有権証明 §13**） |
 | [design.md](./design.md) | 実装構造と設計判断 |
 | [plan.md](./plan.md) | マイルストーン、将来課題、リスク |
-| [docs/layer.md](./docs/layer.md) | レイヤーと名前解決の解説（M4 実装済み部分と M5 将来構想） |
+| [docs/layer.md](./docs/layer.md) | レイヤーと名前解決・所有権の解説（M4 / M5 で実装済み部分と将来構想） |
 | [webtcp_website/](./webtcp_website/) | Astro + Starlight 公式ドキュメントサイト |
 
 ## ディレクトリ構成
 
 ```
 webtcp_jslib/      ライブラリ本体（TypeScript）
-  src/core/        ブラウザ・Node 非依存のプロトコル実装（routing/keys, KeyDirectory, naming を含む）
-  src/adapters/    WebRTC / シグナリング / エントランス探索 / 鍵管理（keys）
-  tests/           node:test によるテスト（105 件）
+  src/core/        ブラウザ・Node 非依存のプロトコル実装（routing/keys, KeyDirectory, naming, domain を含む）
+  src/adapters/    WebRTC / シグナリング / エントランス探索 / 鍵管理（keys） / HTTP レジストリクライアント
+  tests/           node:test によるテスト（150 件）
   dist/            npm run build の生成物（Git 管理外）
 examples/
-  server.mjs       静的配信 + シグナリングハブ + エントランス探索
+  server.mjs       静的配信 + シグナリングハブ + エントランス探索 + 参照ドメイン台帳（`/domain/*`）
+  domain-registry.mjs  追記専用 Merkle 台帳の参照実装（実験用・メモリ保持）
   verify-browser.mjs Playwright 2 タブ実ブラウザ検証スクリプト
-  demo/            2 タブデモ + STUN 設定例 + 内蔵自己チェック
+  demo/            2 タブデモ + STUN 設定例 + 内蔵自己チェック（`domain.global` 含む）
 webtcp_website/    公式ドキュメントサイト（Astro + Starlight）
 ```
 
@@ -368,7 +431,7 @@ npm run build
 - **M2（完了）**: バイトストリーム化、自動分割、動的 RTO、輻輳制御、Fast Retransmit / SACK、ランダム ISN、Half-Close、ロガー、`bootstrap()`、TURN/ICE 再起動、ドキュメントサイト、実ブラウザ検証
 - **M3（完了 / #28）**: Ed25519 署名（プロトコル v2）、NodeId の鍵指紋化、`BrowserKeyManager` / `NodeKeyManager`、公開鍵の自動配布
 - **M4（実装済み / #25）**: NameServer（A/CNAME）、`webtcp://` URL、永続 NodeId と衝突検出、RT_UPDATE の受信元検証と鍵伝播
-- **M5（予定 / #25）**: `domain.global`、ブロックチェーン連携、RPF 厳格化、SSE/WebSocket シグナリング
+- **M5（実装済み / #25）**: `domain.global` の所有権レコード（Ed25519 署名 + canonical commitment）、追記専用 Merkle 台帳とチェックポイント、fail-closed 検証器と `DomainAuthority`、`NameServer` 統合、参照 HTTP レジストリ、デモと E2E 検証。**切り出した将来課題**: 実チェーンへの裏付け #42、レジストリ運用ガバナンス #43、RPF 厳格化 #46、SSE/WebSocket シグナリング #45、ビジョン側のギャップ #50 / #51 / #52
 
 詳細は [plan.md](./plan.md) を参照してください。
 

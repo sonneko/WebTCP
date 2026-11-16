@@ -13,10 +13,12 @@
  *   1. 2 つの実ブラウザタブ（Tab A: サーバー、Tab B: クライアント）での UI 操作による
  *      実 WebRTC 接続・テキストエコー・80 KiB 大容量自動分割往復・Half-Close 切断
  *   2. `?role=server&autostart=1` + `?role=client&autostart=1` の 2 タブ自動検証
- *   3. `?selftest=1` の同一タブ 2 ピア自己チェック（Ed25519 署名検証・NameServer 名前解決・webtcp:// URL 接続を含む）
+ *   3. `?selftest=1` の同一タブ 2 ピア自己チェック（Ed25519 署名検証・NameServer 名前解決・
+ *      `domain.global` の所有権レコード + 台帳アンカー検証・webtcp:// URL 接続を含む）
  *
  * M3（#28）以降、デモは既定で Ed25519 署名（プロトコル v2）を使う。
- * M4（#25）では NameServer / webtcp:// URL の検証を追加した。
+ * M4（#25）では NameServer / webtcp:// URL の検証を、M5（#25 継続）では `domain.global` の
+ * 所有権レコード検証（台帳受理・チェックポイント PIN・改ざん拒否・未登録名の fail-closed）を追加した。
  * ブラウザが Web Crypto の Ed25519 を持たない場合は v1 にフォールバックする。
  */
 
@@ -261,6 +263,11 @@ try {
         if (!namingStep?.ok) {
             throw new Error(`Test 3 missing NameServer step: ${JSON.stringify(selfResult)}`);
         }
+        const domainStep = selfResult.steps.find((step) => step.name.includes('domain.global'));
+        if (!domainStep?.ok) {
+            throw new Error(`Test 3 missing or failed domain.global step: ${JSON.stringify(domainStep ?? selfResult)}`);
+        }
+        console.log(`[verify-browser]   Test 3 domain step: ${domainStep.detail}`);
         console.log(
             `[verify-browser]   Test 3 PASS (${selfResult.durationMs}ms, ${selfResult.steps.length} steps)!`,
         );

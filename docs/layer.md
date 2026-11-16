@@ -1,17 +1,20 @@
 # WebTCP のレイヤーと名前解決
 
-> この文書は [specification.md](../specification.md) 0.4.0 / [design.md](../design.md) 0.4.0 の補助解説です。
-> M4 で `NameServer` と `webtcp://` URL は実装済みになりました。`domain.global` とブロックチェーンによる
-> ドメイン所有権証明は M5 の将来課題です（#25）。マイルストーンは [plan.md](../plan.md) を参照してください。
+> この文書は [specification.md](../specification.md) 0.5.0 / [design.md](../design.md) 0.5.0 の補助解説です。
+> M4 で `NameServer` と `webtcp://` URL が、M5 で `domain.global` の**所有権レコード検証**（#25）が実装済みです。
+> 実ブロックチェーンへの裏付け（#42）とレジストリの運用ガバナンス（#43）は将来課題として切り出しています。
+> マイルストーンは [plan.md](../plan.md) を参照してください。
 >
-> M1–M4 で実装済み: `WebTCPNetwork`（`bootstrap` / `connectURL` 含む） / `VirtualStream`（バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close） / `BrowserWebRTCChannel`（ICE 再起動・`iceServersProvider`） / `SignalingAdapterHub` / `EntranceSearcherAdapterHub` / `Logger` / Ed25519 署名・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager` / `KeyDirectory` / **`NameServer`・`parseWebTCPUrl`・永続 NodeId と衝突検出**
+> M1–M5 で実装済み: `WebTCPNetwork`（`bootstrap` / `connectURL` 含む） / `VirtualStream`（バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close） / `BrowserWebRTCChannel`（ICE 再起動・`iceServersProvider`） / `SignalingAdapterHub` / `EntranceSearcherAdapterHub` / `Logger` / Ed25519 署名・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager` / `KeyDirectory` / `NameServer`・`parseWebTCPUrl`・永続 NodeId と衝突検出 / **`core/domain`（所有権レコード・Merkle 台帳・チェックポイント・`DomainAuthority`・HTTP レジストリクライアント）**
 >
-> 未実装（M5 以降）: `HTTP2WebTCPAdapter`、`domain.global`、ブロックチェーン連携、グローバル名前所有権、鍵ローテーション、明示的なリプレイ検知強化
+> 未実装: 実ブロックチェーンへのアンカー検証（#42）、レジストリ運用ガバナンス（#43）、アプリケーション層 HTTP（#50）、タブ停止・リロードに耐えるサービス継続（#51）、ブラウザ外部クライアント向けブリッジ（#52）、鍵ローテーション（#47）、明示的なリプレイ検知強化（#48）
 
 ## レイヤーモデル
 
 ```
-アプリケーション (任意のプロトコル / 将来の HTTP 層)
+アプリケーション (任意のプロトコル / 将来の HTTP 層 #50)
+        ↓
+DomainAuthority (domain.global -> 検証済み NodeId)   ← M5 実装済み（所有権レコード + 台帳アンカー）
         ↓
 NameServer (webtcp://name -> NodeId)      ← M4 実装済み（L7 アプリケーション層サービス）
         ↓
@@ -94,15 +97,37 @@ webtcp://<host>:<port><path>?<query>#<fragment>
 - NodeId リテラルなら `nameServer` なしで `connectURL()` できます。名前なら `nameServer` が必要です。
 - `webtcp://` はブラウザのナビゲーション可能スキームではなく、ライブラリ API としてパース・接続します。
 
-## セキュリティ境界と M5 将来構想
+## 所有権ドメイン（M5 実装済み）
 
-NameServer の応答は下層の v2 署名で保護されますが、**名前のグローバルな所有権証明ではありません**。同一名前に複数の異なる応答があり得るため、M4 ではローカル登録を信頼するモデルです。
+ゾーン外の名前について NameServer の応答は「応答ノードがそう登録している」という自己申告のままです（下層の v2 署名で改ざんは検知できますが、名前そのものの所有権は示せません）。M5 はこの穴を `.domain.global` に限って塞ぎます。
 
-M5 以降で検討するもの:
+```ts
+import { createDomainAuthority, NameServer } from '@sonneko/webtcp-tunneler';
 
-- `domain.global` へのドメイン登録とグローバル名前解決
-- ブロックチェーン等によるドメイン所有権証明
-- 権威サーバー階層 / DNS 相互運用
-- `HTTP2WebTCPAdapter` のような HTTP 風アプリケーション層
+const authority = createDomainAuthority({
+    sources: [registry],                              // HTTP レジストリ等（無くてもよい）
+    verifierOptions: { requireAnchor: true, logKeys: { [logId]: logPublicKey } },
+});
+const ns = new NameServer(network, { domains: authority });
+await ns.registerDomain(record);                      // 検証に失敗したレコードは登録しない
+await ns.resolve('shop.domain.global');               // source: 'domain'
+```
 
-これらは [plan.md](../plan.md) §4.3 に将来課題として整理しています。
+設計の要点（詳細は specification.md §13 / design.md §3.21–§3.23）:
+
+- **レコードは carrier、commitment が真実**: 台帳に載るのは SHA-256 commitment（32 バイト）だけで、レコード本体は carrier として運ばれます。よって台帳は名前空間を保持しません。
+- **ルートはツリーサイズに束縛**: `H(0x02 || uint64BE(treeSize) || top)`。別のサイズの包含証明を通せません。チェックポイントの署名対象はこのルートと `prevHash` で、**読取時に再署名してはいけません**（`prevHash` の自己一致性が壊れるため）。
+- **信頼根拠はログ鍵のピン留め**: `logKeys` に無い台帳は `anchor-untrusted-log`。HTTP で取れた文字列を信頼する設計にはしていません。
+- **検証は fail-closed で順序固定**: 形式 → 指紋とゾーン → 所有者署名 → 有効期間 → serial と失効 → 衝突 → アンカー → 収集元全滅（`resolution-unavailable` は失敗）。
+- **`core/domain` はストリーム I/O を知らない**: ピアへの `wantOwnership` 問い合わせは `NameServer` が `DomainAuthority` へ候補を渡す形で行い、HTTP レジストリはアダプタ（`adapters/domain`）に分離しています。
+
+## 残っている構想
+
+- 実チェーン（Namecoin / L1 トランザクション）への裏付け検証 — #42
+- レジストリの紛争解決・失効回収・IDNA など運用ガバナンス — #43
+- アプリケーション層 HTTP（`HTTP2WebTCPAdapter` 相当） — #50
+- タブ停止・リロードをまたぐサービス継続 — #51
+- ブラウザ外部の既存クライアントのためのブリッジ — #52
+- 権威サーバー階層 / DNS 相互運用 — 未 Issue（必要になるまで起票しない）
+
+これらは [plan.md](../plan.md) §4.3 と GitHub Issues に整理しています。
