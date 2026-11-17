@@ -53,7 +53,9 @@ webtcp://<host>:<port><path>?<query>#<fragment>
 
 - `host` は NodeId（32 文字小文字 hex）または LDH 名（英数字とハイフン、ドット区切り）。
 - `port` は**必須**（1–65535）。既定ポートはありません。
-- `path` は省略時 `/`。`query` と `fragment` は保持しますが、WebTCP 接続自体には送信しません。HTTP セマンティクスは定義しません。
+- `path` は省略時 `/`。`query` と `fragment` はパース時に保持します。
+- **生の TCP API（`connectURL()`）は `path` / `query` / `fragment` を送りません**（バイトストリームを返すだけ）。
+- **HTTP トンネル（M6）では `HTTPClient` / `fetchURL()` が `path` + `query` をリクエストターゲットとして転送します**（`fragment` は送りません）。詳細は [HTTP トンネル](/guides/http-tunnel/) を参照してください。
 - userinfo、IPv6、ホスト内のパーセントエンコード、空白・制御文字、バックスラッシュは拒否します。
 
 ```ts

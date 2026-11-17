@@ -17,6 +17,10 @@ import { RoutingTable } from '../routing/RoutingTable.js';
 import { RoutingTableManagerOptions } from '../routing/RoutingTableManager.js';
 import { TransportLayer, TransportLayerOptions } from '../transport/TransportLayer.js';
 import { VirtualStream } from '../transport/VirtualStream.js';
+import { HTTPClient, type FetchURLOptions } from '../http/client.js';
+import type { HTTPResponse } from '../http/message.js';
+import { HTTPServer, type HTTPServerOptions } from '../http/server.js';
+import type { HTTPHandler } from '../http/message.js';
 
 export interface WebTCPNetworkOptions {
     /** データチャネルの実装（必須）。 */
@@ -224,7 +228,9 @@ export class WebTCPNetwork extends EventEmitter {
 
     /**
      * `webtcp://` URL へ接続する（M4 / #25）。名前は NameServer で解決する。
-     * path/query/fragment はアプリケーション用であり、ここまでは送信しない。
+     *
+     * **生のバイトストリーム**を返す。`path` / `query` / `fragment` はここでは送信しない。
+     * HTTP の意味論（リクエストライン・ヘッダ・本文）は `fetchURL()` / `HTTPClient` が担う（§15.6）。
      */
     public async connectURL(
         url: string | WebTCPUrl,
@@ -243,6 +249,62 @@ export class WebTCPNetwork extends EventEmitter {
         }
         if (options.signal?.aborted) throw new Error('WebTCP URL connection aborted');
         return this.connect(nodeId, parsed.port, options.localPort);
+    }
+
+    /**
+     * 仮想ポートで HTTP/1.1 を待ち受ける（M6 / #50、specification.md §15.3）。
+     *
+     * `listen()` の薄いラッパーであり、HTTP のフレーミング・`keep-alive`・
+     * エラー応答は `HTTPServer` が担う。待ち受けの解除は戻り値の `close()` で行う。
+     */
+    public serveHTTP(
+        port: VirtualPort,
+        handler: HTTPHandler,
+        options: HTTPServerOptions = {},
+    ): HTTPServer {
+        if (this.closed) throw new Error('WebTCPNetwork is closed');
+        const server = new HTTPServer(
+            {
+                localNodeId: this.localNodeId,
+                listen: (listenPort, listenHandler) => this.listen(listenPort, listenHandler),
+                transportLayer: this.transportLayer,
+            },
+            port,
+            handler,
+            options,
+        );
+        server.listen();
+        return server;
+    }
+
+    /**
+     * `webtcp://` URL へ HTTP リクエストを送る（M6 / #50、specification.md §15.4）。
+     *
+     * `path` と `query` を request-target として転送する。`fragment` は送らない。
+     * 1 リクエストごとに接続を閉じる。`keep-alive` を維持する場合は
+     * `new HTTPClient(network, { nameServer })` を直接使う。
+     */
+    public async fetchURL(
+        url: string | WebTCPUrl,
+        options: FetchURLOptions = {},
+    ): Promise<HTTPResponse> {
+        if (this.closed) throw new Error('WebTCPNetwork is closed');
+        // `keepAlive: false` なので、応答本文の EOF で接続は自動的に閉じる。
+        const client = new HTTPClient(this, {
+            keepAlive: false,
+            ...(options.nameServer ? { nameServer: options.nameServer } : {}),
+            ...(options.maxResponseBytes !== undefined
+                ? { maxResponseBytes: options.maxResponseBytes }
+                : {}),
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        });
+        return client.fetch(url, {
+            ...(options.method ? { method: options.method } : {}),
+            ...(options.headers ? { headers: options.headers } : {}),
+            ...(options.body !== undefined ? { body: options.body } : {}),
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
     }
 
     /**

@@ -1,9 +1,9 @@
 ---
 title: プロトコル仕様サマリー
-description: specification.md（0.5.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、シグナリング契約の要約。
+description: specification.md（0.6.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、HTTP トンネル、シグナリング契約の要約。
 ---
 
-このページはリポジトリの `specification.md`（バージョン 0.5.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
+このページはリポジトリの `specification.md`（バージョン 0.6.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
 
 ## バイナリパケット形式（固定 24 バイトヘッダー）
 
@@ -86,6 +86,17 @@ DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'pu
 - 解決順序はローカル登録 → TTL キャッシュ → 既知ノード（明示 `resolvers` / 隣接 / 経路表）への反復問い合わせ。サーバーはローカル登録のみを返し、再帰問い合わせしません。
 - `webtcp://<host>:<port><path>?<query>#<fragment>` はポート必須（1–65535）。host は NodeId リテラルまたは LDH 名。`parseWebTCPUrl()` / `formatWebTCPUrl()` / `network.connectURL()` を提供します。
 - ゾーン外の名前解決はグローバルな所有権証明ではありません（応答ノードの自己申告）。所有権は次節の `domain.global` に限って検証可能です。
+
+## HTTP トンネル（M6 / #50・仕様 §15）
+
+HTTP/1.1 のサブセットを `VirtualStream` のバイト列として運びます。**パケット形式は変更しません**。
+
+- 開始行は `method SP request-target SP "HTTP/1.1"`。request-target は origin-form（`/path?query`）のみ。
+- ヘッダは CRLF 厳格、上限はリクエストライン 8 KiB / ヘッダ行 8 KiB / 100 個 / 合計 32 KiB（既定）。
+- 本文は `Content-Length`・`Transfer-Encoding: chunked`・本文なしの 3 経路。両立は `400`。
+- `keep-alive` は逐次（非パイプライン）。アイドル 30 秒。`Connection: close` では FIN 後にも応答を書けます（Half-Close の `CLOSE_WAIT` 送信）。
+- エラー: `400` / `404` / `413` / `414` / `417` / `431` / `500` / `501` / `503` / `505`。
+- ヘッダ書き込み時に CR/LF/NUL を拒否（インジェクション対策）、`remoteNodeId` は接続元のみ（エンドツーエンド認証ではない）。
 
 ## `domain.global` と所有権証明（M5 / #25・仕様 §13）
 

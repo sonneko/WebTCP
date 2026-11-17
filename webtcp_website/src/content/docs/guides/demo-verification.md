@@ -29,12 +29,18 @@ http://localhost:8787/examples/demo/?selftest=1
 1b. Ed25519 署名検証と NodeId の鍵指紋一致（プロトコル v2）
 1c. NameServer 名前解決（A/CNAME）と `webtcp://` URL パース（M4 / #25）
 1d. `domain.global` 所有権レコードと台帳アンカー検証（M5 / #25）
+1e. HTTP トンネル: `serveHTTP` + `fetchURL` のリクエスト/レスポンス（M6 / #50）
 2. `webtcp://` URL 接続と仮想 TCP 3 ウェイハンドシェイク（`ESTABLISHED`）
 3. 双方向テキスト送受信と部分読み取り（`readExact`）
 4. 96 KiB（> 60 KiB）バイナリの自動分割・再結合とバイト完全一致・動的 RTO / `cwnd`
 5. Half-Close（`end()` → `CLOSE_WAIT` での応答受信 → 双方 `CLOSED`）
 
 STUN を有効にして試す場合は `?selftest=1&stun=1` を指定します。
+
+ステップ 1e では、サーバー側ノードが `serveHTTP(8081)` で JSON を返す HTTP サービスを公開し、
+クライアント側が `fetchURL('webtcp://demo-service:8081/api/echo?x=1#ignored')` で呼び出します。
+`path` / `query` が往復すること、`remoteNodeId` がクライアントの NodeId と一致すること、
+`fragment` が送られないことを検証します。詳細は [HTTP トンネル](/guides/http-tunnel/) を参照してください。
 
 ## 検証方法 2: 2 タブ手動 / 自動検証
 

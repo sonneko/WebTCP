@@ -35,6 +35,8 @@ import {
 } from '../../webtcp_jslib/dist/index.js';
 
 const SERVER_PORT = 8080;
+/** M6 の HTTP サービスポート（`serveHTTP`）。生 TCP の 8080 とは別ポートにしている。 */
+const DEMO_HTTP_PORT = 8081;
 const DEMO_SERVICE_NAME = 'demo-service';
 const DEMO_ALIAS_NAME = 'demo-alias';
 /** M5 のデモドメイン（`<prefix>-<nodeId 先頭 8 桁>.domain.global`）。 */
@@ -847,6 +849,9 @@ async function runSelfTest() {
         }
     };
 
+    // `finally` からも参照するため、`try` の外で宣言する（ブロックスコープ）
+    const httpServers = [];
+
     try {
         await netServer.start();
         await netClient.start();
@@ -1036,6 +1041,37 @@ async function runSelfTest() {
             return `leaf=${submitted.leafIndex} treeSize=${submitted.treeSize} commitment=${commitment.slice(0, 8)}… / 台帳・既知ノードの両方で anchor=verified / 改ざんは 400 / 未登録は ${failure.name}`;
         });
 
+        // 1e. HTTP トンネル（M6 / #50）: サーバータブが HTTP を公開し、クライアントタブが fetchURL で叩く
+        await runStep('1e. HTTP トンネル: serveHTTP + fetchURL のリクエスト/レスポンス (M6)', async () => {
+            const httpServer = netServer.serveHTTP(DEMO_HTTP_PORT, async (request, response) => {
+                response.setHeader('content-type', 'application/json; charset=utf-8');
+                await response.end(
+                    JSON.stringify({
+                        method: request.method,
+                        path: request.path,
+                        query: request.query,
+                        remoteNodeIdPrefix: (request.remoteNodeId ?? '').slice(0, 8),
+                    }),
+                );
+            });
+            httpServers.push(httpServer);
+            const response = await netClient.fetchURL(
+                `webtcp://${DEMO_SERVICE_NAME}:${DEMO_HTTP_PORT}/api/echo?x=1#ignored`,
+                { nameServer: nsClient, timeoutMs: 5000 },
+            );
+            const body = await response.json();
+            if (response.status !== 200) {
+                throw new Error(`unexpected status: ${response.status}`);
+            }
+            if (body.path !== '/api/echo' || body.query !== '?x=1' || body.method !== 'GET') {
+                throw new Error(`request-target が往復しませんでした: ${JSON.stringify(body)}`);
+            }
+            if (body.remoteNodeIdPrefix !== netClient.localNodeId.slice(0, 8)) {
+                throw new Error(`remoteNodeId が一致しません: ${body.remoteNodeIdPrefix}`);
+            }
+            return `${response.status} ${body.path}${body.query} (remote=${body.remoteNodeIdPrefix}…)`;
+        });
+
         // 2. 仮想 TCP 接続（ランダム ISN & ESTABLISHED）を webtcp:// URL で確立
         let client = null;
         await runStep('2. webtcp:// URL 接続 & 仮想 TCP 3 ウェイハンドシェイク', async () => {
@@ -1098,6 +1134,7 @@ async function runSelfTest() {
         document.documentElement.dataset.selftest = 'fail';
         window.__WEBTCP_SELFTEST__ = { ok: false, error: error.message, steps, durationMs: totalMs };
     } finally {
+        for (const httpServer of httpServers) httpServer.close();
         nsClient.close();
         nsServer.close();
         netClient.close();

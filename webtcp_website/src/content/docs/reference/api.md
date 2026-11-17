@@ -33,7 +33,9 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 - `start(): Promise<void>` — 全層を起動（冪等）。完了時に `'ready'` イベントを発火。
 - `listen(port: VirtualPort, handler: (stream: VirtualStream) => void): void` — 指定ポートで待ち受け。ハンドラは `ESTABLISHED` 到達時に呼ばれます。
 - `connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort): Promise<VirtualStream>` — 必要ならリンク確立を行ったうえで仮想 TCP 接続を確立。
-- `connectURL(url: string | WebTCPUrl, options?: ConnectURLOptions): Promise<VirtualStream>` — `webtcp://` URL へ接続（M4 / #25）。名前指定には `options.nameServer` が必要。NodeId リテラルなら不要。
+- `connectURL(url: string | WebTCPUrl, options?: ConnectURLOptions): Promise<VirtualStream>` — `webtcp://` URL へ接続（M4 / #25）。名前指定には `options.nameServer` が必要。NodeId リテラルなら不要。返るのは**生のバイトストリーム**で、`path` / `query` は送りません。
+- `serveHTTP(port: VirtualPort, handler: HTTPHandler, options?: HTTPServerOptions): HTTPServer` — 仮想ポートで HTTP/1.1 を待ち受ける（M6 / #50）。`server.close()` で解除。
+- `fetchURL(url: string | WebTCPUrl, options?: FetchURLOptions): Promise<HTTPResponse>` — `webtcp://` URL へ HTTP リクエストを送る（M6 / #50）。`path` / `query` をリクエストターゲットとして転送し、`fragment` は送りません。1 リクエストごとに接続を閉じます。
 - `connectToPeer(remoteId: NodeId): Promise<void>` — リンク層の隣接接続のみを確立。
 - `bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<BootstrapResult>` — エントランス候補へ順に接続を試行（失敗時は指数バックオフでリトライ）。
 - `getNeighbors(): NodeId[]` — 直接接続中の隣接ノード ID 一覧。
@@ -159,6 +161,48 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 `DomainResolution` の `code`（および `DomainProofCode`）: `ok`, `invalid-record`, `zone-mismatch`, `fingerprint-mismatch`, `bad-signature`, `expired`, `not-yet-valid`, `stale-serial`, `revoked`, `conflict`, `anchor-missing`, `anchor-bad-proof`, `anchor-untrusted-log`, `anchor-bad-checkpoint`, `anchor-rollback`, `chain-unverified`, `resolution-unavailable`。
 
 例外クラス: `DomainRecordError`（解析・形式）, `DomainLedgerAppendError`（台帳が拒否）, `DomainConflictError`（同一シサル内容衝突）, `DomainRegistryError`（HTTP、`status` を保持）, `DomainOwnershipError`（解決時に検証へ失敗）, `DomainResolutionUnavailableError`（収集元が全滅）。
+
+## HTTP トンネル API（M6 / #50）
+
+### `HTTPServer`
+
+| 項目 | 型 | 既定値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `maxConnections` | `number` | `64` | 同時接続の上限（超過は `503`） |
+| `idleTimeoutMs` | `number` | `30000` | `keep-alive` 接続のアイドルタイムアウト |
+| `maxRequestBodyBytes` | `number` | `0` | リクエスト本文の上限（`0` は無制限・ストリーミング） |
+| `send100Continue` | `boolean` | `false` | `Expect: 100-continue` に自動応答する |
+| `serverName` | `string` | `'webtcp'` | `Server` ヘッダ。`''` で付与しない |
+| `limits` | `HTTPParserLimits` | 既定 §15.2.1 | 行長・ヘッダ数・ヘッダ合計などの上限 |
+
+`HTTPServer` は `port` / `connectionCount` / `listen()` / `close()` を公開します。
+
+### `HTTPClient`
+
+| 項目 | 型 | 既定値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `nameServer` | `NameServer` | — | 名前解決に使う NameServer |
+| `timeoutMs` | `number` | `30000` | 応答ヘッダ到着までのタイムアウト |
+| `maxResponseBytes` | `number` | `8 * 1024 * 1024` | `text()` / `json()` / `arrayBuffer()` の上限。`0` は無制限 |
+| `keepAlive` | `boolean` | `true` | 接続プールを使う |
+| `idleTimeoutMs` | `number` | `30000` | プールした接続のアイドル期限 |
+| `limits` | `HTTPParserLimits` | 既定 §15.2.1 | パーサの上限 |
+
+- `fetch(url, init)` — `method` / `headers` / `body`（`string` / `Uint8Array` / `AsyncIterable<Uint8Array>`）/ `timeoutMs` / `signal` / `keepAlive`。
+- `request({ nodeId, port, path, ... })` — NodeId と仮想ポートを直接指定する。
+- `pooledConnectionCount` / `close()`。
+
+### メッセージと型
+
+- `HTTPHeaders` — 大文字小文字を区別しない。`get()` はカンマ連結、`getAll()` は配列、`rawEntries()` は書き出し順。
+- `HTTPRequest` — `method` / `target` / `path` / `query` / `headers` / `httpVersion` / `remoteNodeId` / `body`。
+- `HTTPResponseWriter` — `statusCode` / `setHeader()` / `appendHeader()` / `write()` / `end()` / `headersSent` / `finished`。
+- `HTTPResponse` — `status` / `statusText` / `headers` / `body` / `ok` / `text()` / `json()` / `arrayBuffer()`。
+- `HTTPRouter` — `add(method, pattern, handler)` / `get` / `post` / `put` / `delete` / `handle`。`:name` は 1 セグメント、`*` は残りすべて。
+
+### 型付きエラー
+
+`HTTPError`（基底）/ `HTTPParseError`（`status` に 4xx を持つ）/ `HTTPHeaderInjectionError` / `HTTPTimeoutError` / `HTTPResponseTooLargeError` / `HTTPConnectionClosedError` / `HTTPBodyConsumedError` / `HTTPAbortError`（`name === 'AbortError'`）。
 
 ## セキュリティ API（M3 / #28・M4 / #36）
 
