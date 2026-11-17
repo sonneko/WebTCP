@@ -2,11 +2,11 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.5.0 |
+| 文書バージョン | 0.6.0 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
-| プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決と M5 のドメイン所有権証明は v2 上のアプリケーション層） |
+| プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決・M5 のドメイン所有権証明・M6 の HTTP トンネルはいずれも v2 上のアプリケーション層） |
 | ステータス | 実験的（破壊的変更あり） |
-| 最終更新 | 2026-11-14 |
+| 最終更新 | 2026-11-16 |
 
 本書は WebTCP の**振る舞いの仕様**を定義する。実装内部の構造や技術選定の理由は `design.md`、作業計画と将来課題は `plan.md` を参照すること。
 
@@ -25,6 +25,9 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 5. 改ざん・なりすましを防ぐ **Ed25519 署名**と、公開鍵の指紋に基づく**自己証明型の NodeId**（v2）
 6. **NameServer** による名前解決と **`webtcp://` URL**、永続ノード識別子（M4）
 7. **`domain.global`** 名前空間と、**検証可能なドメイン所有権レコード**（署名付きレコード + 追記型台帳アンカー + プラガブルな検証器）（M5）
+8. **HTTP/1.1 サブセットによるアプリケーション層トンネル**（メソッド + パス + ヘッダ + `Content-Length` / `chunked` の往復、`keep-alive`、ストリーミング）（M6）
+
+1〜7 は「バイト列を運ぶ」ところまでを定めていた。8 はその上に**リクエスト/レスポンスという約束**を与え、`webtcp://name:port/path?query` のパスとクエリを実際に転送可能にする（§15）。8 はプロトコルの拡張ではなく、`VirtualStream` 上で動く**アプリケーション層プロトコル**であり、既存の v1 / v2 パケットと互換である。
 
 ## 2. 用語
 
@@ -49,6 +52,9 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | トランスポート層 | ポート多重化、セッション、バイトストリーム、再送、輻輳制御、状態機械。 |
 | MSS | Maximum Segment Size。1 つの `DATA` パケットに載せる最大アプリケーションデータ長（既定 16 KiB、上限 60 KiB）。 |
 | SACK | Selective Acknowledgment。順序外で受信済みのバイト範囲を送信側へ通知する拡張。 |
+| HTTP トンネル | `VirtualStream` 上で HTTP/1.1 のメッセージ（リクエスト/レスポンス）を運ぶアプリケーション層プロトコル。§15。 |
+| `HTTPServer` | 仮想ポートで待ち受け、`VirtualStream` 上の HTTP/1.1 リクエストを `HTTPHandler` へ渡して応答を書き戻すサーバー。§15.3。 |
+| `HTTPClient` | `WebTCPNetwork`（または `VirtualStream`）から HTTP/1.1 リクエストを送るクライアント。`fetch` 風の API を持つ。§15.4。 |
 
 ## 3. 準拠のキーワード
 
@@ -59,6 +65,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 ```
 +-----------------------------------------------------------+
 | L7  アプリケーション / NameServer / webtcp:// URL            |
+|     HTTP トンネル (HTTPServer / HTTPClient、§15 / M6)        |
 +-----------------------------------------------------------+
 | L4  TransportLayer : ポート多重化 / SessionManager          |
 |     VirtualStream  : 状態機械 / バイト単位 Seq-Ack / 分割    |
@@ -160,7 +167,7 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 - `signature` が 64 バイトなら **v2**。
 - `signature` が空なら **v1**。
 
-したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§15）。
+したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§16）。
 
 ### 6.2 受信時の検証
 
@@ -334,7 +341,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 - `LAST_ACK` で自身の `FIN` に対する `ACK` を受けたら即座に `CLOSED` へ遷移する。
 - `TIME_WAIT` 中に重複した `FIN` を受信した場合は `ACK` を再送する。`timeWaitMs` 経過後（0 の場合は即座に）`CLOSED` へ遷移する。
 - `RST` 受信、または再送上限超過で `CLOSED` へ遷移し `error` イベントおよび `close` イベントを発火する。
-- `destroy()` は `FIN` や `TIME_WAIT` を待たず即座に `CLOSED` へ遷移する。
+- `destroy()` は `FIN` や `TIME_WAIT` を待たず即座に `CLOSED` へ遷移する。**ピアへ `RST` も `FIN` も送らない**（ローカルの即時破棄）。したがって、相手側に終了を伝えたい場合は `end()` を使わなければならない (MUST)。
 
 `CLOSED` へ遷移したとき、`close` イベントを**一度だけ**発火しなければならない (MUST)。
 
@@ -352,6 +359,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
   - `FIN`: **1**
   - `ACK` / `RST`: **0**
 - `ackNum` は「次に期待する受信バイトのシーケンス番号（`rcvNxt`）」を示す。`SYN_ACK`, `ACK`, `DATA`, `FIN` のすべてが有効な `ackNum`（ピギーバック ACK）を運び、受信側はこれらすべてのパケットから `ackNum` を処理しなければならない (MUST)。
+- **受信ウィンドウの広告は行わない**。`ackNum` は「次に期待する番号」であり、受信バッファの空きを示すウィンドウフィールドはパケット形式に存在しない（§6.1）。したがって送信側の制限は**輻輳ウィンドウ**（§8.4.2）と `maxWindowBytes` のみであり、受信側が遅い場合のフロー制御はプロトコルとして保証しない。HTTP 層（§15）の大きな応答を扱う場合、アプリケーションは受信側のメモリ上限に注意しなければならない (SHOULD)。ウィンドウ広告の追加は将来課題（`plan.md`）。
 
 #### 8.3.2 60 KiB 超メッセージの自動分割と送信バッファ
 
@@ -440,6 +448,8 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 | `TIME_WAIT` 待機時間 (`timeWaitMs`) | 200 ms |
 | セッション無通信タイムアウト (`sessionTimeoutMs`) | 300 000 ms |
 | セッションクリーンアップ間隔 (`cleanupPeriodMs`) | 60 000 ms |
+| HTTP クライアントのヘッダ待ち (`HTTPClient.timeoutMs`) | 30 000 ms |
+| HTTP の `keep-alive` アイドル (`idleTimeoutMs`) | 30 000 ms |
 
 ## 9. リンク層
 
@@ -702,6 +712,8 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | ドメイン所有権レコードの検証失敗 | `DomainOwnershipError`（`code` で理由を判別。§13.4）。解決は失敗し、結果はキャッシュしない。 |
 | `domain.global` 名の不正なローカル登録 | `registerA` / `registerCNAME` が `throw`（§13.5）。 |
 | 同一シリアルで内容の異なるレコードが並存 | `DomainOwnershipError(code: 'conflict')`。勝者を決めずに失敗する（fail-closed）。 |
+| HTTP メッセージの不正（行長・ヘッダ・フレーミング） | §15.8 の表に従い `400` / `413` / `414` / `431` を返して接続を閉じる。 |
+| HTTP クライアントのタイムアウト・切断・上限超過 | `HTTPTimeoutError` / `HTTPConnectionClosedError` / `HTTPResponseTooLargeError` で reject（§15.8）。 |
 
 ### 11.3 既定値
 
@@ -741,7 +753,12 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | 時刻ずれ猶予 (`clockSkewMs`) | 300 000 ms |
 | 台帳の木サイズ上限 / 1 名あたり保持レコード | 65 536 / 8 |
 | 検証済みレコードキャッシュ TTL / 失敗キャッシュ TTL | 60 s / 5 s |
-| ドメイン解決の全体タイムアウト | 5 000 ms |
+| ドメイン解決の全体タイムアウト (`DomainAuthority.resolveTimeoutMs`) | 5 000 ms |
+| ドメイン収集元 1 件あたりの問い合わせタイムアウト (`DomainAuthority.queryTimeoutMs`) | 1 500 ms |
+| HTTP トンネルの同時接続待ち上限 (`HTTPServer.maxConnections`) | 64 |
+| HTTP ヘッダ数の上限 / ヘッダ行長の上限 / リクエストライン長の上限 | 100 / 8 KiB / 8 KiB |
+| HTTP 応答本文のバッファ上限（非ストリーミング時、`HTTPClient`） | 8 MiB |
+| HTTP の `keep-alive` アイドルタイムアウト | 30 000 ms |
 
 ## 12. 名前解決と WebTCP URL（M4 / #25）
 
@@ -784,6 +801,7 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 - **デッドラインと中断は絶対である (MUST)**。`resolveTimeoutMs`（既定 5 000 ms）と `AbortSignal` は、問い合わせ先列挙・`network.connect()` の宙吊り・応答待機の**いずれの局面でも**守られなければならない（#40）。単一ノードの停滞が `resolve()` 全体を遅らせてはならない (MUST NOT)。デッドライン到達は `NameResolutionTimeoutError`、呼び出し側の明示中断は区別可能なエラーで reject する。
 - キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。検証に失敗したドメイン解決結果はキャッシュしてはならない (MUST NOT)（失敗は §13.5 の短 TTL 失敗キャッシュのみ）。
 - `domains`（`DomainAuthority`、§13.5）を渡した場合、ゾーン内名前の解決と応答は権威へ移譲される。渡さない場合、ゾーン内名前の解決は `DomainResolutionUnavailableError` で失敗する (MUST)。
+- 名前解決の結果は `NameResolution`（`name` / `nodeId` / `ttlMs` / `source` / `chain` / 任意の `record`・`proof`）である。`source` は `'local' | 'cache' | 'remote' | 'domain'`。
 
 問い合わせプロトコル（JSON）:
 
@@ -815,11 +833,13 @@ webtcp://<host>:<port><path>?<query>#<fragment>
 
 - `host` は NodeId（32 文字小文字 hex）または §12.1 の名前。ホストの大文字は小文字へ正規化する。
 - `port` は必須。1–65535 の整数。既定ポートは無い。
-- `path` は省略時 `/`。`query` と `fragment` は保持するが、WebTCP 接続自体には送信しない。HTTP セマンティクスは定義しない。
+- `path` は省略時 `/`。`fragment` は保持するが、接続自体には送信しない（クライアント側の断片であり、リクエストへは含めない）。
+- `query` は保持し、`HTTPClient` が `path` と連結してリクエストラインへ写す（§15.6）。**生の `VirtualStream` 接続（`connectURL()`）では従来どおりバイト列を送らない** — HTTP セマンティクスは「HTTP 層を使うかどうか」で決まり、L4 接続はトランスポートのままである。
 - userinfo、IPv6 アドレス、ホスト内のパーセントエンコード、空白・制御文字、バックスラッシュ、空ホスト、不正ポートは拒否する。
 - `parseWebTCPUrl()` は `WebTCPUrl`（`host`, `nodeId?`, `name?`, `zone?`, `port`, `path`, `search`, `hash`）を返す。`formatWebTCPUrl()` は正規形を返す。
 - `host` が §13.1 のゾーン内名前である場合、`name` は正規化済みの完全名、`zone` はゾーン名（`domain.global`）になる。ゾーン外の名前は `zone` を持たない。URL 構文はゾーン内外で共通であり、`zone` は判定結果の提示であって新しい文法を導入しない (§13.1)。
 - `network.connectURL(url, { nameServer?, localPort?, signal? })` は NodeId 指定なら直接接続し、名前指定なら `nameServer.resolve()` 経由で NodeId を得て接続する。名前指定で NameServer が無ければ reject する。戻り値は `VirtualStream`。パス等はアプリケーションが `parseWebTCPUrl()` の結果から利用する。
+- **HTTP で接続する場合は `network.fetchURL(url, { nameServer })` を使う**（M6 / §15.6）。これは `connectURL()` と `HTTPClient` を組み合わせた薄いヘルパーで、`path` / `query` をリクエストラインへ写して 1 往復（または `keep-alive` セッション）を実行する。
 - `webtcp://` はブラウザのナビゲーション可能スキームではない。ライブラリ API としてパース・接続する。
 
 ### 12.4 セキュリティ境界
@@ -837,7 +857,7 @@ webtcp://<host>:<port><path>?<query>#<fragment>
 
 ### 13.1 ゾーンと名前規則
 
-- ゾーンは **`domain.global`** の 1 つだけとする (MUST)。将来の追加ゾーンは本書の対象外（§16）。
+- ゾーンは **`domain.global`** の 1 つだけとする (MUST)。将来の追加ゾーンは本書の対象外（§17）。
 - 完全名は `<label>(.<label>)*.domain.global`。ラベルは §12.1 と同じ ASCII LDH（1–63 文字、先頭/末尾ハイフン不可）。ゾーン名を含む全体で 253 文字以下。
 - 正規化は小文字化と末尾ルートドットの除去のみ。IDNA / Punycode・homoglyph 対策は**未実装**（`plan.md` §4.3、#43）。
 - `isDomainGlobalName(name)` がゾーン内名前を判定する。ゾーン内名前は §12.1 のとおりローカル登録 reserved。
@@ -900,7 +920,7 @@ interface DomainCheckpoint {
 interface SignedDomainCheckpoint extends DomainCheckpoint { signature: string }
 ```
 
-- **葉ハッシュ** `H(0x00 || commitmentBytes)`、**内部ノード** `H(0x01 || left || right)`。前缀による領域分離を必須とする (MUST)（第二像攻撃の抑止）。ノード数が奇数の場合、末尾ノードは自分自身とペアにする（promote 規則）。
+- **葉ハッシュ** `H(0x00 || commitmentBytes)`、**内部ノード** `H(0x01 || left || right)`。接頭辞による領域分離を必須とする (MUST)（第二像攻撃の抑止）。ノード数が奇数の場合、末尾ノードは自分自身とペアにする（promote 規則）。
 - **ルートは木サイズへバインドする**: `root = H(0x02 || uint64BE(treeSize) || top)`。バインドしないと、右端以外の葉に対する包含証明が**別サイズの木**でも成立してしまう（最上位の promote 有無だけが差分になるため）。`verifyDomainMerkleProof()` は各レベルのノード数を `treeSize` から再現し、promote 位置では兄弟が自分自身と一致することも要求する (MUST)。
 - 台帳はチェックポイントを**追記のみ**で発行する（`append` と、最初の `buildAnchor()` 以外で新チェックポイントを作ってはならない MUST NOT）。読み出しのたびに再署名すると `prevHash` 連鎖が自己参照で壊れる。
 - `verifyDomainMerkleProof({ commitment, leafIndex, treeSize, root, proof })` は `leafIndex < treeSize` と `proof` 長さ `= ceil(log2(treeSize))` を確認する。不一致は失敗 (MUST)。`commitment` は 32 バイトの hex（§13.2）で、葉の原料は hex を raw バイトへ戻したものである。
@@ -1211,7 +1231,209 @@ DomainLedgerAppendError / DomainRegistryError
 - `HttpDomainRegistryClient`（`adapters/domain/`、§13.6）は `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装する。
 - `core/domain` は `crypto.subtle`（Web Crypto）だけを使う。Ed25519 検証が使えない環境では `verifySignature` を差し替える。
 
-## 15. バージョニング
+### 14.5 HTTP トンネル API（M6 / #50）
+
+```ts
+// WebTCPNetwork（M6 で追加）
+serveHTTP(port: VirtualPort, handler: HTTPHandler, options?: HTTPServerOptions): HTTPServer
+fetchURL(url: string | WebTCPUrl, options?: FetchURLOptions): Promise<HTTPResponse>
+
+// サーバー（§15.3）
+new HTTPServer(network, port, handler, options?)
+    // → port / connectionCount / close()
+server.listen(): void                     // serveHTTP() はこれを行う
+new HTTPRouter()                           // 補助（MAY）
+router.add(method, pattern, handler)       // '/users/:id' 記法
+router.handle: HTTPHandler
+
+// クライアント（§15.4）
+new HTTPClient(network, { nameServer?, timeoutMs?, maxResponseBytes?, keepAlive?, idleTimeoutMs?, logger? })
+await client.fetch(url, { method?, headers?, body?, signal?, timeoutMs?, keepAlive? })
+await client.request({ nodeId, port, method, path, headers?, body?, signal? })
+client.close()
+
+// 低レベル（§15.2）
+new HTTPReader(stream, { maxHeaderBytes?, maxHeaderCount?, maxLineBytes?, strictLineEndings?, logger? })
+    // → readRequest() / readResponse()
+class HTTPWriter { writeRequest(...) / writeResponse(...) }
+class HTTPRequest        // method / target / path / query / headers / remoteNodeId / body
+class HTTPResponseWriter // statusCode / setHeader() / write() / end() / headersSent
+class HTTPResponse       // status / statusText / headers / body / ok / text() / json() / arrayBuffer()
+
+// 型・エラー
+HTTPHandler / HTTPHeaders / HTTPBodyReader / HTTPServerOptions / HTTPClientOptions
+HTTPError / HTTPParseError / HTTPTimeoutError / HTTPResponseTooLargeError
+HTTPConnectionClosedError / HTTPBodyConsumedError
+```
+
+- `serveHTTP()` は `network.listen()` の薄いラッパーであり、待ち受けの解除は `server.close()` で行う。
+- `fetchURL()` は `HTTPClient` を一時的に作って 1 リクエストを実行する。`keep-alive` を維持したい場合は `HTTPClient` を直接使う。
+- HTTP 層は `core/http/` に置き、`core/network/` からは `serveHTTP` / `fetchURL` の 2 メソッドとして公開する。DOM API・`node:*`・`Buffer` に依存しない。
+
+## 15. HTTP トンネル（アプリケーション層 / M6・#50）
+
+本章は `VirtualStream` の上で HTTP/1.1 のメッセージを運ぶ**アプリケーションプロトコル**を定義する。ワイヤー（パケット）形式は一切変更しない。したがって L4 までの実装・v1/v2 の相互運用・既存の NameServer / ドメイン所有権とは独立に導入できる。
+
+### 15.1 目的とスコープ
+
+- `network.serveHTTP(port, handler)` でブラウザ上のサービスを **HTTP のまま**公開し、既存の Web 資産（`fetch` 相当の呼び出し、`Content-Type` による表現、ステータスコード、`Accept-Encoding` ではない単純なヘッダ交渉）をそのまま使えるようにする。
+- `network.fetchURL('webtcp://name:port/path?q=1', { nameServer })` で、`webtcp://` URL の `path` / `query` を**実際に転送する**（§12.3 の改訂）。
+- 対象は **HTTP/1.1 のサブセット**である。フル実装ではない。非目標は §15.9 に列挙する。
+
+実装（`core/http/`）は次の 4 つで構成する。いずれも `VirtualStream` 以外に依存せず、`Buffer` / `node:*` / DOM API を使わない（design.md §1）。
+
+| モジュール | 役割 |
+| :--- | :--- |
+| `HTTPReader` / `HTTPWriter` | ストリーム上の**バイト列 → メッセージ**、**メッセージ → バイト列**。バッファリングと分割耐性を担う。 |
+| `HTTPParser` | リクエストライン / ステータスライン / ヘッダ / 本文（`Content-Length`・`chunked`）の逐次パース。 |
+| `HTTPServer` | 仮想ポートの待ち受け、接続ごとのリクエストループ、`keep-alive`、`HTTPHandler` の呼び出し。 |
+| `HTTPClient` | 接続（または `keep-alive` セッション）上のリクエスト送信とレスポンス受信。`fetch` 風 API。 |
+
+### 15.2 メッセージ形式
+
+HTTP/1.1（RFC 9112）の文法のうち、次を**そのまま**用いる。
+
+```
+request-line  = method SP request-target SP "HTTP/1.1" CRLF
+status-line   = "HTTP/1.1" SP status-code SP [ reason-phrase ] CRLF
+field-line    = field-name ":" OWS field-value OWS CRLF
+```
+
+- 行終端は **CRLF** とする。受信側は裸の `LF` を**受理してはならない** (MUST NOT)（曖昧なフレーミングを許さない）。ただし寛容さが必要な場合は `strictLineEndings: false` を明示する（既定 `true`）。
+- メッセージの終端は空行（CRLF）1 つ。ヘッダ終端の空行の後に本文が続く。
+- 文字コードは **バイト列**として扱い、ヘッダは ISO-8859-1（`0x00–0xFF`）で解釈する。ヘッダ名は小文字へ正規化して格納する。重複ヘッダは**到着順の配列**として保持し、`HTTPHeaders.get()` はカンマ連結した値を返す。
+- `Host` ヘッダはクライアントが必ず付与しなければならない (MUST)。サーバーは `Host` 無しの HTTP/1.1 リクエストを `400 Bad Request` で拒否しなければならない (MUST)。値は `webtcp://` URL の `host`（NodeId または名前）と `:port` である。
+- **`Transfer-Encoding: chunked`** と **`Content-Length`** をサポートする。両方が同時に存在するメッセージは `400` で拒否する (MUST)（リクエストスマグリングの回避）。
+- 本文長の決定順序は (1) `Transfer-Encoding` が `chunked` なら chunked、(2) `Content-Length` があればその値、(3) どちらも無ければ **本文なし**（`0`）。`TRACE` 以外のリクエストで本文が無いことは正常である。
+
+#### 15.2.1 制限値（既定）
+
+| 項目 | 既定値 | 超過時 |
+| :--- | ---: | :--- |
+| リクエストライン長 | 8 KiB | `414 URI Too Long`（リクエスト）/ パースエラー（レスポンス） |
+| ヘッダ 1 行の長さ | 8 KiB | `431 Request Header Fields Too Large` |
+| ヘッダ数 | 100 | `431` |
+| ヘッダ合計長 | 32 KiB | `431` |
+| 1 メッセージの本文 | 無制限（ストリーミング）。バッファする API では 8 MiB | `413 Payload Too Large`（サーバー）/ `HTTPResponseTooLargeError`（クライアント） |
+| `chunk-size` 行 | 1 KiB | `400` |
+| 同時接続数（`HTTPServer`） | 64 | 新規接続を `503 Service Unavailable` で閉じる |
+
+実装はこれらをオプションで変更できなければならない (MUST)。上限は**必ず**適用し、無制限のバッファ確保をしてはならない (MUST NOT)。
+
+#### 15.2.2 `Expect: 100-continue`
+
+- サーバーは `Expect: 100-continue` を受けた場合、本文を読み始める前に `HTTP/1.1 100 Continue\r\n\r\n` を送ってよい (MAY)。実装は**送らない**ことを既定とする（ブラウザ間で 1 往復増えるだけで利得が無いため）。`Expect` に他の値が含まれる場合は `417 Expectation Failed` を返す (MUST)。
+
+### 15.3 `HTTPServer`
+
+```ts
+const server = network.serveHTTP(port, handler, options?)
+server.close(): void
+server.port: VirtualPort
+server.connectionCount: number
+```
+
+- `serveHTTP(port, handler, options?)` は `network.listen(port, stream => ...)` を内部で使い、接続ごとに**リクエストループ**を回す。同じポートに二重に待ち受けることはできない（`TransportLayer.listen()` の契約に従う）。
+- `handler(request, response)` は 1 リクエストにつき 1 回呼ばれる。`request` は `HTTPRequest`（メソッド・ターゲット・ヘッダ・本文リーダ）、`response` は `HTTPResponseWriter`（`statusCode` / `setHeader()` / `write()` / `end()`）である。
+- ハンドラは **同期的にも非同期的にも**応答してよい。`handler` が reject した場合、まだ応答を開始していなければ `500 Internal Server Error` を返し、開始済みなら接続を切断する (MUST)。
+- ハンドラが例外も応答も返さずに解決した場合、まだ応答していなければ `500`（本文空）を返す (MUST)（無応答でクライアントを待たせない）。
+- **本文はストリーミング**である。`request.body` は `AsyncIterable<Uint8Array>` かつ `read()` / `text()` / `json()` / `arrayBuffer()` を持つ。ハンドラが本文を読み切らなかった場合、サーバーは残りを**破棄して読み切ってから**次のリクエストへ進む (MUST)（`keep-alive` のフレーミングを壊さないため）。
+- `response.write()` を 1 度でも呼ぶか `Content-Length` を設定せずに `end()` した場合、応答は `Transfer-Encoding: chunked` で送る (MUST)。`Content-Length` が分かっている場合は `contentLength` オプションか `response.setHeader('content-length', n)` で指定する。
+- **Half-Close との関係**: クライアントはリクエスト送信後に `FIN` を送ってよい（§15.4 の接続モデル）。サーバーは `end`（EOF）を受けても**応答を送る権利を失わない** — `CLOSE_WAIT` 状態で `send()` できる（§8.2）。応答完了後にサーバーが `end()` を呼ぶ。
+- `Connection: close` を受けた、または応答ヘッダで `Connection: close` を返した場合、サーバーはその応答の後に接続を閉じなければならない (MUST)。
+- `HEAD` / `OPTIONS` / 未知メソッド: `HEAD` は本文を送ってはならない (MUST)。`OPTIONS` はハンドラへ渡す。メソッドは**大文字小文字を区別**し、既知のトークン以外（`GET` / `HEAD` / `POST` / `PUT` / `PATCH` / `DELETE` / `OPTIONS` / `TRACE` / `CONNECT`）は `501 Not Implemented` を返す (MUST)。`CONNECT` は本プロトコルでは意味を持たないため `405` を返す (MUST)。
+
+`HTTPHandler` の型:
+
+```ts
+type HTTPHandler = (request: HTTPRequest, response: HTTPResponseWriter) =>
+    void | Promise<void>;
+```
+
+ハンドラの登録は `createHTTPRouter()`（`method + path` のパターン一致、`/users/:id` 記法）で補助できる（MAY）。
+
+### 15.4 `HTTPClient`
+
+```ts
+const client = new HTTPClient(network, { nameServer?, timeoutMs?, maxResponseBytes?, keepAlive? });
+await client.fetch(url: string | WebTCPUrl, init?): Promise<HTTPResponse>
+await client.request({ method, path, headers?, body?, nodeId, port }): Promise<HTTPResponse>
+client.close(): void
+```
+
+- `fetch(url, init)` は `parseWebTCPUrl()` でパースし、名前なら `nameServer.resolve()` で NodeId を得て `network.connect()` する。`path` と `search`（`?` を含む）を連結して request-target にする（§15.6）。
+- `init` は `{ method?, headers?, body?, timeoutMs?, signal?, keepAlive? }`。`body` は `string | Uint8Array | AsyncIterable<Uint8Array>`。`AsyncIterable` を渡した場合は `Transfer-Encoding: chunked` で送る (MUST)。`string` は UTF-8 にエンコードし、`content-type` 未指定なら `text/plain; charset=utf-8` を付ける。
+- `HTTPResponse` は `{ status, statusText, headers, body: HTTPBodyReader, ok, text(), json(), arrayBuffer() }`。`ok` は `200–299`。
+- **ストリーミング**: `body` は `AsyncIterable<Uint8Array>` であり、`text()` / `json()` / `arrayBuffer()` は本文を**読み切って**返す。これらは 1 度しか呼べない（2 度目は `HTTPBodyConsumedError`）。
+- `timeoutMs`（既定 30 000 ms）は**接続確立 + 最初の応答ヘッダ到着**までに適用する。ヘッダ到着後の本文受信には `signal` で中断できるが、自動タイムアウトは掛けない（大きなファイル転送を許すため）。`signal` は接続中の `AbortSignal` を尊重し、中断時はストリームを `destroy()` する (MUST)。
+- `maxResponseBytes`（既定 8 MiB、`0` で無制限）を超える本文は `HTTPResponseTooLargeError` で reject する (MUST)。ストリーミングで読む場合は呼び出し側の責任とする。
+- `keepAlive`（既定 `true`）の場合、`HTTPClient` は `(nodeId, port)` ごとに `VirtualStream` を再利用し、逐次リクエストを同じ接続で送る。**多重化はしない** — 同時リクエストは別接続になる（HTTP/1.1 の一般則。パイプラインは行わない）。
+
+### 15.5 接続モデルと Half-Close
+
+HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させないため、次の規則を置く。
+
+1. **リクエスト/レスポンスは 1 接続上で逐次**に行う。パイプライン（応答を待たずに複数リクエストを送る）は行わない (MUST NOT)。
+2. `keep-alive` を使う場合、`HTTPClient` はリクエストを送っても `FIN` を送らない。接続は `HTTPClient.close()` またはアイドルタイムアウトで `end()` する。
+3. `Connection: close` を使う（または `keepAlive: false`）場合、クライアントはリクエスト送信後に `end()` を呼んでよい。サーバーは `CLOSE_WAIT` で応答を送り、`end()` する（「**FIN の後に応答する**」）。これは §8.2 の Half-Close の正規の使い方であり、L4 の変更を要しない。
+4. サーバーは応答送信後に `Connection: close` を返した場合、`end()` する。クライアントは `end` を待たずに接続を破棄してよい。
+5. アイドル接続（リクエストの途中でない接続）は `idleTimeoutMs`（既定 30 000 ms）で閉じる (SHOULD)。途中のリクエストは L4 のセッションタイムアウト（§8.5、300 000 ms）に委ねる。
+6. 応答本文の受信中に接続が切れた場合、`HTTPClient` は `HTTPConnectionClosedError` を投げる。`Content-Length` が宣言されていて実際のバイト数が足りない場合も同様とする (MUST)。
+7. **接続の終了は必ず `FIN`（`VirtualStream.end()`）で行う (MUST)。** `VirtualStream.destroy()` は `RST` も `FIN` も送らないため（§8.2）、これで閉じると相手側のストリームは `ESTABLISHED` のまま残り、L4 のセッションタイムアウト（300 000 ms）まで宙に浮く（#54）。HTTP 層の都合で接続を捨てるときも `end()` を使う。
+8. `HTTPServer.close()` は待ち受けを解除し、保持している全接続に `FIN` を送る (MUST)。送信中の応答は打ち切ってよい（`Connection: close` を返した接続は 4 に従う）。
+9. 読み取り途中のリクエスト本文がある状態で接続を閉じる場合、`HTTPServer` は本文の読み取りを `HTTPConnectionClosedError` で失敗させる (SHOULD)。これがないと、アプリケーションの `for await` が永久に待つ。
+
+### 15.6 `webtcp://` URL との対応
+
+| URL 要素 | HTTP メッセージへの写像 |
+| :--- | :--- |
+| `host` / `port` | 接続先（`nodeId` または名前解決の結果）と仮想ポート。`Host` ヘッダは `host:port` |
+| `path` | request-target のパス部分。省略時 `/` |
+| `search`（`?` を含む） | そのまま request-target に連結（`/a?x=1`）。**パーセントエンコードは行わない**（既にエンコード済みの文字列として扱う） |
+| `hash` | **送らない**（クライアント側の断片） |
+
+- `network.fetchURL(url, options)` は `HTTPClient` を作って 1 リクエストを実行する便宜 API である。`options` は `HTTPClient` のオプション + `fetch` の `init` を取る。
+- NameServer / `domain.global` の解決結果（`NameResolution`）はそのまま接続先に使う。所有権検証の結果を HTTP 層で再解釈してはならない (MUST NOT)。
+
+### 15.7 セキュリティ境界
+
+- HTTP 層は**トランスポートの内側**で動く。したがってパケットの Ed25519 署名検証（§10）と RPF / TTL（§7）はそのまま適用される。HTTP 層独自の認証・認可は**定義しない**（アプリケーションの責務）。
+- サーバーハンドラは**リモートの任意のピア**から呼ばれる。認可が無いハンドラは公開サービスになる。`HTTPServer` は接続元 `NodeId` を `request.remoteNodeId` として渡すため、アプリケーションは許可リスト等を実装できる。
+- **ヘッダインジェクション防止**: ヘッダ名・値に `CR` / `LF` / `NUL` を含む書き込みは例外にする (MUST)。受信側はそのような行を `400` で拒否する (MUST)。
+- **リクエストスマグリング防止**: `Content-Length` と `Transfer-Encoding` の同時指定、`Transfer-Encoding` の未知値（`chunked` 以外）、`chunked` の多重指定を拒否する (MUST)。
+- **ヘッダ数・行長・本文サイズの上限**は必須（§15.2.1）。`Host` の欠落は `400`。
+- `webtcp://` のポートは必須であり、HTTP 層も既定ポートを持たない。`webtcp://name/path` のような省略形を許してはならない (MUST NOT)。
+
+### 15.8 エラーとログ
+
+| 状況 | 挙動 |
+| :--- | :--- |
+| リクエスト行・ヘッダのパース失敗 | `400 Bad Request` を返して接続を閉じる。`warn` ログ。 |
+| 行長・ヘッダ数超過 | `414` / `431` を返して閉じる。 |
+| 本文長超過（バッファ API） | `413`。 |
+| ハンドラの reject | 未応答なら `500`、応答開始済みなら切断 + `warn` ログ。 |
+| ハンドラ未応答で解決 | `500`（本文なし）。 |
+| 未知メソッド | `501 Not Implemented` / `CONNECT` は `405`。 |
+| サーバー停止中の新規接続 | `503 Service Unavailable` を返して閉じる。 |
+| クライアント: 接続失敗 | `network.connect()` の例外をそのまま伝播。 |
+| クライアント: ヘッダまでにタイムアウト | `HTTPTimeoutError`。 |
+| クライアント: 応答が上限超過 | `HTTPResponseTooLargeError`。 |
+| クライアント: 接続が途中で閉じた | `HTTPConnectionClosedError`。 |
+| クライアント: 本文を 2 度読んだ | `HTTPBodyConsumedError`。 |
+| クライアント: `AbortSignal` | `AbortError`（`name === 'AbortError'`）で reject し、ストリームを破棄。 |
+
+HTTP 層は `Logger` を注入でき、`console.*` を直接呼んではならない (MUST)。
+
+### 15.9 非目標（M6 時点）
+
+- HTTP/2・HTTP/3、プロトコルアップグレード（`Upgrade` / WebSocket ハンドシェイク）、`CONNECT` メソッド。
+- パイプライン処理、HTTP/1.1 の `100-continue` の自動送信、`TE: trailers`、トレーラヘッダ。
+- `multipart/form-data` の自動デコード、圧縮（`gzip` / `br`）、キャッシュ制御（`ETag` / `If-None-Match` の自動処理）、リダイレクトの自動追従（`301` / `302` はそのまま返す）。
+- Cookie 管理（`Cookie` / `Set-Cookie` はヘッダとして素通しするが、ジャーは持たない）。
+- 認証（Basic / Digest / Bearer の解釈）、TLS（DTLS は WebRTC が終端する）。
+- 多重化（1 接続 1 リクエストの並行実行）。同時実行は複数接続で行う。
+
+## 16. バージョニング
 
 - パケットの `version` フィールドで判別する。未知バージョンは破棄する。
 - **v1（M1–M2）**: `version = 1`。24 バイト固定ヘッダー、`signatureLen = 0`、NodeId はランダム hex。
@@ -1225,7 +1447,7 @@ DomainLedgerAppendError / DomainRegistryError
   - ヘッダーレイアウトが共通のため、v1 と v2 のノードが同一リンク上で併存しても
     デシリアライズ段階では衝突しない（署名検証の可否だけが異なる）。
 
-## 16. 非目標（M5 時点）
+## 17. 非目標（M6 時点）
 
 以下は本仕様の対象外であり、`plan.md` に将来課題として記録する。
 
@@ -1236,5 +1458,7 @@ DomainLedgerAppendError / DomainRegistryError
 - アプリケーションデータの E2E 暗号化（DTLS 終端より上の機密性）。
 - セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§10.6 の限界、#48）。
 - `domain.global` 問い合わせの秘匿（段階的開示・暗号化）。
-- HTTP/1.1・HTTP/2 の完全な実装（README の「HTTP トンネル」構想のうち L7 は未実装のまま）。
+- HTTP/2・HTTP/3、`Upgrade` / WebSocket ハンドシェイク、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従、TLS 終端（§15.9）。HTTP/1.1 のサブセット（§15）のみ実装する。
 - ブラウザ外（Node.js）での WebRTC 実装の同梱。
+- ブラウザ外の既存 TCP クライアント（curl 等）を HTTP トンネルへ入れるブリッジ（#52）。
+- タブ停止・リロードをまたぐサービスの稼働維持（#51）。

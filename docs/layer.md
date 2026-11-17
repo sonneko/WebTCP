@@ -1,18 +1,20 @@
 # WebTCP のレイヤーと名前解決
 
-> この文書は [specification.md](../specification.md) 0.5.0 / [design.md](../design.md) 0.5.0 の補助解説です。
-> M4 で `NameServer` と `webtcp://` URL が、M5 で `domain.global` の**所有権レコード検証**（#25）が実装済みです。
+> この文書は [specification.md](../specification.md) 0.6.0 / [design.md](../design.md) 0.6.0 の補助解説です。
+> M4 で `NameServer` と `webtcp://` URL が、M5 で `domain.global` の**所有権レコード検証**（#25）が、M6 で **HTTP トンネル**（#50）が実装済みです。
 > 実ブロックチェーンへの裏付け（#42）とレジストリの運用ガバナンス（#43）は将来課題として切り出しています。
 > マイルストーンは [plan.md](../plan.md) を参照してください。
 >
-> M1–M5 で実装済み: `WebTCPNetwork`（`bootstrap` / `connectURL` 含む） / `VirtualStream`（バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close） / `BrowserWebRTCChannel`（ICE 再起動・`iceServersProvider`） / `SignalingAdapterHub` / `EntranceSearcherAdapterHub` / `Logger` / Ed25519 署名・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager` / `KeyDirectory` / `NameServer`・`parseWebTCPUrl`・永続 NodeId と衝突検出 / **`core/domain`（所有権レコード・Merkle 台帳・チェックポイント・`DomainAuthority`・HTTP レジストリクライアント）**
+> M1–M6 で実装済み: `WebTCPNetwork`（`bootstrap` / `connectURL` / `serveHTTP` / `fetchURL` 含む） / `VirtualStream`（バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close） / `BrowserWebRTCChannel`（ICE 再起動・`iceServersProvider`） / `SignalingAdapterHub` / `EntranceSearcherAdapterHub` / `Logger` / Ed25519 署名・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager` / `KeyDirectory` / `NameServer`・`parseWebTCPUrl`・永続 NodeId と衝突検出 / `core/domain`（所有権レコード・Merkle 台帳・チェックポイント・`DomainAuthority`・HTTP レジストリクライアント） / **`core/http`（`HTTPServer` / `HTTPClient` / `HTTPRouter` / HTTP/1.1 サブセット）**
 >
-> 未実装: 実ブロックチェーンへのアンカー検証（#42）、レジストリ運用ガバナンス（#43）、アプリケーション層 HTTP（#50）、タブ停止・リロードに耐えるサービス継続（#51）、ブラウザ外部クライアント向けブリッジ（#52）、鍵ローテーション（#47）、明示的なリプレイ検知強化（#48）
+> 未実装: 実ブロックチェーンへのアンカー検証（#42）、レジストリ運用ガバナンス（#43）、HTTP/2・WebSocket・`CONNECT` などのフル実装（#57）、受信フロー制御（#56）、接続プールの上限（#58）、タブ停止・リロードに耐えるサービス継続（#51）、ブラウザ外部クライアント向けブリッジ（#52）、鍵ローテーション（#47）、明示的なリプレイ検知強化（#48）
 
 ## レイヤーモデル
 
 ```
-アプリケーション (任意のプロトコル / 将来の HTTP 層 #50)
+HTTP トンネル (HTTPServer / HTTPClient / HTTPRouter)   ← M6 実装済み（HTTP/1.1 サブセット）
+        ↓
+アプリケーション (任意のプロトコル)
         ↓
 DomainAuthority (domain.global -> 検証済み NodeId)   ← M5 実装済み（所有権レコード + 台帳アンカー）
         ↓
@@ -125,7 +127,8 @@ await ns.resolve('shop.domain.global');               // source: 'domain'
 
 - 実チェーン（Namecoin / L1 トランザクション）への裏付け検証 — #42
 - レジストリの紛争解決・失効回収・IDNA など運用ガバナンス — #43
-- アプリケーション層 HTTP（`HTTP2WebTCPAdapter` 相当） — #50
+- HTTP のフル実装（HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従・TLS 終端） — #57
+- 受信ウィンドウ（フロー制御）の広告と、`HTTPClient` の接続プール上限 — #56 / #58
 - タブ停止・リロードをまたぐサービス継続 — #51
 - ブラウザ外部の既存クライアントのためのブリッジ — #52
 - 権威サーバー階層 / DNS 相互運用 — 未 Issue（必要になるまで起票しない）

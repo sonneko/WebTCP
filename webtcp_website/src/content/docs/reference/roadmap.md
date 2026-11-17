@@ -1,6 +1,6 @@
 ---
 title: ロードマップと既知の制約
-description: WebTCP のマイルストーン計画（M0–M5）と現在の制約事項。
+description: WebTCP のマイルストーン計画（M0–M6）と現在の制約事項。
 ---
 
 詳細はリポジトリルートの `plan.md` および GitHub Issues を参照してください。
@@ -13,10 +13,11 @@ description: WebTCP のマイルストーン計画（M0–M5）と現在の制�
 | M1 | 最小の end-to-end | 完了 | コアのブラウザ対応、v1 シリアライザ、WebRTC / シグナリングアダプタ、デモ、CI |
 | M2 | TCP セマンティクス完成と運用基盤 | 完了 | バイト単位 Seq/Ack、自動分割、動的 RTO、輻輳制御、Fast Retransmit / SACK、Half-Close、レベル付きロガー、`bootstrap()`、TURN/ICE 再起動、ドキュメントサイト |
 | M3 | セキュリティ | **完了（#28 / #34 マージ済み）** | Ed25519 署名（プロトコル v2）、NodeId の公開鍵指紋化、`BrowserKeyManager` / `NodeKeyManager`、公開鍵の自動配布 |
-| M4 | NameServer と webtcp:// URL | **実装済み（#25）** | NameServer（A/CNAME）、`webtcp://` URL、永続 NodeId と衝突検出、RT_UPDATE 受信元検証と鍵伝播 |
-| M5 | 分散ドメインとネットワーク強化 | **一部実装済み（#25）** | `domain.global` の所有権レコード（Ed25519 署名 + canonical commitment）、追記専用 Merkle 台帳とチェックポイント、fail-closed 検証器と `DomainAuthority`、`NameServer` 統合、参照 HTTP レジストリ。**実チェーンへの裏付け・運用ガバナンス・RPF 厳格化・SSE/WebSocket シグナリングは未実装（#42 / #43 / #45 / #46）** |
+| M4 | NameServer と webtcp:// URL | **完了（#25 / #39 マージ済み）** | NameServer（A/CNAME）、`webtcp://` URL、永続 NodeId と衝突検出、RT_UPDATE 受信元検証と鍵伝播 |
+| M5 | `domain.global` と検証可能な所有権証明 | **完了（#25 / PR #53 マージ済み）** | `domain.global` の所有権レコード（Ed25519 署名 + canonical commitment）、追記専用 Merkle 台帳とチェックポイント、fail-closed 検証器と `DomainAuthority`、`NameServer` 統合、参照 HTTP レジストリ。**実チェーンへの裏付け・運用ガバナンスは未実装（#42 / #43）** |
+| M6 | アプリケーション層 HTTP トンネル | **完了（#50）** | `core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient` / `HTTPRouter`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。**HTTP/2・WebSocket・`CONNECT`・圧縮・認証・リダイレクト追従は未実装（#56）** |
 
-## 現在の制約（M5 時点）
+## 現在の制約（M6 時点）
 
 - **署名は鍵管理の注入で有効になる**: `keyManager`（または `Ed25519PacketVerifier`）を渡すとプロトコル v2（署名必須）になります。渡さない既定構成は後方互換のため v1（署名なし・`NullPacketVerifier`）です。
 - **Ed25519 非対応ブラウザ**: Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+。デモは自動で v1 にフォールバックします。
@@ -25,5 +26,8 @@ description: WebTCP のマイルストーン計画（M0–M5）と現在の制�
 - **`domain.global` は検証の実装まで（M5 / #25）**: 所有者署名・Merkle アンカー・チェックポイント後退検出・fail-closed 検証は入りましたが、**公開ブロックチェーンへの裏付け（#42）**、**レジストリの運用ガバナンス（紛争解決・失効回収・IDNA、#43）**、台帳の永続化は未実装です。同梱の参照レジストリは起動のたびに鍵を作り直す実験用プロセスにすぎません。
 - **Node.js 鍵ファイルは平文 PEM**: `NodeKeyManager.open({ keyFile })` は `0600` で保存しますが、ディスク暗号化やバックアップは利用者の責任です。
 - **Node.js 向け WebRTC 実装は非同梱**: `NodeWebRTCChannel` に `@roamhq/wrtc` や `node-datachannel` 等の `createPeerConnection` を注入して利用します。
+- **HTTP はサブセット（M6 / #50）**: リクエストライン・ヘッダ・本文（`Content-Length` / `chunked`）・`keep-alive`・`HEAD` は実装済みですが、HTTP/2・HTTP/3・`Upgrade` / WebSocket・`CONNECT`・パイプライン・圧縮・Cookie ジャー・認証・リダイレクト追従・TLS 終端は未実装です（#56）。`webtcp://` URL の `fragment` は送りません。
+- **受信フロー制御が無い**: パケット形式に受信ウィンドウが無く、送信側の制限は輻輳ウィンドウと `maxWindowBytes` のみです。大きな HTTP 応答は受信側メモリに依存します（#55）。`HTTPClient` の接続プールにも上限がありません（#57）。
+- **サービスはタブに縛られる**: 非可視タブのサスペンドやリロードで待ち受け・名前登録・HTTP ハンドラが失われます（#51）。既存の TCP/HTTP クライアント（curl 等）を入れるブリッジはありません（#52）。
 
 詳細は [domain.global と所有権証明](/guides/domain-ownership/) を参照してください。

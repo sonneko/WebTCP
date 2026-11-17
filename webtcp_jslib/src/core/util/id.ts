@@ -1,10 +1,11 @@
 import { NodeId } from '../types/protocol.js';
 
 /**
- * ランダムな NodeId を生成する。
+ * ランダムな NodeId を生成する（鍵管理を渡さない v1 構成のフォールバック）。
  *
- * M1 では 16 バイトの乱数を hex 化した 32 文字の文字列を用いる
- * （specification.md §5.1）。M3 で公開鍵の指紋に置き換える予定。
+ * 16 バイトの乱数を hex 化した 32 文字の文字列を返す（specification.md §5.1）。
+ * プロトコル v2 で `keyManager` を渡した場合は、この関数ではなく
+ * `deriveNodeId(publicKey)`（公開鍵の SHA-256 先頭 16 バイト）が NodeId になる（§5.1 / §10.3）。
  *
  * @param byteLength 乱数のバイト数（既定 16）
  */

@@ -13,6 +13,7 @@ export * from './core/transport/index.js';
 export * from './core/network/index.js';
 export * from './core/naming/index.js';
 export * from './core/domain/index.js';
+export * from './core/http/index.js';
 
 // アダプタ
 export * from './adapters/webrtc/index.js';

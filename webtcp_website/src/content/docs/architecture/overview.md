@@ -85,6 +85,18 @@ TTL は 0 に正規化されるため、送信元が 1 度署名すれば中継�
 
 `DomainAuthority` が収集元（ローカル → HTTP レジストリ → 既知ノードの `wantOwnership` 応答）から候補をあつめ、検証を通ったものだけを残します。`core/domain` はストリーム I/O を知らず、NameServer 側の JSON プロトコルは後方互換拡張（`wantOwnership` / `ownership`）にとどめています。チェックポイントは**追記専用**なので、受理済みの `treeSize` より古いチェックポイントを見たら `anchor-rollback` で拒否します（読み取りのたびに作り直さない MUST があるのはこのためです）。
 
+### HTTP トンネル（M6 / #50）
+
+HTTP は `VirtualStream` の上の**純粋なバイトプロトコル**として実装します（`core/http`）。新しいパケット種別もポート予約も導入しないため、L4 までの実装・プロトコル v2 の署名検証・RPF・輻輳制御はそのまま効きます。
+
+- **サーバー** (`HTTPServer`): 仮想ポートを `listen()` し、接続ごとに「リクエストを 1 つ読む → ハンドラ → 応答を書き切る → 継続判定」の逐次ループを回します。`keep-alive`（既定）と `Connection: close`（FIN 後も応答を書ける）、`HEAD` の本文抑止、同時接続上限、アイドルタイムアウトを持ちます。
+- **クライアント** (`HTTPClient`): `fetch` 風 API。`webtcp://` URL の `path` + `query` を request-target に写像し、`(NodeId, 仮想ポート)` 単位で接続をプールします。パイプラインはせず、同時リクエストは別接続で並行します。
+- **パーサ** (`HTTPHeadParser` / `HTTPChunkedDecoder`): ストリームの分割位置に依存しない逐次パーサ。CRLF 厳格、行長・ヘッダ数の上限つき。`Content-Length` と `Transfer-Encoding` の併用は `400`（スマグリング対策）。
+- **ライタ** (`HTTPWriter`): ヘッダ名（`token`）と値（CR/LF/NUL 不在）を検証し、アプリがユーザー入力をそのまま流してもインジェクションが成立しません。
+- **理由**: ブラウザ内ライブラリなので DOM API（`ReadableStream`）ではなく `AsyncIterable<Uint8Array>` を採用し、大きな本文はバックプレッシャー付きでストリーミングします。
+
+詳細は [HTTP トンネル](/guides/http-tunnel/) と [仕様 §15](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
+
 ### 差し替え可能な署名検証とロガー
 
 - **署名検証（`IPacketVerifier`）**: `keyManager`（または `Ed25519PacketVerifier`）を渡すとプロトコル v2 の署名必須になります。どちらも渡さない既定構成は `NullPacketVerifier` で、v1 パケットを無検証で通します（実験・相互運用モード、#28）。`Ed25519PacketVerifier` は署名対象のシリアライザを必須注入とし、無い場合は構築時に失敗します（#41 — 検証側が独自に近似すると、片側だけ通る署名になります）。
