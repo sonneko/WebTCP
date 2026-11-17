@@ -1085,8 +1085,13 @@ async function runSelfTest() {
             if (saved.names.length < 2 || saved.domainRecords.length !== expectedDomains) {
                 throw new Error(`保存内容が不足: names=${saved.names.length} domains=${saved.domainRecords.length}`);
             }
-            // 再読み込み後を模擬: 新しい NameServer へ復元し、名前と所有権レコードが引けることを確認する
-            const probe = new NameServer(netServer, { logger });
+            // 再読み込み後を模擬: 新しい NameServer へ復元し、名前と所有権レコードが引けることを確認する。
+            // 台帳アンカー付きのレコードは信頼するログ鍵を持つ権威でのみ検証できる（fail-closed）ため、
+            // 同じ権威を渡す。権威が無いと anchor-untrusted-log で拒否される。
+            const probe = new NameServer(netServer, {
+                logger,
+                ...(nsServer.domainAuthority ? { domains: nsServer.domainAuthority } : {}),
+            });
             try {
                 const restored = await probe.restoreState(saved);
                 if (restored.rejected !== 0 || restored.domainRecords !== expectedDomains) {
