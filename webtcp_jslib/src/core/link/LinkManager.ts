@@ -154,7 +154,7 @@ export class LinkManager extends EventEmitter {
         }
 
         // 署名検証はシリアライズ済みバイト列（署名フィールドを除く）に対して行うため、
-        // 受信した生バイト列も一緒に上位へ渡す（#28, specification.md §10.3）。
+        // 受信した生バイト列も一緒に上位へ渡す（#28, specification.md §11.3）。
         this.emit('packet', packet, fromId, data);
     }
 }

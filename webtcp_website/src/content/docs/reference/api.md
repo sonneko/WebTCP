@@ -152,9 +152,9 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `createDomainAuthority(options?)` | `DomainAuthority`。`local`, `sources`, `peers`, `verifier` / `verifierOptions`, `checkpointChain`, `cacheTtlMs`（60000）, `negativeTtlMs`（5000）, `resolveTimeoutMs`（5000）, `queryTimeoutMs`（1500）, `maxRecordsPerDomain`（8）, `pinCheckpoints`（`true`）, `logger` |
 | `resolve` / `settle` / `settleCandidates` | 完全名（またはゾーン外と判定可能な入力）を解決。`settle` は衝突を 1 件に絞り、`settleCandidates` は候補をそのまま返す |
 | `register(record)` / `remember(record)` / `forget(domain)` / `verifyRecord(domain, record)` | 検証付き登録 / 検証のみで缓存 / 削除 / 単一レコードの再検証 |
-| `createPublicKeyResolver(inner?)` | 検証済みレコードから `NodeId -> 公開鍵` を返す `IPublicKeyResolver` bridge（§10.4.3） |
+| `createPublicKeyResolver(inner?)` | 検証済みレコードから `NodeId -> 公開鍵` を返す `IPublicKeyResolver` bridge（§11.4.3） |
 | `memoryDomainRecordSource({ records? })` / `chainDomainRecordSources(sources)` | `IDomainRecordSource` の簡易実装（`lookupByDomain` / `lookupByNodeId` / `put` / `remove` / `list`） |
-| `createHttpDomainRegistryClient({ baseUrl, fetchImpl?, timeoutMs?, tolerateNotFound?, logger? })` | `examples/domain-registry.mjs` の HTTP 契約（§13.6）に対するクライアント。`lookupByDomain` / `lookupByNodeId` / `submit` / `checkpoint` / `checkpointsBetween` / `logInfo` |
+| `createHttpDomainRegistryClient({ baseUrl, fetchImpl?, timeoutMs?, tolerateNotFound?, logger? })` | `examples/domain-registry.mjs` の HTTP 契約（§14.6）に対するクライアント。`lookupByDomain` / `lookupByNodeId` / `submit` / `checkpoint` / `checkpointsBetween` / `logInfo` |
 
 ### 型付きエラー
 
@@ -173,7 +173,7 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `maxRequestBodyBytes` | `number` | `0` | リクエスト本文の上限（`0` は無制限・ストリーミング） |
 | `send100Continue` | `boolean` | `false` | `Expect: 100-continue` に自動応答する |
 | `serverName` | `string` | `'webtcp'` | `Server` ヘッダ。`''` で付与しない |
-| `limits` | `HTTPParserLimits` | 既定 §15.2.1 | 行長・ヘッダ数・ヘッダ合計などの上限 |
+| `limits` | `HTTPParserLimits` | 既定 §16.2.1 | 行長・ヘッダ数・ヘッダ合計などの上限 |
 
 `HTTPServer` は `port` / `connectionCount` / `listen()` / `close()` を公開します。
 
@@ -186,7 +186,7 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `maxResponseBytes` | `number` | `8 * 1024 * 1024` | `text()` / `json()` / `arrayBuffer()` の上限。`0` は無制限 |
 | `keepAlive` | `boolean` | `true` | 接続プールを使う |
 | `idleTimeoutMs` | `number` | `30000` | プールした接続のアイドル期限 |
-| `limits` | `HTTPParserLimits` | 既定 §15.2.1 | パーサの上限 |
+| `limits` | `HTTPParserLimits` | 既定 §16.2.1 | パーサの上限 |
 
 - `fetch(url, init)` — `method` / `headers` / `body`（`string` / `Uint8Array` / `AsyncIterable<Uint8Array>`）/ `timeoutMs` / `signal` / `keepAlive`。
 - `request({ nodeId, port, path, ... })` — NodeId と仮想ポートを直接指定する。

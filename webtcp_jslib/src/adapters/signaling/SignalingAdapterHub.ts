@@ -25,7 +25,7 @@ interface HubMessage {
 }
 
 /**
- * HTTP ポーリング型のシグナリングハブクライアント（specification.md §9.4）。
+ * HTTP ポーリング型のシグナリングハブクライアント（specification.md §10.4）。
  *
  * サーバーに必要なエンドポイントは 2 つだけである。
  * - `POST /signal`

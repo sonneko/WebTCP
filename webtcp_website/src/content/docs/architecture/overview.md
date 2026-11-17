@@ -95,7 +95,7 @@ HTTP は `VirtualStream` の上の**純粋なバイトプロトコル**として
 - **ライタ** (`HTTPWriter`): ヘッダ名（`token`）と値（CR/LF/NUL 不在）を検証し、アプリがユーザー入力をそのまま流してもインジェクションが成立しません。
 - **理由**: ブラウザ内ライブラリなので DOM API（`ReadableStream`）ではなく `AsyncIterable<Uint8Array>` を採用し、大きな本文はバックプレッシャー付きでストリーミングします。
 
-詳細は [HTTP トンネル](/guides/http-tunnel/) と [仕様 §15](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
+詳細は [HTTP トンネル](/guides/http-tunnel/) と [仕様 §16](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
 
 ### 差し替え可能な署名検証とロガー
 

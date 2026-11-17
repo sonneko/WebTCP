@@ -2,11 +2,11 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.6.0 |
+| 文書バージョン | 0.7.0 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
 | プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決・M5 のドメイン所有権証明・M6 の HTTP トンネルはいずれも v2 上のアプリケーション層） |
 | ステータス | 実験的（破壊的変更あり） |
-| 最終更新 | 2026-11-16 |
+| 最終更新 | 2026-11-17 |
 
 本書は WebTCP の**振る舞いの仕様**を定義する。実装内部の構造や技術選定の理由は `design.md`、作業計画と将来課題は `plan.md` を参照すること。
 
@@ -27,7 +27,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 7. **`domain.global`** 名前空間と、**検証可能なドメイン所有権レコード**（署名付きレコード + 追記型台帳アンカー + プラガブルな検証器）（M5）
 8. **HTTP/1.1 サブセットによるアプリケーション層トンネル**（メソッド + パス + ヘッダ + `Content-Length` / `chunked` の往復、`keep-alive`、ストリーミング）（M6）
 
-1〜7 は「バイト列を運ぶ」ところまでを定めていた。8 はその上に**リクエスト/レスポンスという約束**を与え、`webtcp://name:port/path?query` のパスとクエリを実際に転送可能にする（§15）。8 はプロトコルの拡張ではなく、`VirtualStream` 上で動く**アプリケーション層プロトコル**であり、既存の v1 / v2 パケットと互換である。
+1〜7 は「バイト列を運ぶ」ところまでを定めていた。8 はその上に**リクエスト/レスポンスという約束**を与え、`webtcp://name:port/path?query` のパスとクエリを実際に転送可能にする（§16）。8 はプロトコルの拡張ではなく、`VirtualStream` 上で動く**アプリケーション層プロトコル**であり、既存の v1 / v2 パケットと互換である。
 
 ## 2. 用語
 
@@ -38,11 +38,11 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | 鍵管理 (KeyManager) | Ed25519 の鍵生成・署名・検証・公開鍵解決を担う実装。ブラウザは `BrowserKeyManager`、Node.js は `NodeKeyManager`。 |
 | 公開鍵ディレクトリ (KeyDirectory) | `NodeId -> Ed25519 公開鍵` の対応表。指紋一致を検証して登録する。 |
 | NameServer | 名前を A レコード（NodeId）または CNAME レコード（別名）へ対応付け、ローカル登録と既知ノードへの問い合わせで解決するアプリケーション層サービス。 |
-| `domain.global` | グローバルに一意なドメイン名を割り当てる単一ゾーン。所有権レコード（§13）で裏付けられた名前だけが解決できる（M5）。 |
-| 所有権レコード (DomainOwnershipRecord) | 「ドメイン名 ↔ NodeId（公開鍵指紋）」の対応を、その NodeId の所有者が署名した自己証明型のクレーム。§13.2。 |
-| 台帳アンカー (DomainAnchor) | 所有権レコードが追記型台帳のいつ・どの位置に記録されたかを表す Merkle 包含証明と署名済みチェックポイント。§13.3。 |
-| チェックポイント (DomainCheckpoint) | 台帳の木サイズ・ルート・時刻をログ鍵で署名したもの。`prevHash` による連結で書換え（ロールバック）を検出できる。§13.3。 |
-| 所有権検証器 (IDomainOwnershipVerifier) | 所有権レコードの妥当性を判定する差し替え可能なコンポーネント。自己署名検証のほかに台帳・実チェーン検証を委任できる。§13.4。 |
+| `domain.global` | グローバルに一意なドメイン名を割り当てる単一ゾーン。所有権レコード（§14）で裏付けられた名前だけが解決できる（M5）。 |
+| 所有権レコード (DomainOwnershipRecord) | 「ドメイン名 ↔ NodeId（公開鍵指紋）」の対応を、その NodeId の所有者が署名した自己証明型のクレーム。§14.2。 |
+| 台帳アンカー (DomainAnchor) | 所有権レコードが追記型台帳のいつ・どの位置に記録されたかを表す Merkle 包含証明と署名済みチェックポイント。§14.3。 |
+| チェックポイント (DomainCheckpoint) | 台帳の木サイズ・ルート・時刻をログ鍵で署名したもの。`prevHash` による連結で書換え（ロールバック）を検出できる。§14.3。 |
+| 所有権検証器 (IDomainOwnershipVerifier) | 所有権レコードの妥当性を判定する差し替え可能なコンポーネント。自己署名検証のほかに台帳・実チェーン検証を委任できる。§14.4。 |
 | WebTCP URL | `webtcp://<NodeId または 名前>:<port>/path?query#fragment` 形式の接続先指定。 |
 | 隣接ノード (Neighbor) | データチャネルが直接確立している相手ノード。 |
 | 仮想ストリーム (VirtualStream) | 仮想 TCP セッション。`(remoteNodeId, localPort, remotePort)` で一意。 |
@@ -52,9 +52,9 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 | トランスポート層 | ポート多重化、セッション、バイトストリーム、再送、輻輳制御、状態機械。 |
 | MSS | Maximum Segment Size。1 つの `DATA` パケットに載せる最大アプリケーションデータ長（既定 16 KiB、上限 60 KiB）。 |
 | SACK | Selective Acknowledgment。順序外で受信済みのバイト範囲を送信側へ通知する拡張。 |
-| HTTP トンネル | `VirtualStream` 上で HTTP/1.1 のメッセージ（リクエスト/レスポンス）を運ぶアプリケーション層プロトコル。§15。 |
-| `HTTPServer` | 仮想ポートで待ち受け、`VirtualStream` 上の HTTP/1.1 リクエストを `HTTPHandler` へ渡して応答を書き戻すサーバー。§15.3。 |
-| `HTTPClient` | `WebTCPNetwork`（または `VirtualStream`）から HTTP/1.1 リクエストを送るクライアント。`fetch` 風の API を持つ。§15.4。 |
+| HTTP トンネル | `VirtualStream` 上で HTTP/1.1 のメッセージ（リクエスト/レスポンス）を運ぶアプリケーション層プロトコル。§16。 |
+| `HTTPServer` | 仮想ポートで待ち受け、`VirtualStream` 上の HTTP/1.1 リクエストを `HTTPHandler` へ渡して応答を書き戻すサーバー。§16.3。 |
+| `HTTPClient` | `WebTCPNetwork`（または `VirtualStream`）から HTTP/1.1 リクエストを送るクライアント。`fetch` 風の API を持つ。§16.4。 |
 
 ## 3. 準拠のキーワード
 
@@ -65,7 +65,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 ```
 +-----------------------------------------------------------+
 | L7  アプリケーション / NameServer / webtcp:// URL            |
-|     HTTP トンネル (HTTPServer / HTTPClient、§15 / M6)        |
+|     HTTP トンネル (HTTPServer / HTTPClient、§16 / M6)        |
 +-----------------------------------------------------------+
 | L4  TransportLayer : ポート多重化 / SessionManager          |
 |     VirtualStream  : 状態機械 / バイト単位 Seq-Ack / 分割    |
@@ -100,7 +100,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
   - `rawEd25519PublicKey` は 32 バイトの生公開鍵（SPKI ではなく `raw` 形式）。
   - 指紋は**決定的**であり、同じ公開鍵からは常に同じ NodeId が得られる。
   - したがって NodeId は自己証明型であり、パケットの `senderId` が「署名を検証できる公開鍵の指紋」と
-    一致することを確認すれば、なりすましは成立しない（§10.2）。
+    一致することを確認すれば、なりすましは成立しない（§11.2）。
   - 実装は `deriveNodeId(publicKey)`（`src/core/routing/keys.ts`）で提供する。
 - **プロトコル v1（レガシー）**: ランダムな 16 バイトを hex 化した値を自己申告で用いる。
   暗号学的な検証は行えない。v2 ノードは v1 パケットを後方互換のため受理してよい (MAY) が、
@@ -130,7 +130,7 @@ WebTCP は、WebRTC の信頼性のあるデータチャネル（SCTP）を土�
 - `KeyDirectory` は同一 NodeId に異なる公開鍵が提示された場合、既存鍵を保持する。非同期 `addPublicKey()` は `false` を返し、同期 `setPublicKey()` は `NodeIdCollisionError` を投げる。`setPublicKey()` は**指紋検証済みの鍵のみ**を受け付ける後方互換 API である。
 - `WebTCPNetwork` は鍵管理と公開鍵ディレクトリを併用する場合、ローカル NodeId に既に異なる鍵が登録されていれば `NodeIdCollisionError` を投げなければならない (MUST)。
 - ブラウザで IndexedDB が利用できない場合はセッション限定のメモリ身元へ縮退してよい (MAY)。ストレージ障害は警告する。鍵の再生成は `regenerate` / `BrowserKeyManager.regenerate()` の明示操作に限定する。
-- `domain.global` ゾーンでは、**NodeId をドメイン名へ束縛するには所有権レコードの署名検証に成功しなければならない**（§13）。永続化された身元そのものは所有権を付与しない。
+- `domain.global` ゾーンでは、**NodeId をドメイン名へ束縛するには所有権レコードの署名検証に成功しなければならない**（§14）。永続化された身元そのものは所有権を付与しない。
 
 ## 6. パケット形式（プロトコルバージョン 2 / v1 互換）
 
@@ -167,7 +167,7 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 - `signature` が 64 バイトなら **v2**。
 - `signature` が空なら **v1**。
 
-したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§16）。
+したがって、署名器を差し替えるだけで v1 / v2 を切り替えられる（§17）。
 
 ### 6.2 受信時の検証
 
@@ -181,11 +181,11 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 6. `flags` の下位 7 ビット（ビット 0–6）に既知のフラグが 1 つ以上立っている。
 7. **`version == 2` なら `signatureLen == 64`、`version == 1` なら `signatureLen == 0`。** 違反は破棄 (MUST)。
 8. `version == 2` なら `senderId` が `^[0-9a-f]{32}$` に一致する。違反は破棄 (MUST)。
-9. `version == 2` なら署名検証（§10）に成功する。失敗は破棄し `warn` ログを出す (MUST)。
+9. `version == 2` なら署名検証（§11）に成功する。失敗は破棄し `warn` ログを出す (MUST)。
 
 7 はシリアライザが構文検証として実施する。8〜9 はルーティング層が呼ぶ**署名検証器**（`Ed25519PacketVerifier`）が担う。
 したがって `NullPacketVerifier`（v1 後方互換モード）を注入したノードでは 8〜9 は適用されない (MAY)。v2 ノード間で
-のみ一貫して強制される点に注意すること（§10.2）。
+のみ一貫して強制される点に注意すること（§11.2）。
 
 ### 6.3 フラグ
 
@@ -216,7 +216,7 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 
 `RoutingLayer.sendPacket(packet)` は次を行う。
 
-1. 署名付与（§10.3）。既に署名が付いているパケット（中継転送）は再署名しない。
+1. 署名付与（§11.3）。既に署名が付いているパケット（中継転送）は再署名しない。
 2. `destinationId == localNodeId` ならトランスポート層へ渡して終了。
 3. `ttl <= 0` のパケットは破棄する。
 4. ルーティングテーブルから宛先エントリを取得。存在しなければ、宛先が**直接の隣接**であれば `cost=1` とみなす。それ以外は破棄し警告する。
@@ -227,19 +227,19 @@ v1 と v2 の違いは `version` フィールドと `signature` の有無だけ�
 受信側は次を行う。
 
 1. デシリアライズ（失敗時は破棄。§6.2 の 1–7）。
-2. **署名検証**（§10.2）。失敗・欠落は破棄し `warn` ログを出す (MUST)。
+2. **署名検証**（§11.2）。失敗・欠落は破棄し `warn` ログを出す (MUST)。
 3. `RT_UPDATE` パケットは次をすべて満たす場合のみ `RoutingTableManager` へ渡し、トランスポート層へは渡さない。満たさない場合は破棄する (MUST)。
    - 受信元が直接の隣接である。
    - 外側 `senderId` と受信元 NodeId、ペイロード内 `senderId` が一致する。
    - 外側 `destinationId` が自ノードである。
    - `ttl > 0` かつ `sourcePort == destinationPort == 0`。
-   `RT_UPDATE` は中継してはならない (MUST NOT)。同梱された `publicKey` は公開鍵ディレクトリへ登録する（§10.4.2）。
+   `RT_UPDATE` は中継してはならない (MUST NOT)。同梱された `publicKey` は公開鍵ディレクトリへ登録する（§11.4.2）。
 4. 通常パケットの **RPF (Reverse Path Forwarding)** チェック: 送信元への経路の nextHop が、実際に受信した隣接と一致することを確認する。ただし経路が未学習で、かつ受信元が直接の隣接である場合は許可する（M1–M2 の縮退動作）。それ以外は破棄。
 5. `destinationId == localNodeId` ならトランスポート層へ渡して終了。
 6. そうでなければ中継転送する: `ttl` を 1 減算し、`ttl <= 0` になった場合は破棄する (MUST)。残っていれば経路表の `nextHop` へ送信する。
 
 中継ノードは `senderId` の署名を TTL 減算後に再計算してはならない (MUST NOT)。
-TTL が署名対象外（0 に正規化）であるため、減算しても署名検証は成立する（§10.3）。
+TTL が署名対象外（0 に正規化）であるため、減算しても署名検証は成立する（§11.3）。
 
 ### 7.4 ルーティング情報パケット（RT_UPDATE）
 
@@ -257,7 +257,7 @@ TTL が署名対象外（0 に正規化）であるため、減算しても署�
 ```
 
 - `publicKey`（任意、プロトコル v2）: 送信元の Ed25519 公開鍵（32 バイトの Base64url、パディングなし）。
-  詳細は §10.4.2 を参照。v2 ノードは同梱することが望ましい (SHOULD)。
+  詳細は §11.4.2 を参照。v2 ノードは同梱することが望ましい (SHOULD)。
 
 - `entries` には自分自身のエントリを含めてはならない (MUST NOT)。各エントリは任意で `publicKey`（Base64url）を含めてよい (MAY)。受信側は指紋一致を検証して公開鍵ディレクトリへ登録し、経路とともに既知鍵を伝播する。これによりマルチホップ先の署名検証鍵を事前共有なしに学習できる。
 - `entries` / `withdrawals` はそれぞれ最大 256 件、`cost` は 0–255 の整数とする。超過・不正値は破棄する (MUST)。送信側は上限を超える場合、複数の `RT_UPDATE` に分割して送る (MUST)。
@@ -359,7 +359,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
   - `FIN`: **1**
   - `ACK` / `RST`: **0**
 - `ackNum` は「次に期待する受信バイトのシーケンス番号（`rcvNxt`）」を示す。`SYN_ACK`, `ACK`, `DATA`, `FIN` のすべてが有効な `ackNum`（ピギーバック ACK）を運び、受信側はこれらすべてのパケットから `ackNum` を処理しなければならない (MUST)。
-- **受信ウィンドウの広告は行わない**。`ackNum` は「次に期待する番号」であり、受信バッファの空きを示すウィンドウフィールドはパケット形式に存在しない（§6.1）。したがって送信側の制限は**輻輳ウィンドウ**（§8.4.2）と `maxWindowBytes` のみであり、受信側が遅い場合のフロー制御はプロトコルとして保証しない。HTTP 層（§15）の大きな応答を扱う場合、アプリケーションは受信側のメモリ上限に注意しなければならない (SHOULD)。ウィンドウ広告の追加は将来課題（`plan.md`）。
+- **受信ウィンドウの広告は行わない**。`ackNum` は「次に期待する番号」であり、受信バッファの空きを示すウィンドウフィールドはパケット形式に存在しない（§6.1）。したがって送信側の制限は**輻輳ウィンドウ**（§8.4.2）と `maxWindowBytes` のみであり、受信側が遅い場合のフロー制御はプロトコルとして保証しない。HTTP 層（§16）の大きな応答を扱う場合、アプリケーションは受信側のメモリ上限に注意しなければならない (SHOULD)。ウィンドウ広告の追加は将来課題（`plan.md`）。
 
 #### 8.3.2 60 KiB 超メッセージの自動分割と送信バッファ
 
@@ -451,9 +451,93 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 | HTTP クライアントのヘッダ待ち (`HTTPClient.timeoutMs`) | 30 000 ms |
 | HTTP の `keep-alive` アイドル (`idleTimeoutMs`) | 30 000 ms |
 
-## 9. リンク層
+## 9. 生存期間（サービス役の稼働維持 / M7・#51）
 
-### 9.1 IChannel の契約
+### 9.1 目的とスコープ
+
+ブラウザのタブは、画面スリープ・バックグラウンドでの凍結・リロード・破棄によって停止する。
+サービス役（待ち受けポート、ローカル登録の A / CNAME、`domain.global` の所有権レコード）を
+持つノードは、これによって名前の提供を失う。本節は次の 4 点を定める。
+
+1. サービス役の状態を保存し、再読み込み後に復元すること（§9.2 / §9.3）
+2. 隣接の切断からの再接続と経路・名前の再広告（§9.4）
+3. ブラウザ上で稼働を維持するための補助（§9.5）
+4. 離脱時に有効なストリームを終了ハンドシェイクで閉じること（§9.5）
+
+タブが凍結・破棄されている間の通信継続は**保証しない**。本節の目的は「停止後に失った状態を
+短時間で回復すること」である。サービスの冗長化や複数インスタンスは対象外（§18）。
+
+### 9.2 永続化する状態（`PersistedServiceState`）
+
+保存対象は次の JSON オブジェクトである（`version: 1`）。
+
+| フィールド | 内容 |
+| :--- | :--- |
+| `version` | 1。未知のバージョンは復元を拒否する (MUST) |
+| `savedAt` | 保存時刻（Unix ms） |
+| `listenPorts` | 保存時点で待ち受けていた仮想ポート（NameServer のポートを除く） |
+| `names` | `domain.global` 外のローカル登録。`{ type: 'A' \| 'CNAME', name, target, ttlMs }` |
+| `domainRecords` | `domain.global` の所有権レコード（§14.2 の JSON 形式） |
+| `nodeId` | 保存元の NodeId（復元時に一致を検査する） |
+
+- 秘密鍵・接続・仮想ストリーム・ハンドラ関数を含めてはならない (MUST NOT)。
+  秘密鍵は §11.5 の鍵管理が別途保存する。
+- 所有権レコードは保存時に検証済みであっても、復元時に **§14.5 と同じ検証を再度行う** (MUST)。
+  検証に失敗したレコードは登録しない (MUST)。
+- 保存の `nodeId` と復元側の NodeId が一致しない場合は復元を拒否する (MUST)。
+
+### 9.3 永続化と復元の API
+
+- `persistState({ nameServer? })`: 上記の状態を保存ストレージへ書き出す。
+  `nameServer` を渡すと、そのローカル登録と所有権レコードを含める。
+- `restoreState({ nameServer? })`: 保存された状態を読み込む。状態が無ければ `null` を返す。
+  `nameServer` を渡すと、その待ち受けを開始（`listen()`）し、名前と所有権レコードを復元する。
+  戻り値の `listenPorts` は、利用者がハンドラを付けて `listen()` し直すべきポートである。
+  ハンドラは保存されないため、復元側は必ず付け直す (MUST)。
+- `stateStorage` が無い状態で `persistState()` / `restoreState()` を呼ぶとエラーになる (MUST)。
+- ブラウザの既定の保存先は IndexedDB のデータベース `webtcp-service`、ストア `state`、キー `local` とする。
+  テストや非ブラウザ環境向けにメモリ実装も提供する。
+
+### 9.4 隣接の再接続と再広告
+
+- 隣接の入れ替わりは `neighbor-connected` / `neighbor-disconnected` として `WebTCPNetwork` からも発火する。
+- 経路の再広告は既存の RT_UPDATE による。隣接が確立した時点で、ノードは現在の経路表を全隣接へ送る（§7）。
+  再接続後は追加の操作なしに、経路が再学習される。
+- 名前（A / CNAME / 所有権レコード）は**要求駆動（pull）**である。NameServer は問い合わせに対して
+  自分のローカル登録だけを応答する（§13.2）。未要求の登録を隣接へ push してはならない (MUST NOT)。
+  これは「応答は自分の登録だけ」という不変条件を保つためである。
+- サービス役が再起動した後は、§9.3 の `restoreState()` で登録を戻し、次の問い合わせから応答する。
+  所有権レコードの `serial` は変更しない（同一内容の復元であるため）。
+- 利用者は切断中の隣接へ `connectToPeer()` で再接続を試みてよい（§9.5 の補助が自動で行う）。
+
+### 9.5 稼働維持の補助（ブラウザ）
+
+`startBrowserKeepAlive(network, options)` は次の補助をまとめて提供する。戻り値の `stop()` で全てを解除する。
+
+| 補助 | 挙動 | 規定 |
+| :--- | :--- | :--- |
+| Screen Wake Lock | `navigator.wakeLock.request('screen')` で画面スリープを抑える | SHOULD。非対応環境では何もしない |
+| 無音オーディオ | 出力ゲイン 0 のオシレーターを再生する | MAY。既定は無効。ユーザー操作の後にのみ開始する |
+| 前面復帰 | `visibilitychange` が `visible` になったら Wake Lock を取り直し、切断中の隣接へ再接続する | SHOULD。`onResume` で置換できる |
+| 離脱処理 | `pagehide` で `onPageHide` を呼ぶ。`nameServer` 指定時は `persistState()` を行う | SHOULD |
+
+- 離脱時、利用者は有効な仮想ストリームを **`close()`（= `end()`、送信バッファを flush して FIN）** で閉じるべきである (SHOULD)。
+  `destroy()` は相手側に RST も FIN も送らないため、相手のストリームが `ESTABLISHED` のまま残る（#54）。
+  離脱の処理として `destroy()` を使ってはならない (SHOULD NOT)。
+- 本節の補助は「止まらないこと」を保証しない。ブラウザが凍結・破棄したタブは、
+  再読み込み後に §9.3 の `restoreState()` で状態を回復する。
+
+### 9.6 非規範的な制限
+
+- 凍結中のタブには隣接からの要求が届かない。再度前面に戻るまで名前は応答しない。
+- Wake Lock はユーザーエージェントが拒否・解除しうる。無音オーディオは自動再生ポリシーに従う。
+- `pagehide` が発火しない終了（クラッシュ・強制終了）では、最後に保存された状態までしか戻らない。
+  状態を変更した後は `persistState()` を呼ぶことが推奨される。
+- 復元された `listenPorts` のハンドラ付与は利用者の責務である。
+
+## 10. リンク層
+
+### 10.1 IChannel の契約
 
 | メソッド/イベント | 契約 |
 | :--- | :--- |
@@ -468,7 +552,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 
 `send` に渡すデータは 1 パケット分のシリアライズ済みバイト列である。`IChannel` は順序・再送・多重化の責務を持たない。
 
-### 9.2 シグナリングメッセージ
+### 10.2 シグナリングメッセージ
 
 ```ts
 interface SignalMessage {
@@ -481,7 +565,7 @@ interface SignalMessage {
 - `fromId` は送信側が設定し、アダプタは内容を改変してはならない (MUST NOT)。
 - 候補（candidate）は remote description 設定前に到着する可能性があるため、受信側はキューに保持し、設定後にまとめて追加しなければならない (MUST)。
 
-### 9.2.1 公開鍵の交換（`public-key`、プロトコル v2）
+### 10.2.1 公開鍵の交換（`public-key`、プロトコル v2）
 
 ```ts
 interface PublicKeyPayload {
@@ -499,7 +583,7 @@ interface PublicKeyPayload {
   ただし**指紋照合を必ず行う**ことにより、ハブが鍵をすり替えてもなりすましは成立しない。
 - 同じノードから異なる公開鍵が届いた場合、既に登録済みの鍵を優先して保持する (MUST)。
 
-### 9.3 ネゴシエーション・同時接続（Glare）・ICE 再起動
+### 10.3 ネゴシエーション・同時接続（Glare）・ICE 再起動
 
 1. 接続を開始する側は `RTCPeerConnection` とデータチャネル（`ordered: true`）を作り、offer を送る。
 2. 受信側は answer を返し、`ondatachannel` でチャネルを受け取る。
@@ -510,7 +594,7 @@ interface PublicKeyPayload {
 
 データチャネルのラベルは既定 `webtcp`。プロトコルは既定 `''`（SCTP に任せる）。
 
-### 9.4 SignalingAdapterHub の HTTP 契約
+### 10.4 SignalingAdapterHub の HTTP 契約
 
 `SignalingAdapterHub` は次の HTTP エンドポイントを利用する。
 
@@ -524,7 +608,7 @@ interface PublicKeyPayload {
 - サーバーは配信済みメッセージを削除してよい (MAY)。未配信メッセージは 60 秒で失効することを推奨する。
 - `sendMessage` は 2xx 以外で reject する。
 
-### 9.5 EntranceSearcherAdapterHub と自動ブートストラップ
+### 10.5 EntranceSearcherAdapterHub と自動ブートストラップ
 
 | メソッド | パス | レスポンス |
 | :--- | :--- | :--- |
@@ -534,31 +618,31 @@ interface PublicKeyPayload {
 - サーバーは直近 60 秒以内にポーリングしたノードを返すことを推奨する。
 - `WebTCPNetwork.bootstrap(searcher, options)` は `searcher.search()` から得た候補（自身と既接続ノードを除く）へ順に接続を試み、目標接続数（既定 1）に達するまで指数バックオフ付きでリトライする。
 
-### 9.6 TURN / ICE 設定と NAT 越え
+### 10.6 TURN / ICE 設定と NAT 越え
 
 - `WebRTCChannelOptions.iceServers` は既定 `[]`（同一ホスト・同一 LAN 向け）。
 - インターネット越し（NAT 越え）の通信では、STUN サーバー（例: `stun:stun.l.google.com:19302`）および対称型 NAT / ファイアウォール越えのための TURN サーバーを `iceServers` に設定する。
 - **TURN 資格情報の動的取得フック**: `iceServersProvider?: () => RTCIceServer[] | Promise<RTCIceServer[]>` を指定すると、`RTCPeerConnection` 生成時および ICE 再起動時に都度呼ばれ、短期有効期限の TURN 資格情報（RFC 8489 / TURN REST API 相当）を安全に注入できる。
 - **ICE 再起動**: `iceConnectionState` が `'failed'` に遷移したとき、または `'disconnected'` が `iceRestartDelayMs`（既定 3000 ms）継続したとき、`maxIceRestarts`（既定 2 回）を上限として自動的に ICE 再起動（`createOffer({ iceRestart: true })`）を試行する。`iceServersProvider` が設定されている場合は `setConfiguration({ iceServers })` で資格情報も再取得する。上限を超えた失敗時はピアを破棄し `connection-status(false)` を発火する。
 
-## 10. セキュリティ（プロトコル v2 / Ed25519）
+## 11. セキュリティ（プロトコル v2 / Ed25519）
 
 本章は M3（#28）で導入したセキュリティモデルを定義する。
 
-### 10.1 脅威モデルと保証する範囲
+### 11.1 脅威モデルと保証する範囲
 
 | 脅威 | 対策 | 保証 |
 | :--- | :--- | :--- |
 | **なりすまし**（他人の NodeId を名乗る） | NodeId = 公開鍵指紋。`senderId` と署名検証鍵の指紋が一致しなければ破棄 | ✅ 防止 |
 | **改ざん**（ヘッダー・ペイロードの書き換え） | 署名対象は署名フィールドを除くシリアライズ済みパケット全体 | ✅ 検知 |
 | **偽造パケットの注入** | 隣接ノードは正規の Ed25519 署名なしにパケットを通せない | ✅ 防止 |
-| **リプレイ** | トランスポートのシーケンス空間 + 再送キューで重複を排除（§10.6） | ⚠️ 部分的 |
+| **リプレイ** | トランスポートのシーケンス空間 + 再送キューで重複を排除（§11.6） | ⚠️ 部分的 |
 | **盗聴** | WebRTC の DTLS（DataChannel）によるトランスポート暗号化 | ⚠️ ホップ間のみ |
 | **中継ノードによる内容閲覧** | 中継ノードは署名検証はできるが、ペイロードは DTLS 終端で復号される | ❌ 未対応（E2E 暗号化は非目標） |
 | **鍵の漏洩** | ブラウザは非抽出 CryptoKey（IndexedDB）、Node.js は PKCS#8 を利用者が保護 | ⚠️ 実装依存 |
 | **DoS（署名計算の浪費）** | デシリアライズ段階で長さ・バージョン・`signatureLen` を検証してから署名検証に入る | ⚠️ 部分的 |
-| **ドメイン名の乗っ取り**（他人の `domain.global` 名を自分が所有すると騙る） | 所有者の Ed25519 署名 + 指紋照合 + 台帳チェックポイント検証（§13.2 / §13.3）。検証器は既定で fail-closed | ✅ 検証可能な範囲で防止（実チェーン未検証の限界は §13.7） |
-| **名前解決の偽応答**（NameServer へのうそ） | `.domain.global` は所有権レコード必須、それ以外のローカル名は信頼モデルのまま（§12.1 / §13.5） | ⚠️ ゾーン内のみ |
+| **ドメイン名の乗っ取り**（他人の `domain.global` 名を自分が所有すると騙る） | 所有者の Ed25519 署名 + 指紋照合 + 台帳チェックポイント検証（§14.2 / §14.3）。検証器は既定で fail-closed | ✅ 検証可能な範囲で防止（実チェーン未検証の限界は §14.7） |
+| **名前解決の偽応答**（NameServer へのうそ） | `.domain.global` は所有権レコード必須、それ以外のローカル名は信頼モデルのまま（§13.1 / §14.5） | ⚠️ ゾーン内のみ |
 
 **保証しないもの**:
 
@@ -566,7 +650,7 @@ interface PublicKeyPayload {
 - 公開鍵の真正性そのもの（初回接触時の中間者。指紋の帯域外確認は利用者の責任）。
 - ノードの可用性・レート制限。
 
-### 10.2 署名の検証手順
+### 11.2 署名の検証手順
 
 受信側（`RoutingLayer.handleIncomingPacket`）は次の順で検証し、
 いずれかに違反したパケットを**破棄しなければならない** (MUST)。
@@ -574,11 +658,11 @@ interface PublicKeyPayload {
 1. `packet.version == 2`（または署名が付与されている）ことを確認する。
 2. `senderId` が `^[0-9a-f]{32}$` に一致することを確認する。
 3. `signature` の長さが **64 バイト**であることを確認する。
-4. `senderId` に対応する Ed25519 公開鍵を解決する（§10.4）。
+4. `senderId` に対応する Ed25519 公開鍵を解決する（§11.4）。
    - 解決できない場合、既定では最大 **5 秒**（`keyWaitTimeoutMs`）まで鍵の到着を待つ。
    - それでも得られない場合は破棄する。
 5. 公開鍵の指紋が `senderId` と一致することを確認する（§5.1）。不一致は破棄。
-6. 署名対象バイト列（§10.3）に対して `Ed25519.verify(publicKey, signatureInput, signature)` を実行する。
+6. 署名対象バイト列（§11.3）に対して `Ed25519.verify(publicKey, signatureInput, signature)` を実行する。
    `false` なら破棄。
 
 `version == 1`（署名なし）パケットは次のように扱う。
@@ -589,7 +673,7 @@ interface PublicKeyPayload {
   - `NullPacketVerifier`（レガシー）の場合: **`false`**
 - `true` のとき、v1 パケットは破棄する (MUST)。
 
-### 10.3 署名対象（正規化）
+### 11.3 署名対象（正規化）
 
 署名対象は **「署名フィールドを除いた、シリアライズ済みパケット」** である。
 
@@ -612,25 +696,25 @@ signatureInput = magic | version | ttl(0 固定) | flags | sourcePort | destinat
   `IPacketSerializer` が `serializeForSigning()` を実装しない場合、`Ed25519PacketVerifier` は**構築時に失敗しなければならない (MUST)**。
   署名対象を別経路で黙って近似生成してよいことにはならない（v1 ヘッダーで導出した署名対象は v2 の検証と一致しない）。
 
-### 10.4 公開鍵の配布
+### 11.4 公開鍵の配布
 
 採用方式は **「シグナリング時の交換」+「`RT_UPDATE` への同梱」** の併用である。
 いずれの経路でも、受信側は **指紋一致（`nodeId == deriveNodeId(publicKey)`）を必ず検証** するため、
 配布経路が信頼できなくてもなりすましは成立しない。
 
-#### 10.4.1 シグナリング時の交換
+#### 11.4.1 シグナリング時の交換
 
-DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.1）を交換する。
+DataChannel が開いた時点で双方が `public-key` メッセージ（§10.2.1）を交換する。
 直接の隣接ノードとは、これにより `RT_UPDATE` を待たずに署名検証を開始できる。
 
-#### 10.4.2 `RT_UPDATE` への同梱
+#### 11.4.2 `RT_UPDATE` への同梱
 
 `RT_UPDATE` のペイロード JSON に `publicKey`（Base64url）を含める。
 `RT_UPDATE` 自体も署名されるため、受信側は「同梱された公開鍵で署名を検証し、
 その公開鍵の指紋が `senderId` と一致すること」を確認できる（自己証明）。
 また `entries[].publicKey` により、隣接が学習済みのリモートノードの公開鍵も経路情報と一緒に伝播する。受信側は各鍵の指紋一致を検証する。
 
-#### 10.4.3 公開鍵ディレクトリと解決順序
+#### 11.4.3 公開鍵ディレクトリと解決順序
 
 `KeyDirectory`（`IPublicKeyResolver`）が `NodeId -> 公開鍵` を保持する。解決順序は次のとおり。
 
@@ -641,12 +725,12 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 `IPublicKeyResolver` を実装すれば、IPFS 等の**分散ストレージ**から鍵を引く方式に差し替えられる
 （M5 以降の課題。M4 では同梱インターフェースのみ提供）。
 
-#### 10.4.4 鍵の衝突・すり替え
+#### 11.4.4 鍵の衝突・すり替え
 
 - 既に登録済みの NodeId に対して **異なる鍵** が提示された場合、既存の鍵を保持し、新しい鍵は破棄する (MUST)。
 - 同一鍵の再提示は冪等に受理する (MAY)。
 
-### 10.5 鍵管理（KeyManager）
+### 11.5 鍵管理（KeyManager）
 
 | 実装 | 環境 | 秘密鍵の保存 | 署名・検証のプリミティブ |
 | :--- | :--- | :--- | :--- |
@@ -662,7 +746,7 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 - 利用可能な Ed25519 実装: Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+。
   非対応環境では v1（`NullPacketVerifier`）へフォールバックする。
 
-### 10.6 リプレイ対策
+### 11.6 リプレイ対策
 
 - 仮想ストリーム内の `DATA` / `SYN` / `FIN` は**バイト単位のシーケンス空間**で重複排除される（§8.3）。
   既に受信済みの範囲は破棄され、アプリケーションへ二重に渡らない。
@@ -675,23 +759,23 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
   パケットを「新規」と誤認する余地がある。セッション Nonce とタイムスタンプによる明示的な
   再生検知は M5 以降の強化課題とする（`plan.md` §4.1）。
 
-### 10.7 既知の制約
+### 11.7 既知の制約
 
 - アプリケーションデータの **E2E 暗号化は行わない**（WebRTC の DTLS によるホップ間暗号化のみ）。
 - **鍵のローテーション**は NodeId の変更を意味する。同一ノード ID のままの鍵更新は未定義。
 - 初回接触時の中間者（TOFU: Trust On First Use）。指紋の帯域外確認は未実装。
 - 検証失敗パケットのレート制限・ブロックリストは未実装。
 
-## 11. エラー・ログ・既定値
+## 12. エラー・ログ・既定値
 
-### 11.1 ログ
+### 12.1 ログ
 
 コアおよびアダプタは `console.*` を直接呼び出さず、`Logger` インターフェース（`debug` / `info` / `warn` / `error`）経由で出力しなければならない (MUST)。
 
 - 既定ロガーは `ConsoleLogger`（レベル `warn` 以上）。
 - `WebTCPNetwork` / `createBrowserNetwork` / 各アダプタのオプションでカスタム `logger` または `logLevel`（`'debug' | 'info' | 'warn' | 'error' | 'silent'`）を注入できる。
 
-### 11.2 エラー挙動
+### 12.2 エラー挙動
 
 | 状況 | 挙動 |
 | :--- | :--- |
@@ -707,15 +791,15 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | 再送上限超過 | `error` イベント発火後 `CLOSED`。 |
 | ストリーム `send()` が送信不可状態 | `Cannot send data. State is ...` で reject。 |
 | 送信バッファ超過 | `Send buffer full` で reject。 |
-| 名前解決の全体デッドライン超過 | `NameResolutionTimeoutError` で reject。**問い合わせ先が `connect()` 宙吊りでもデッドラインと `AbortSignal` を守る**（§12.2、#40）。 |
+| 名前解決の全体デッドライン超過 | `NameResolutionTimeoutError` で reject。**問い合わせ先が `connect()` 宙吊りでもデッドラインと `AbortSignal` を守る**（§13.2、#40）。 |
 | 名前解決の明示的中断 | `WebTCP name resolution aborted` で reject（デッドライン到達とは区別する）。 |
-| ドメイン所有権レコードの検証失敗 | `DomainOwnershipError`（`code` で理由を判別。§13.4）。解決は失敗し、結果はキャッシュしない。 |
-| `domain.global` 名の不正なローカル登録 | `registerA` / `registerCNAME` が `throw`（§13.5）。 |
+| ドメイン所有権レコードの検証失敗 | `DomainOwnershipError`（`code` で理由を判別。§14.4）。解決は失敗し、結果はキャッシュしない。 |
+| `domain.global` 名の不正なローカル登録 | `registerA` / `registerCNAME` が `throw`（§14.5）。 |
 | 同一シリアルで内容の異なるレコードが並存 | `DomainOwnershipError(code: 'conflict')`。勝者を決めずに失敗する（fail-closed）。 |
-| HTTP メッセージの不正（行長・ヘッダ・フレーミング） | §15.8 の表に従い `400` / `413` / `414` / `431` を返して接続を閉じる。 |
-| HTTP クライアントのタイムアウト・切断・上限超過 | `HTTPTimeoutError` / `HTTPConnectionClosedError` / `HTTPResponseTooLargeError` で reject（§15.8）。 |
+| HTTP メッセージの不正（行長・ヘッダ・フレーミング） | §16.8 の表に従い `400` / `413` / `414` / `431` を返して接続を閉じる。 |
+| HTTP クライアントのタイムアウト・切断・上限超過 | `HTTPTimeoutError` / `HTTPConnectionClosedError` / `HTTPResponseTooLargeError` で reject（§16.8）。 |
 
-### 11.3 既定値
+### 12.3 既定値
 
 | パラメータ | 値 |
 | :--- | :--- |
@@ -760,18 +844,18 @@ DataChannel が開いた時点で双方が `public-key` メッセージ（§9.2.
 | HTTP 応答本文のバッファ上限（非ストリーミング時、`HTTPClient`） | 8 MiB |
 | HTTP の `keep-alive` アイドルタイムアウト | 30 000 ms |
 
-## 12. 名前解決と WebTCP URL（M4 / #25）
+## 13. 名前解決と WebTCP URL（M4 / #25）
 
-### 12.1 名前とレコード
+### 13.1 名前とレコード
 
 - 名前は ASCII の LDH ラベル（英数字とハイフン）をドットで区切る。各ラベル 1–63 文字、全体 253 文字以下。ラベルの先頭/末尾ハイフンは禁止。大文字は小文字へ正規化し、末尾のルートドットは除去する。
 - 32 文字小文字 hex の名前は NodeId リテラルとして予約し、名前登録には使えない。
-- **`domain.global` を末尾に持つ名前はゾーン予約語であり、`registerA()` / `registerCNAME()` では登録できない（MUST NOT）**。その名の解決は §13 の所有権レコードを通じて行う。CNAME の**到達先**がゾーン内に入ることは許すが、その場合は最終解決時に所有権検証が必須となる (MUST)。
+- **`domain.global` を末尾に持つ名前はゾーン予約語であり、`registerA()` / `registerCNAME()` では登録できない（MUST NOT）**。その名の解決は §14 の所有権レコードを通じて行う。CNAME の**到達先**がゾーン内に入ることは許すが、その場合は最終解決時に所有権検証が必須となる (MUST)。
 - A レコード相当: `name -> NodeId`。CNAME レコード相当: `name -> canonical name`。
 - レコードは TTL（ミリ秒）を持つ。既定 60 000 ms、最大 86 400 000 ms。ローカル登録は明示的に削除・更新するまで有効。リモート応答と解決結果は TTL 経過までキャッシュする。
-- ローカル登録が常に優先する。リモート応答は「応答ノードがその名前をこう登録している」という情報であり、**グローバルな所有権証明ではない**。同一名前に複数の異なる応答がある場合は最初に受理した結果を TTL までキャッシュする。ゾーン内名前は例外（§13.5）。
+- ローカル登録が常に優先する。リモート応答は「応答ノードがその名前をこう登録している」という情報であり、**グローバルな所有権証明ではない**。同一名前に複数の異なる応答がある場合は最初に受理した結果を TTL までキャッシュする。ゾーン内名前は例外（§14.5）。
 
-### 12.2 NameServer
+### 13.2 NameServer
 
 `NameServer` はアプリケーション層サービスであり、新しい L3/L4 フラグやワイヤーバージョンを追加しない。既存の `VirtualStream` 上で UTF-8 JSON の要求/応答を 1 ストリームにつき 1 往復交換する。既定ポートは **5300**（仮想ポート。利用者が必要なら変更可能）。
 
@@ -785,7 +869,7 @@ const ns = new NameServer(network, {
 ns.registerA(name, nodeId, ttlMs?): void
 ns.registerCNAME(name, target, ttlMs?): void
 ns.unregister(name): boolean
-await ns.registerDomain(record, options?): Promise<DomainResolution>   // M5 / §13.5
+await ns.registerDomain(record, options?): Promise<DomainResolution>   // M5 / §14.5
 ns.unregisterDomain(domain): boolean
 ns.servedDomainRecords(): DomainOwnershipRecord[]
 ns.listen(): void
@@ -799,8 +883,8 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 - サーバーは自分のローカル登録のみを権威データとして返す。再帰問い合わせはしない。クライアントが CNAME 連鎖を反復解決するため、ノード間の問い合わせループを作らない。
 - 要求/応答は最大 16 KiB。応答は要求 ID と名前が一致しなければならない。不正・タイムアウト応答は無視する。
 - **デッドラインと中断は絶対である (MUST)**。`resolveTimeoutMs`（既定 5 000 ms）と `AbortSignal` は、問い合わせ先列挙・`network.connect()` の宙吊り・応答待機の**いずれの局面でも**守られなければならない（#40）。単一ノードの停滞が `resolve()` 全体を遅らせてはならない (MUST NOT)。デッドライン到達は `NameResolutionTimeoutError`、呼び出し側の明示中断は区別可能なエラーで reject する。
-- キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。検証に失敗したドメイン解決結果はキャッシュしてはならない (MUST NOT)（失敗は §13.5 の短 TTL 失敗キャッシュのみ）。
-- `domains`（`DomainAuthority`、§13.5）を渡した場合、ゾーン内名前の解決と応答は権威へ移譲される。渡さない場合、ゾーン内名前の解決は `DomainResolutionUnavailableError` で失敗する (MUST)。
+- キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。検証に失敗したドメイン解決結果はキャッシュしてはならない (MUST NOT)（失敗は §14.5 の短 TTL 失敗キャッシュのみ）。
+- `domains`（`DomainAuthority`、§14.5）を渡した場合、ゾーン内名前の解決と応答は権威へ移譲される。渡さない場合、ゾーン内名前の解決は `DomainResolutionUnavailableError` で失敗する (MUST)。
 - 名前解決の結果は `NameResolution`（`name` / `nodeId` / `ttlMs` / `source` / `chain` / 任意の `record`・`proof`）である。`source` は `'local' | 'cache' | 'remote' | 'domain'`。
 
 問い合わせプロトコル（JSON）:
@@ -815,7 +899,7 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 
 不在時は `{"protocol":1,"type":"error","id":"…","name":"…","code":"NXDOMAIN"}`。不正要求は `INVALID`。`record.type` は `A` または `CNAME`。クライアントは要求を送って `end()` し、サーバーは EOF 後に応答して `end()` する（Half-Close）。
 
-**所有権拡張（M5 / #25、`protocol` は 1 のまま）**。要求は `wantOwnership: true` を運べる (MAY)。ゾーン内名前への応答は `record` に加えて `ownership`（§13.2 の正規形式の配列）を 1 件以上添えなければならない (MUST)。受信側は未知のフィールドを無視してよい (MAY) ため、旧実装が返す素の `A` 応答もデコードできる。ただし**所有権レコードを伴わないゾーン内名前の応答は解決に使用してはならない** (MUST NOT)。
+**所有権拡張（M5 / #25、`protocol` は 1 のまま）**。要求は `wantOwnership: true` を運べる (MAY)。ゾーン内名前への応答は `record` に加えて `ownership`（§14.2 の正規形式の配列）を 1 件以上添えなければならない (MUST)。受信側は未知のフィールドを無視してよい (MAY) ため、旧実装が返す素の `A` 応答もデコードできる。ただし**所有権レコードを伴わないゾーン内名前の応答は解決に使用してはならない** (MUST NOT)。
 
 ```json
 { "protocol": 1, "type": "answer", "id": "…", "name": "shop.domain.global",
@@ -823,7 +907,7 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
   "ownership": [ { "version": 1, "body": { "…": "…" }, "signature": "…", "anchor": { "…": "…" } } ] }
 ```
 
-### 12.3 `webtcp://` URL
+### 13.3 `webtcp://` URL
 
 形式:
 
@@ -831,38 +915,38 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 webtcp://<host>:<port><path>?<query>#<fragment>
 ```
 
-- `host` は NodeId（32 文字小文字 hex）または §12.1 の名前。ホストの大文字は小文字へ正規化する。
+- `host` は NodeId（32 文字小文字 hex）または §13.1 の名前。ホストの大文字は小文字へ正規化する。
 - `port` は必須。1–65535 の整数。既定ポートは無い。
 - `path` は省略時 `/`。`fragment` は保持するが、接続自体には送信しない（クライアント側の断片であり、リクエストへは含めない）。
-- `query` は保持し、`HTTPClient` が `path` と連結してリクエストラインへ写す（§15.6）。**生の `VirtualStream` 接続（`connectURL()`）では従来どおりバイト列を送らない** — HTTP セマンティクスは「HTTP 層を使うかどうか」で決まり、L4 接続はトランスポートのままである。
+- `query` は保持し、`HTTPClient` が `path` と連結してリクエストラインへ写す（§16.6）。**生の `VirtualStream` 接続（`connectURL()`）では従来どおりバイト列を送らない** — HTTP セマンティクスは「HTTP 層を使うかどうか」で決まり、L4 接続はトランスポートのままである。
 - userinfo、IPv6 アドレス、ホスト内のパーセントエンコード、空白・制御文字、バックスラッシュ、空ホスト、不正ポートは拒否する。
 - `parseWebTCPUrl()` は `WebTCPUrl`（`host`, `nodeId?`, `name?`, `zone?`, `port`, `path`, `search`, `hash`）を返す。`formatWebTCPUrl()` は正規形を返す。
-- `host` が §13.1 のゾーン内名前である場合、`name` は正規化済みの完全名、`zone` はゾーン名（`domain.global`）になる。ゾーン外の名前は `zone` を持たない。URL 構文はゾーン内外で共通であり、`zone` は判定結果の提示であって新しい文法を導入しない (§13.1)。
+- `host` が §14.1 のゾーン内名前である場合、`name` は正規化済みの完全名、`zone` はゾーン名（`domain.global`）になる。ゾーン外の名前は `zone` を持たない。URL 構文はゾーン内外で共通であり、`zone` は判定結果の提示であって新しい文法を導入しない (§14.1)。
 - `network.connectURL(url, { nameServer?, localPort?, signal? })` は NodeId 指定なら直接接続し、名前指定なら `nameServer.resolve()` 経由で NodeId を得て接続する。名前指定で NameServer が無ければ reject する。戻り値は `VirtualStream`。パス等はアプリケーションが `parseWebTCPUrl()` の結果から利用する。
-- **HTTP で接続する場合は `network.fetchURL(url, { nameServer })` を使う**（M6 / §15.6）。これは `connectURL()` と `HTTPClient` を組み合わせた薄いヘルパーで、`path` / `query` をリクエストラインへ写して 1 往復（または `keep-alive` セッション）を実行する。
+- **HTTP で接続する場合は `network.fetchURL(url, { nameServer })` を使う**（M6 / §16.6）。これは `connectURL()` と `HTTPClient` を組み合わせた薄いヘルパーで、`path` / `query` をリクエストラインへ写して 1 往復（または `keep-alive` セッション）を実行する。
 - `webtcp://` はブラウザのナビゲーション可能スキームではない。ライブラリ API としてパース・接続する。
 
-### 12.4 セキュリティ境界
+### 13.4 セキュリティ境界
 
 - NameServer の応答は仮想ストリーム下層の v2 署名で保護されるが、名前解決自体にグローバルな所有権証明は無い。ローカル登録は利用者設定を信頼する。
 - `domain.global` への登録、ブロックチェーンによる所有権証明、グローバルな名前衝突解決は **M5** の対象（`plan.md`）。
 - 名前問い合わせは増幅を避けるため問い合わせ先数・並列数・メッセージサイズ・CNAME 深度・キャッシュ件数を制限する。
 
-## 13. `domain.global` とドメイン所有権証明（M5 / #25）
+## 14. `domain.global` とドメイン所有権証明（M5 / #25）
 
 本章は「名前でサービスを発見する」最終段階として、**グローバルに一意なドメイン名と、その所有権の検証可能性**を定義する。設計方針は 2 つである。
 
 1. **ブラウザにブロックチェーンのフルクライアントを載せない。** 所有権の証明は「誰もが発行できる自己署名クレーム」+「検証可能な追記型台帳の包含証明」として定義し、実チェーンとの接続は**プラガブルな検証インターフェース**（`IChainAnchorVerifier`）に委ねる。
 2. **既定で fail-closed。** レコード形式・署名・指紋・有効期間・台帳アンカーのうち 1 つでも検証できない場合、解決は失敗する。「検証できなかったが許容する」モードは利用者が明示的に選択する。
 
-### 13.1 ゾーンと名前規則
+### 14.1 ゾーンと名前規則
 
-- ゾーンは **`domain.global`** の 1 つだけとする (MUST)。将来の追加ゾーンは本書の対象外（§17）。
-- 完全名は `<label>(.<label>)*.domain.global`。ラベルは §12.1 と同じ ASCII LDH（1–63 文字、先頭/末尾ハイフン不可）。ゾーン名を含む全体で 253 文字以下。
+- ゾーンは **`domain.global`** の 1 つだけとする (MUST)。将来の追加ゾーンは本書の対象外（§18）。
+- 完全名は `<label>(.<label>)*.domain.global`。ラベルは §13.1 と同じ ASCII LDH（1–63 文字、先頭/末尾ハイフン不可）。ゾーン名を含む全体で 253 文字以下。
 - 正規化は小文字化と末尾ルートドットの除去のみ。IDNA / Punycode・homoglyph 対策は**未実装**（`plan.md` §4.3、#43）。
-- `isDomainGlobalName(name)` がゾーン内名前を判定する。ゾーン内名前は §12.1 のとおりローカル登録 reserved。
+- `isDomainGlobalName(name)` がゾーン内名前を判定する。ゾーン内名前は §13.1 のとおりローカル登録 reserved。
 
-### 13.2 所有権レコード（`DomainOwnershipRecord`）
+### 14.2 所有権レコード（`DomainOwnershipRecord`）
 
 レコードは「ドメイン名 ↔ NodeId」の対応を、その NodeId を生む公開鍵の所有者が署名した**自己証明型クレーム**である。
 
@@ -883,18 +967,18 @@ interface DomainOwnershipRecord {
   version: 1;
   body: DomainRecordBody;
   signature: string;       // canonicalDomainRecordBodyBytes(body) に対する Ed25519 署名（Base64url、64 B）
-  anchor?: DomainAnchor;   // §13.3 の台帳アンカー
+  anchor?: DomainAnchor;   // §14.3 の台帳アンカー
 }
 ```
 
 - **canonical バイト列**: `body` を固定キー順（`version, domain, nodeId, ownerPublicKey, serial, issuedAt, expiresAt, revoked, port, txt`）で空白なし JSON にし、UTF-8 エンコードしたもの。未定義キーは拒否する (MUST)。`revoked` は常に書き出す（`false` でも省略しない）。`port` / `txt` は存在時のみ書く。
 - 署名対象は canonical バイト列そのもの。**ハッシュ前処理は行わない**（Ed25519 が内部でハッシュするため）。
-- `commitment = hex(SHA-256(canonical バイト列))` を台帳の葉として使う（§13.3）。
+- `commitment = hex(SHA-256(canonical バイト列))` を台帳の葉として使う（§14.3）。
 - 検証側は必ず**受信 JSON を canonical 形式へ再正規化してから**署名を検証しなければならない (MUST)。生バイト列に対する検証は、未知キー混入の余地を残すため禁止 (MUST NOT)。
 - 生成: `createDomainOwnershipRecord({ domain, keyManager, serial, lifetimeMs?, port?, txt?, revoked? })`。`keyManager.nodeId` と `domain` の妥当性を検証する。
 - 解析: `parseDomainOwnershipRecord(value)` は厳格検証（未知キー・型・長さ・Base64url・指紋）を行い、失敗時 `DomainRecordError` を投げる。ネットワーク経由の JSON は必ずこの関数を通す (MUST)。
 
-### 13.3 台帳アンカー（`DomainAnchor`）とチェックポイント連鎖
+### 14.3 台帳アンカー（`DomainAnchor`）とチェックポイント連鎖
 
 台帳（registry / transparency log）は受領したレコードの `commitment` を**追記専用の Merkle 木**へ積上げ、木サイズ・ルート・時刻を**ログ鍵で署名**したチェックポイントを発行する。
 
@@ -903,7 +987,7 @@ interface DomainAnchor {
   leafIndex: number;              // 0 起始の葉番号
   proof: string[];                // 包含証明（兄弟ノードの Base64url SHA-256、葉から根へ）
   checkpoint: SignedDomainCheckpoint;
-  chain?: {                        // 実チェーンへの追加コミットメント（任意、§13.4.2）
+  chain?: {                        // 実チェーンへの追加コミットメント（任意、§14.4.2）
     network: string;               // 例 "namecoin"、"ethereum:11155111"
     txId?: string;
     blockHeight?: number;
@@ -923,14 +1007,14 @@ interface SignedDomainCheckpoint extends DomainCheckpoint { signature: string }
 - **葉ハッシュ** `H(0x00 || commitmentBytes)`、**内部ノード** `H(0x01 || left || right)`。接頭辞による領域分離を必須とする (MUST)（第二像攻撃の抑止）。ノード数が奇数の場合、末尾ノードは自分自身とペアにする（promote 規則）。
 - **ルートは木サイズへバインドする**: `root = H(0x02 || uint64BE(treeSize) || top)`。バインドしないと、右端以外の葉に対する包含証明が**別サイズの木**でも成立してしまう（最上位の promote 有無だけが差分になるため）。`verifyDomainMerkleProof()` は各レベルのノード数を `treeSize` から再現し、promote 位置では兄弟が自分自身と一致することも要求する (MUST)。
 - 台帳はチェックポイントを**追記のみ**で発行する（`append` と、最初の `buildAnchor()` 以外で新チェックポイントを作ってはならない MUST NOT）。読み出しのたびに再署名すると `prevHash` 連鎖が自己参照で壊れる。
-- `verifyDomainMerkleProof({ commitment, leafIndex, treeSize, root, proof })` は `leafIndex < treeSize` と `proof` 長さ `= ceil(log2(treeSize))` を確認する。不一致は失敗 (MUST)。`commitment` は 32 バイトの hex（§13.2）で、葉の原料は hex を raw バイトへ戻したものである。
+- `verifyDomainMerkleProof({ commitment, leafIndex, treeSize, root, proof })` は `leafIndex < treeSize` と `proof` 長さ `= ceil(log2(treeSize))` を確認する。不一致は失敗 (MUST)。`commitment` は 32 バイトの hex（§14.2）で、葉の原料は hex を raw バイトへ戻したものである。
 - `treeSize` は monotonic な履歴としてクライアントへ提示される。クライアントは**前回受理したチェックポイント**を記憶し (SHOULD)、それより小さい `treeSize` を拒否する (MUST)。
 - `prevHash` により、チェックポイントは同一ログ内で**履歴を消せない連結**（append-only chain）を作る。`verifyDomainCheckpointChain({ pinned, target, between })` は `pinned` から `target` への連結を、区間のチェックポイントを受信して検証する (MAY)。台帳が区間を提供できない場合、検証は `unavailable` を返し、利用者の設定で拒否または続行を決める。
 - チェックポイント署名対象は `canonicalDomainCheckpointBytes(checkpoint)`（固定キー順 `logId, treeSize, root, prevHash, timestamp` の空白なし JSON、UTF-8）。`signature` は含めない。
 
-### 13.4 検証インターフェース
+### 14.4 検証インターフェース
 
-#### 13.4.1 `IDomainOwnershipVerifier`
+#### 14.4.1 `IDomainOwnershipVerifier`
 
 ```ts
 interface IDomainOwnershipVerifier {
@@ -941,7 +1025,7 @@ interface DomainVerifyContext {
   expectedDomain?: string;   // 解決中の名前と record.body.domain の一致確認
   knownSerial?: number;      // 既に受理した最大 serial（これ未満のレコードは stale）
   clockSkewMs?: number;
-  checkpointChain?: DomainCheckpointSource;   // §13.3 の連結検証に使う
+  checkpointChain?: DomainCheckpointSource;   // §14.3 の連結検証に使う
 }
 interface DomainVerifyResult {
   ok: boolean;
@@ -967,10 +1051,10 @@ interface DomainVerifyResult {
 7. アンカー方針: `requireAnchor` 時に `anchor` を要求（欠落は `anchor-missing`）。`anchor` がある場合、ログ鍵（`logKeys[logId]`）が既知でなければ `anchor-untrusted-log`、包含証明・チェックポイント署名・`treeSize` 整合のいずれか失敗で `anchor-bad-proof` / `anchor-bad-checkpoint` / `anchor-rollback` を返す。
 8. `anchor.chain` がある場合 `IChainAnchorVerifier` を呼ぶ。未設定なら `chainVerified: null`（`requireChainAnchor: true` なら `chain-unverified`）、設定時は `verified: false` で `chain-unverified`。
 
-- ログ鍵は `logKeys: Record<logId, publicKey>` の静的設定、または `resolveLogKey(logId)` による遅延解決（§10.4 の `KeyDirectory` を再利用できる）。**信任は TOFU に頼らず、設定済みの鍵のみ受け付ける** (MUST)。
+- ログ鍵は `logKeys: Record<logId, publicKey>` の静的設定、または `resolveLogKey(logId)` による遅延解決（§11.4 の `KeyDirectory` を再利用できる）。**信任は TOFU に頼らず、設定済みの鍵のみ受け付ける** (MUST)。
 - 検証器は例外を投げず、常に `DomainVerifyResult` を返す (MUST)。
 
-#### 13.4.2 `IChainAnchorVerifier`（実チェーンへの差し替え点）
+#### 14.4.2 `IChainAnchorVerifier`（実チェーンへの差し替え点）
 
 ```ts
 interface IChainAnchorVerifier {
@@ -983,9 +1067,9 @@ interface IChainAnchorVerifier {
 
 本仕様は**参照実装を定義しない**（SPV ヘッダー検証、keccak-256 / RLP による EVM 証明、Namecoin の `name_firstupdate` 照会は #42 として切り出す）。実装側は未設定時に `chainVerified: null` を返すことをもって「オフライン検証範囲」と明示する。
 
-#### 13.4.3 衝突解決
+#### 14.4.3 衝突解決
 
-同一ドメインに対して**複数の有効レコード**が提示された場合（§13.5 の解決フロー）、勝者は
+同一ドメインに対して**複数の有効レコード**が提示された場合（§14.5 の解決フロー）、勝者は
 
 ```
 max(serial) で勝つ → 同 serial なら commitment が同一なら同一視、相違あれば conflict（fail-closed）
@@ -993,7 +1077,7 @@ max(serial) で勝つ → 同 serial なら commitment が同一なら同一視�
 
 で決める。`anchor` がある場合は「より小さい `leafIndex`（＝先に台帳へ入った）」を決定的なタイブレークとする。人間による裁定・競売・マルチシグ承認は未定義（#43）。
 
-### 13.5 解決フロー（`DomainAuthority`）
+### 14.5 解決フロー（`DomainAuthority`）
 
 ```ts
 const domains = createDomainAuthority({
@@ -1008,7 +1092,7 @@ await domains.register(record): Promise<DomainResolution>       // 検証 + ロ�
 await domains.remember(record): Promise<DomainVerifyResult>     // ローカル信託（検証は必ず通す）
 domains.forget(name): boolean
 domains.close(): void
-domains.createPublicKeyResolver(inner?): IPublicKeyResolver     // §10.4.3 への bridge
+domains.createPublicKeyResolver(inner?): IPublicKeyResolver     // §11.4.3 への bridge
 
 interface DomainResolution { /* 成功 */ ok: true; domain; nodeId; record; proof; pinnedCheckpoint?; port?; candidates; via }
                             /* 失敗 */ | { ok: false; domain; code: DomainProofCode; message; record?; proof? }
@@ -1019,18 +1103,18 @@ interface IDomainRecordSource {
 }
 ```
 
-- 収集元（`IDomainRecordSource`）は (1) ローカルストア `local`、(2) 明示 `sources`（HTTP レジストリ等）、(3) 既知ノードへの `wantOwnership` 問い合わせ（§12.2）である。**ストリーム I/O を `core/domain` は知らない** — (3) は `NameServer` が `settleCandidates()` へ候補を渡す形で供給する（`WebTCPNetwork.connect` を使うため、v2 署名検証とマルチホップ経路がそのまま効く）。収集は**並列・全体デッドライン付き**で、1 つの停滞が解決を止めてはならない (MUST NOT)。
-- 各候補は §13.4 で検証し、**検証に成功したもののみ** §13.4.3 で勝者を決める。勝者の `body.nodeId` を解決結果とし、`NameResolution.source` は `'domain'`、`record` と `proof` を添える。
+- 収集元（`IDomainRecordSource`）は (1) ローカルストア `local`、(2) 明示 `sources`（HTTP レジストリ等）、(3) 既知ノードへの `wantOwnership` 問い合わせ（§13.2）である。**ストリーム I/O を `core/domain` は知らない** — (3) は `NameServer` が `settleCandidates()` へ候補を渡す形で供給する（`WebTCPNetwork.connect` を使うため、v2 署名検証とマルチホップ経路がそのまま効く）。収集は**並列・全体デッドライン付き**で、1 つの停滞が解決を止めてはならない (MUST NOT)。
+- 各候補は §14.4 で検証し、**検証に成功したもののみ** §14.4.3 で勝者を決める。勝者の `body.nodeId` を解決結果とし、`NameResolution.source` は `'domain'`、`record` と `proof` を添える。
 - 候補が 0 件のとき権威は `code: 'resolution-unavailable'` を返し、候補はあるが全滅（検証失敗）のときは最後の `code` を返す。`settle()` は例外を投げず `ok: false` を返す。
 - `NameServer.resolve()` はこれを**名前不存在と検証失敗へ書き分ける** (MUST): 権威が `resolution-unavailable` を返し、かつ既知ノードの `wantOwnership` 応答にも候補が無かった場合は `NameNotFoundError`（誰もその名を知らない = NXDOMAIN 相当）、候補があったのに検証を通らなかった場合は `DomainOwnershipError`（`code` を伝播 = 裏付けはあるが受理できない）。`DomainResolutionUnavailableError` は権威 API（`resolve()` / `settle()` の例外系）と、権威自体が未設定のゾーン名解決で返る。収集元が 1 つも応答しなかった場合（通信障害）に「解決できた」ことにしてはならない (MUST NOT)。
 - `resolve()` / `settle()` は成功を `cacheTtlMs`、失敗を `negativeTtlMs` で cache するため、`NameServer` は 2 段階（権威 → 既知ノード）の照会を 1 回に絞れる。キャッシュを避けたい診断は `skipCache: true` を使う。
 - 成功結果は `cacheTtlMs`（既定 60 000 ms）で、失敗は `negativeTtlMs`（既定 5 000 ms、**成功より短くなければならない** MUST）でキャッシュする。キャッシュは `maxCacheEntries`（既定 256）上限。
 - `pinCheckpoints: true`（既定 `true`）の場合、受理したチェックポイントをログ単位で記憶し、より古い `treeSize` を持つチェックポイントを `anchor-rollback` で拒否する。
-- **ゾーン内名前の解決に `DomainAuthority` が無ければ失敗する**（§12.2）。`NameServer` はゾーン内名の `registerA` / `registerCNAME` を拒否し (MUST)、`registerDomain()` のみ受け付ける。
-- `ns.registerDomain(record)` は (1) 検証、(2) ローカル A レコード登録（TTL はレコード残存期間と §12.1 上限の小さいほう）、(3) 応答用のレコード保管 の順で行い、検証に失敗したレコードは登録しない (MUST)。権威が未設定のときは組み込み検証器（`requireAnchor: false`）で自己署名・指紋・有効期間だけを確認する。
+- **ゾーン内名前の解決に `DomainAuthority` が無ければ失敗する**（§13.2）。`NameServer` はゾーン内名の `registerA` / `registerCNAME` を拒否し (MUST)、`registerDomain()` のみ受け付ける。
+- `ns.registerDomain(record)` は (1) 検証、(2) ローカル A レコード登録（TTL はレコード残存期間と §13.1 上限の小さいほう）、(3) 応答用のレコード保管 の順で行い、検証に失敗したレコードは登録しない (MUST)。権威が未設定のときは組み込み検証器（`requireAnchor: false`）で自己署名・指紋・有効期間だけを確認する。
 - ローカル登録済みのゾーン名を `resolve()` するときも、失効・焼却を見落とさないよう**毎回レコードを再検証**する (MUST)。
 
-### 13.6 参照レジストリの HTTP 契約（オプショナル）
+### 14.6 参照レジストリの HTTP 契約（オプショナル）
 
 ライブラリ同梱のデモ実装（`examples/server.mjs`）と `HttpDomainRegistryClient` は次の契約を使う。**仕様として必須ではない**（`IDomainRecordSource` を実装すれば任意のバックエンドでよい）。
 
@@ -1043,22 +1127,22 @@ interface IDomainRecordSource {
 | `GET` | `/domain/checkpoints?after=<treeSize>&to=<treeSize>` | — | `{ "checkpoints": [ … ] }` |
 | `GET` | `/domain/log` | — | `{ "logId", "publicKey" }`（ログ鍵の TOFU ピン留め用） |
 
-- レジストリはレコードの検証（§13.4 の 1〜6）に成功した場合のみ受理する。`serial` が既知の最大値以下なら `409 stale-serial` を返す (SHOULD)。
+- レジストリはレコードの検証（§14.4 の 1〜6）に成功した場合のみ受理する。`serial` が既知の最大値以下なら `409 stale-serial` を返す (SHOULD)。
 - 応答の上限は 1 名前あたり 8 件、1 レコードあたり 16 KiB、1 応答あたり 1 MiB。超過分は切り捨てず `413`（リクエスト側は `400` / `413`）を返す。
 - クライアント実装 `HttpDomainRegistryClient`（`adapters/domain/`）は `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装し、`checkpointChain` として注入できる。請求ごとに `timeoutMs` と `AbortSignal` を適用し、失敗は `DomainRegistryError`（`status` を運ぶ型）へ正規化する。
-- レジストリは**信頼の根元ではない**。レコードの真正性は所有者署名と（設定時の）台帳検証で決まるため、レジストリが嘘を書いても解決は壊れない（§13.7）。
+- レジストリは**信頼の根元ではない**。レコードの真正性は所有者署名と（設定時の）台帳検証で決まるため、レジストリが嘘を書いても解決は壊れない（§14.7）。
 
-### 13.7 セキュリティ境界と未達
+### 14.7 セキュリティ境界と未達
 
 - 検証者が信頼するのは**設定されたログ鍵と所有者公開鍵だけ**。シグナリングハブ、中継ノード、HTTP レジストリは信頼不要（指紋照合が全てを自己証明化する）。
-- **チェックポイントの信憑性はログ鍵の署名に依存する**。「その名の真の所有者が台帳へ提出した」までの保証であり、**台帳の公正性（二重記載しないこと）は検証しない**。単一ログの横書きは §13.3 の `prevHash` 連結で検出できるが、ログ全体を書換えた場合は検出できない。複数ログの M-of-N 合意は未実装（#43）。
+- **チェックポイントの信憑性はログ鍵の署名に依存する**。「その名の真の所有者が台帳へ提出した」までの保証であり、**台帳の公正性（二重記載しないこと）は検証しない**。単一ログの横書きは §14.3 の `prevHash` 連結で検出できるが、ログ全体を書換えた場合は検出できない。複数ログの M-of-N 合意は未実装（#43）。
 - `anchor.chain` が無い／未設定の場合、**オンチェーン検証は行われない**（`chainVerified: null`）。ブラウザにフルクライアントを載せない設計上の帰結であり、実チェーン接続は #42。
 - ドメイン名そのものの紛争裁定、失効回収の自動化、IDNA は未定義（#43）。
 - 問い合わせは既知ノード全体へ平文（署名付き）で拡散する。問い合わせ秘匿（段階的開示・暗号化）は未実装。
 
-## 14. 公開 API
+## 15. 公開 API
 
-### 14.1 WebTCPNetwork
+### 15.1 WebTCPNetwork
 
 
 ```ts
@@ -1073,6 +1157,7 @@ new WebTCPNetwork({
   verifier?: IPacketVerifier,       // 省略時: 鍵管理があれば Ed25519PacketVerifier
   routingTableManager?: RoutingTableManagerOptions,
   transport?: TransportLayerOptions,
+  stateStorage?: ServiceStateStorage,  // 任意（M7 / §9.3）
   defaultTtl?: number,
   logger?: Logger,
   logLevel?: LogLevel,
@@ -1086,6 +1171,8 @@ connectToPeer(remoteId: NodeId): Promise<void>
 bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<BootstrapResult>
 getNeighbors(): NodeId[]
 getRoutingTable(): RoutingTable
+persistState(options?: { nameServer?: NameServer }): Promise<PersistedServiceState>   // M7 / §9.3
+restoreState(options?: { nameServer?: NameServer }): Promise<RestoredServiceState | null>  // M7 / §9.3
 close(): void
 ```
 
@@ -1098,12 +1185,13 @@ close(): void
 - `keyManager` / `keyDirectory` / `requireSignatures` は M3（#28）で追加された。
   `keyManager` を渡すと自動的にプロトコル v2（署名必須）になり、`verifier` も `Ed25519PacketVerifier` が組まれる。
 - `connect()` は必要に応じてリンクを確立してから仮想接続を開始する。
-- `connectURL()` は M4 で追加。名前指定には `options.nameServer` が必要。`options.nameServer.domains` 設定時、ゾーン内名前は所有権検証を通る（§13.5）。
-- `serializer` を注入した場合、自動生成される `Ed25519PacketVerifier` にも**同じインスタンス**が渡される（#41）。注入シリアライザが `serializeForSigning()` を実装しない場合、鍵管理併用は構築時に失敗する（§10.3）。
+- `connectURL()` は M4 で追加。名前指定には `options.nameServer` が必要。`options.nameServer.domains` 設定時、ゾーン内名前は所有権検証を通る（§14.5）。
+- `serializer` を注入した場合、自動生成される `Ed25519PacketVerifier` にも**同じインスタンス**が渡される（#41）。注入シリアライザが `serializeForSigning()` を実装しない場合、鍵管理併用は構築時に失敗する（§11.3）。
 - `bootstrap()` はエントランス探索結果から候補へ順次接続を試み、失敗時は指数バックオフでリトライする。
-- 起動完了時に `'ready'` イベントを発火する。
+- 起動完了時に `'ready'` イベントを発火する。隣接の入れ替わりは `'neighbor-connected'` / `'neighbor-disconnected'`（引数: `peerId`）としても発火する（M7 / §9.4）。
+- `persistState()` / `restoreState()` は `stateStorage` の指定を必要とする（M7 / §9.3）。
 
-### 14.2 VirtualStream
+### 15.2 VirtualStream
 
 ```ts
 send(data: Uint8Array | string): Promise<void>
@@ -1128,7 +1216,7 @@ on('connect' | 'data' | 'readable' | 'end' | 'close' | 'drain' | 'error', listen
 - `drain` は送信バッファおよび未 ACK キューが空になったときに発火する。
 - `close` は `CLOSED` 遷移時に一度だけ発火する。
 
-### 14.3 セキュリティ API（M3 / #28）
+### 15.3 セキュリティ API（M3 / #28）
 
 ```ts
 // NodeId = Ed25519 公開鍵の指紋
@@ -1162,22 +1250,22 @@ directory.waitForPublicKey(nodeId, timeoutMs?): Promise<Uint8Array | null>
 | `deriveNodeId` / `nodeIdMatchesPublicKey` | 公開鍵指紋の導出・照合（§5.1） |
 | `NodeKeyManager` | Node.js 用の Ed25519 鍵管理（`node:crypto`） |
 | `BrowserKeyManager` | ブラウザ用の Ed25519 鍵管理（Web Crypto + IndexedDB / 非抽出 CryptoKey） |
-| `Ed25519PacketVerifier` | `IPacketVerifier` 実装。署名付与と検証（§10.2 / §10.3） |
+| `Ed25519PacketVerifier` | `IPacketVerifier` 実装。署名付与と検証（§11.2 / §11.3） |
 | `NullPacketVerifier` | 署名なしのレガシー検証器（v1 相互運用専用） |
 | `KeyDirectory` | `NodeId -> 公開鍵`。指紋照合つき登録・待機・学習 |
 | `NodeIdCollisionError` | 同一 NodeId に異なる鍵/身元が対応する衝突を表す型付きエラー |
-| `IPublicKeyResolver` | 分散ストレージ等への差し替えポイント（§10.4.3） |
+| `IPublicKeyResolver` | 分散ストレージ等への差し替えポイント（§11.4.3） |
 
-### 14.4 名前解決とドメイン所有権 API（M4 / M5・#25）
+### 15.4 名前解決とドメイン所有権 API（M4 / M5・#25）
 
 ```ts
-// 名前空間（§13.1）
+// 名前空間（§14.1）
 DOMAIN_GLOBAL_ZONE: 'domain.global'
 isDomainGlobalName(name): boolean
 normalizeDomainName(input): string          // 失敗時 DomainRecordError
 prepareDomainName / isValidDomainName / domainLabels / domainZone / domainNameInZone
 
-// レコード（§13.2）
+// レコード（§14.2）
 canonicalDomainRecordBodyBytes(body): Uint8Array
 canonicalDomainCheckpointBytes(checkpoint): Uint8Array
 await commitDomainRecord(body): Promise<string>          // hex SHA-256
@@ -1187,7 +1275,7 @@ parseDomainRecordBody(value): DomainRecordBody            // 未知キー拒否
 domainRecordToJSON(record) / serializeDomainRecord(record)
 await createDomainOwnershipRecord({ domain, keyManager, serial, lifetimeMs?, port?, txt?, revoked? })
 
-// 台帳（§13.3）
+// 台帳（§14.3）
 sha256Domain(bytes) / defaultDomainHash / verifyDomainEd25519(publicKey, data, signature)
 domainMerkleLeafHash(leafBytes) / domainMerkleNodeHash(left, right) / bindDomainMerkleRoot(top, treeSize)
 computeDomainMerkleRoot(leafBytes) / buildDomainMerkleRoot(leafBytes): Promise<string>  // Base64url
@@ -1200,22 +1288,22 @@ createDomainLedger({ keyManager, logId?, requireOwnerSignature?, maxEntries?, ha
     // → DomainLedger: append / lookupByDomain / lookupByNodeId / buildAnchor / checkpoint /
     //                 checkpointsBetween / snapshot / root / clear
 
-// 検証（§13.4）
+// 検証（§14.4）
 createDomainOwnershipVerifier({ requireAnchor?, requireChainAnchor?, logKeys?, resolveLogKey?,
                                 checkpointMaxAgeMs?, maxLifetimeMs?, clockSkewMs?, chainAnchorVerifier?,
                                 verifySignature?, hashFn?, logger? })
 createDomainProofCache({ maxEntries? })     // knownSerials / pinned checkpoints / commitments の保持
-conflictVerdict(current, candidate)         // §13.4.3 の勝者判定（'identical' | 'candidate' | 'current' | 'conflict'）
+conflictVerdict(current, candidate)         // §14.4.3 の勝者判定（'identical' | 'candidate' | 'current' | 'conflict'）
 
-// 解決（§13.5）
+// 解決（§14.5）
 createDomainAuthority({ verifier?, verifierOptions?, local?, sources?, peers?, checkpointChain?,
                         cacheTtlMs?, negativeTtlMs?, maxCacheEntries?, resolveTimeoutMs?,
                         queryTimeoutMs?, maxRecordsPerDomain?, pinCheckpoints?, logger? })
 memoryDomainRecordSource({ records?, logger? })   // テスト・ローカル信託用（put / remove / list つき）
 chainDomainRecordSources(sources)
-await new NameServer(network, { domains }).registerDomain(record)   // §12.2
+await new NameServer(network, { domains }).registerDomain(record)   // §13.2
 
-// レジストリアダプタ（§13.6、adapters/domain/）
+// レジストリアダプタ（§14.6、adapters/domain/）
 createHttpDomainRegistryClient({ baseUrl, fetchImpl?, timeoutMs?, tolerateNotFound?, logger? })
     // → lookupByDomain / lookupByNodeId / submit / checkpoint / checkpointsBetween / logInfo
 
@@ -1227,18 +1315,18 @@ DomainCheckpointSource / DomainResolution / DomainResolution* (Success | Failure
 DomainRecordError / DomainOwnershipError / DomainConflictError / DomainResolutionUnavailableError
 DomainLedgerAppendError / DomainRegistryError
 
-- `NameServerOptions.domains` に `DomainAuthority` を渡すと、ゾーン内名の解決・応答が §13.5 に従って権威へ移譲される。
-- `HttpDomainRegistryClient`（`adapters/domain/`、§13.6）は `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装する。
+- `NameServerOptions.domains` に `DomainAuthority` を渡すと、ゾーン内名の解決・応答が §14.5 に従って権威へ移譲される。
+- `HttpDomainRegistryClient`（`adapters/domain/`、§14.6）は `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装する。
 - `core/domain` は `crypto.subtle`（Web Crypto）だけを使う。Ed25519 検証が使えない環境では `verifySignature` を差し替える。
 
-### 14.5 HTTP トンネル API（M6 / #50）
+### 15.5 HTTP トンネル API（M6 / #50）
 
 ```ts
 // WebTCPNetwork（M6 で追加）
 serveHTTP(port: VirtualPort, handler: HTTPHandler, options?: HTTPServerOptions): HTTPServer
 fetchURL(url: string | WebTCPUrl, options?: FetchURLOptions): Promise<HTTPResponse>
 
-// サーバー（§15.3）
+// サーバー（§16.3）
 new HTTPServer(network, port, handler, options?)
     // → port / connectionCount / close()
 server.listen(): void                     // serveHTTP() はこれを行う
@@ -1246,13 +1334,13 @@ new HTTPRouter()                           // 補助（MAY）
 router.add(method, pattern, handler)       // '/users/:id' 記法
 router.handle: HTTPHandler
 
-// クライアント（§15.4）
+// クライアント（§16.4）
 new HTTPClient(network, { nameServer?, timeoutMs?, maxResponseBytes?, keepAlive?, idleTimeoutMs?, logger? })
 await client.fetch(url, { method?, headers?, body?, signal?, timeoutMs?, keepAlive? })
 await client.request({ nodeId, port, method, path, headers?, body?, signal? })
 client.close()
 
-// 低レベル（§15.2）
+// 低レベル（§16.2）
 new HTTPReader(stream, { maxHeaderBytes?, maxHeaderCount?, maxLineBytes?, strictLineEndings?, logger? })
     // → readRequest() / readResponse()
 class HTTPWriter { writeRequest(...) / writeResponse(...) }
@@ -1270,15 +1358,15 @@ HTTPConnectionClosedError / HTTPBodyConsumedError
 - `fetchURL()` は `HTTPClient` を一時的に作って 1 リクエストを実行する。`keep-alive` を維持したい場合は `HTTPClient` を直接使う。
 - HTTP 層は `core/http/` に置き、`core/network/` からは `serveHTTP` / `fetchURL` の 2 メソッドとして公開する。DOM API・`node:*`・`Buffer` に依存しない。
 
-## 15. HTTP トンネル（アプリケーション層 / M6・#50）
+## 16. HTTP トンネル（アプリケーション層 / M6・#50）
 
 本章は `VirtualStream` の上で HTTP/1.1 のメッセージを運ぶ**アプリケーションプロトコル**を定義する。ワイヤー（パケット）形式は一切変更しない。したがって L4 までの実装・v1/v2 の相互運用・既存の NameServer / ドメイン所有権とは独立に導入できる。
 
-### 15.1 目的とスコープ
+### 16.1 目的とスコープ
 
 - `network.serveHTTP(port, handler)` でブラウザ上のサービスを **HTTP のまま**公開し、既存の Web 資産（`fetch` 相当の呼び出し、`Content-Type` による表現、ステータスコード、`Accept-Encoding` ではない単純なヘッダ交渉）をそのまま使えるようにする。
-- `network.fetchURL('webtcp://name:port/path?q=1', { nameServer })` で、`webtcp://` URL の `path` / `query` を**実際に転送する**（§12.3 の改訂）。
-- 対象は **HTTP/1.1 のサブセット**である。フル実装ではない。非目標は §15.9 に列挙する。
+- `network.fetchURL('webtcp://name:port/path?q=1', { nameServer })` で、`webtcp://` URL の `path` / `query` を**実際に転送する**（§13.3 の改訂）。
+- 対象は **HTTP/1.1 のサブセット**である。フル実装ではない。非目標は §16.9 に列挙する。
 
 実装（`core/http/`）は次の 4 つで構成する。いずれも `VirtualStream` 以外に依存せず、`Buffer` / `node:*` / DOM API を使わない（design.md §1）。
 
@@ -1289,7 +1377,7 @@ HTTPConnectionClosedError / HTTPBodyConsumedError
 | `HTTPServer` | 仮想ポートの待ち受け、接続ごとのリクエストループ、`keep-alive`、`HTTPHandler` の呼び出し。 |
 | `HTTPClient` | 接続（または `keep-alive` セッション）上のリクエスト送信とレスポンス受信。`fetch` 風 API。 |
 
-### 15.2 メッセージ形式
+### 16.2 メッセージ形式
 
 HTTP/1.1（RFC 9112）の文法のうち、次を**そのまま**用いる。
 
@@ -1306,7 +1394,7 @@ field-line    = field-name ":" OWS field-value OWS CRLF
 - **`Transfer-Encoding: chunked`** と **`Content-Length`** をサポートする。両方が同時に存在するメッセージは `400` で拒否する (MUST)（リクエストスマグリングの回避）。
 - 本文長の決定順序は (1) `Transfer-Encoding` が `chunked` なら chunked、(2) `Content-Length` があればその値、(3) どちらも無ければ **本文なし**（`0`）。`TRACE` 以外のリクエストで本文が無いことは正常である。
 
-#### 15.2.1 制限値（既定）
+#### 16.2.1 制限値（既定）
 
 | 項目 | 既定値 | 超過時 |
 | :--- | ---: | :--- |
@@ -1320,11 +1408,11 @@ field-line    = field-name ":" OWS field-value OWS CRLF
 
 実装はこれらをオプションで変更できなければならない (MUST)。上限は**必ず**適用し、無制限のバッファ確保をしてはならない (MUST NOT)。
 
-#### 15.2.2 `Expect: 100-continue`
+#### 16.2.2 `Expect: 100-continue`
 
 - サーバーは `Expect: 100-continue` を受けた場合、本文を読み始める前に `HTTP/1.1 100 Continue\r\n\r\n` を送ってよい (MAY)。実装は**送らない**ことを既定とする（ブラウザ間で 1 往復増えるだけで利得が無いため）。`Expect` に他の値が含まれる場合は `417 Expectation Failed` を返す (MUST)。
 
-### 15.3 `HTTPServer`
+### 16.3 `HTTPServer`
 
 ```ts
 const server = network.serveHTTP(port, handler, options?)
@@ -1339,7 +1427,7 @@ server.connectionCount: number
 - ハンドラが例外も応答も返さずに解決した場合、まだ応答していなければ `500`（本文空）を返す (MUST)（無応答でクライアントを待たせない）。
 - **本文はストリーミング**である。`request.body` は `AsyncIterable<Uint8Array>` かつ `read()` / `text()` / `json()` / `arrayBuffer()` を持つ。ハンドラが本文を読み切らなかった場合、サーバーは残りを**破棄して読み切ってから**次のリクエストへ進む (MUST)（`keep-alive` のフレーミングを壊さないため）。
 - `response.write()` を 1 度でも呼ぶか `Content-Length` を設定せずに `end()` した場合、応答は `Transfer-Encoding: chunked` で送る (MUST)。`Content-Length` が分かっている場合は `contentLength` オプションか `response.setHeader('content-length', n)` で指定する。
-- **Half-Close との関係**: クライアントはリクエスト送信後に `FIN` を送ってよい（§15.4 の接続モデル）。サーバーは `end`（EOF）を受けても**応答を送る権利を失わない** — `CLOSE_WAIT` 状態で `send()` できる（§8.2）。応答完了後にサーバーが `end()` を呼ぶ。
+- **Half-Close との関係**: クライアントはリクエスト送信後に `FIN` を送ってよい（§16.4 の接続モデル）。サーバーは `end`（EOF）を受けても**応答を送る権利を失わない** — `CLOSE_WAIT` 状態で `send()` できる（§8.2）。応答完了後にサーバーが `end()` を呼ぶ。
 - `Connection: close` を受けた、または応答ヘッダで `Connection: close` を返した場合、サーバーはその応答の後に接続を閉じなければならない (MUST)。
 - `HEAD` / `OPTIONS` / 未知メソッド: `HEAD` は本文を送ってはならない (MUST)。`OPTIONS` はハンドラへ渡す。メソッドは**大文字小文字を区別**し、既知のトークン以外（`GET` / `HEAD` / `POST` / `PUT` / `PATCH` / `DELETE` / `OPTIONS` / `TRACE` / `CONNECT`）は `501 Not Implemented` を返す (MUST)。`CONNECT` は本プロトコルでは意味を持たないため `405` を返す (MUST)。
 
@@ -1352,7 +1440,7 @@ type HTTPHandler = (request: HTTPRequest, response: HTTPResponseWriter) =>
 
 ハンドラの登録は `createHTTPRouter()`（`method + path` のパターン一致、`/users/:id` 記法）で補助できる（MAY）。
 
-### 15.4 `HTTPClient`
+### 16.4 `HTTPClient`
 
 ```ts
 const client = new HTTPClient(network, { nameServer?, timeoutMs?, maxResponseBytes?, keepAlive? });
@@ -1361,7 +1449,7 @@ await client.request({ method, path, headers?, body?, nodeId, port }): Promise<H
 client.close(): void
 ```
 
-- `fetch(url, init)` は `parseWebTCPUrl()` でパースし、名前なら `nameServer.resolve()` で NodeId を得て `network.connect()` する。`path` と `search`（`?` を含む）を連結して request-target にする（§15.6）。
+- `fetch(url, init)` は `parseWebTCPUrl()` でパースし、名前なら `nameServer.resolve()` で NodeId を得て `network.connect()` する。`path` と `search`（`?` を含む）を連結して request-target にする（§16.6）。
 - `init` は `{ method?, headers?, body?, timeoutMs?, signal?, keepAlive? }`。`body` は `string | Uint8Array | AsyncIterable<Uint8Array>`。`AsyncIterable` を渡した場合は `Transfer-Encoding: chunked` で送る (MUST)。`string` は UTF-8 にエンコードし、`content-type` 未指定なら `text/plain; charset=utf-8` を付ける。
 - `HTTPResponse` は `{ status, statusText, headers, body: HTTPBodyReader, ok, text(), json(), arrayBuffer() }`。`ok` は `200–299`。
 - **ストリーミング**: `body` は `AsyncIterable<Uint8Array>` であり、`text()` / `json()` / `arrayBuffer()` は本文を**読み切って**返す。これらは 1 度しか呼べない（2 度目は `HTTPBodyConsumedError`）。
@@ -1369,7 +1457,7 @@ client.close(): void
 - `maxResponseBytes`（既定 8 MiB、`0` で無制限）を超える本文は `HTTPResponseTooLargeError` で reject する (MUST)。ストリーミングで読む場合は呼び出し側の責任とする。
 - `keepAlive`（既定 `true`）の場合、`HTTPClient` は `(nodeId, port)` ごとに `VirtualStream` を再利用し、逐次リクエストを同じ接続で送る。**多重化はしない** — 同時リクエストは別接続になる（HTTP/1.1 の一般則。パイプラインは行わない）。
 
-### 15.5 接続モデルと Half-Close
+### 16.5 接続モデルと Half-Close
 
 HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させないため、次の規則を置く。
 
@@ -1383,7 +1471,7 @@ HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させな�
 8. `HTTPServer.close()` は待ち受けを解除し、保持している全接続に `FIN` を送る (MUST)。送信中の応答は打ち切ってよい（`Connection: close` を返した接続は 4 に従う）。
 9. 読み取り途中のリクエスト本文がある状態で接続を閉じる場合、`HTTPServer` は本文の読み取りを `HTTPConnectionClosedError` で失敗させる (SHOULD)。これがないと、アプリケーションの `for await` が永久に待つ。
 
-### 15.6 `webtcp://` URL との対応
+### 16.6 `webtcp://` URL との対応
 
 | URL 要素 | HTTP メッセージへの写像 |
 | :--- | :--- |
@@ -1395,16 +1483,16 @@ HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させな�
 - `network.fetchURL(url, options)` は `HTTPClient` を作って 1 リクエストを実行する便宜 API である。`options` は `HTTPClient` のオプション + `fetch` の `init` を取る。
 - NameServer / `domain.global` の解決結果（`NameResolution`）はそのまま接続先に使う。所有権検証の結果を HTTP 層で再解釈してはならない (MUST NOT)。
 
-### 15.7 セキュリティ境界
+### 16.7 セキュリティ境界
 
-- HTTP 層は**トランスポートの内側**で動く。したがってパケットの Ed25519 署名検証（§10）と RPF / TTL（§7）はそのまま適用される。HTTP 層独自の認証・認可は**定義しない**（アプリケーションの責務）。
+- HTTP 層は**トランスポートの内側**で動く。したがってパケットの Ed25519 署名検証（§11）と RPF / TTL（§7）はそのまま適用される。HTTP 層独自の認証・認可は**定義しない**（アプリケーションの責務）。
 - サーバーハンドラは**リモートの任意のピア**から呼ばれる。認可が無いハンドラは公開サービスになる。`HTTPServer` は接続元 `NodeId` を `request.remoteNodeId` として渡すため、アプリケーションは許可リスト等を実装できる。
 - **ヘッダインジェクション防止**: ヘッダ名・値に `CR` / `LF` / `NUL` を含む書き込みは例外にする (MUST)。受信側はそのような行を `400` で拒否する (MUST)。
 - **リクエストスマグリング防止**: `Content-Length` と `Transfer-Encoding` の同時指定、`Transfer-Encoding` の未知値（`chunked` 以外）、`chunked` の多重指定を拒否する (MUST)。
-- **ヘッダ数・行長・本文サイズの上限**は必須（§15.2.1）。`Host` の欠落は `400`。
+- **ヘッダ数・行長・本文サイズの上限**は必須（§16.2.1）。`Host` の欠落は `400`。
 - `webtcp://` のポートは必須であり、HTTP 層も既定ポートを持たない。`webtcp://name/path` のような省略形を許してはならない (MUST NOT)。
 
-### 15.8 エラーとログ
+### 16.8 エラーとログ
 
 | 状況 | 挙動 |
 | :--- | :--- |
@@ -1424,7 +1512,7 @@ HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させな�
 
 HTTP 層は `Logger` を注入でき、`console.*` を直接呼んではならない (MUST)。
 
-### 15.9 非目標（M6 時点）
+### 16.9 非目標（M6 時点）
 
 - HTTP/2・HTTP/3、プロトコルアップグレード（`Upgrade` / WebSocket ハンドシェイク）、`CONNECT` メソッド。
 - パイプライン処理、HTTP/1.1 の `100-continue` の自動送信、`TE: trailers`、トレーラヘッダ。
@@ -1433,7 +1521,7 @@ HTTP 層は `Logger` を注入でき、`console.*` を直接呼んではなら�
 - 認証（Basic / Digest / Bearer の解釈）、TLS（DTLS は WebRTC が終端する）。
 - 多重化（1 接続 1 リクエストの並行実行）。同時実行は複数接続で行う。
 
-## 16. バージョニング
+## 17. バージョニング
 
 - パケットの `version` フィールドで判別する。未知バージョンは破棄する。
 - **v1（M1–M2）**: `version = 1`。24 バイト固定ヘッダー、`signatureLen = 0`、NodeId はランダム hex。
@@ -1447,18 +1535,17 @@ HTTP 層は `Logger` を注入でき、`console.*` を直接呼んではなら�
   - ヘッダーレイアウトが共通のため、v1 と v2 のノードが同一リンク上で併存しても
     デシリアライズ段階では衝突しない（署名検証の可否だけが異なる）。
 
-## 17. 非目標（M6 時点）
+## 18. 非目標（M7 時点）
 
 以下は本仕様の対象外であり、`plan.md` に将来課題として記録する。
 
 - **実ブロックチェーンへの接続**（SPV ヘッダー検証、EVM の `eth_getProof` / keccak-256 + RLP、Namecoin RPC 照会）。本書が定義するのは「検証可能な所有権レコード + 追記型台帳 + プラガブル検証器」までで、`IChainAnchorVerifier` の参照実装は対象外（#42）。
 - **ドメイン名のガバナンス**（紛争裁定、失効回収、複数ログの M-of-N 合意、IDNA / homoglyph 対策）（#43）。
-- DNS 相互運用、権威サーバー階層、ゾーン委譲（`com.global` のような追加ゾーン）、名前予約のガバナンス。ゾーン外名前のグローバル衝突解決も対象外（§12.4）。
-- 鍵のローテーション（NodeId を維持したままの鍵更新）と、マルチデバイス間の鍵同期（§10.7、#47）。
+- DNS 相互運用、権威サーバー階層、ゾーン委譲（`com.global` のような追加ゾーン）、名前予約のガバナンス。ゾーン外名前のグローバル衝突解決も対象外（§13.4）。
+- 鍵のローテーション（NodeId を維持したままの鍵更新）と、マルチデバイス間の鍵同期（§11.7、#47）。
 - アプリケーションデータの E2E 暗号化（DTLS 終端より上の機密性）。
-- セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§10.6 の限界、#48）。
+- セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§11.6 の限界、#48）。
 - `domain.global` 問い合わせの秘匿（段階的開示・暗号化）。
-- HTTP/2・HTTP/3、`Upgrade` / WebSocket ハンドシェイク、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従、TLS 終端（§15.9）。HTTP/1.1 のサブセット（§15）のみ実装する。
+- HTTP/2・HTTP/3、`Upgrade` / WebSocket ハンドシェイク、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従、TLS 終端（§16.9）。HTTP/1.1 のサブセット（§16）のみ実装する。
 - ブラウザ外（Node.js）での WebRTC 実装の同梱。
 - ブラウザ外の既存 TCP クライアント（curl 等）を HTTP トンネルへ入れるブリッジ（#52）。
-- タブ停止・リロードをまたぐサービスの稼働維持（#51）。

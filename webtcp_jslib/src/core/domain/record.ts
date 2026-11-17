@@ -1,9 +1,9 @@
 /**
- * ドメイン所有権レコード（specification.md §13.2）。
+ * ドメイン所有権レコード（specification.md §14.2）。
  *
  * レコードは「`domain` ↔ `nodeId`」の対応を、`nodeId` を生む公開鍵の所有者が署名した
  * 自己証明型クレームである。誰もが発行できるが、他人の NodeId を束縛するレコードは
- * その鍵の所有者にしか作れない。台帳アンカー（§13.3）は「いつ台帳に入ったか」を
+ * その鍵の所有者にしか作れない。台帳アンカー（§14.3）は「いつ台帳に入ったか」を
  * 後から検証できるようにするための別オブジェクトである。
  */
 
@@ -26,7 +26,7 @@ import { DomainRecordError } from './errors.js';
 import { parseDomainAnchor, type DomainAnchor } from './checkpoint.js';
 import { isDomainGlobalName, normalizeDomainName } from './names.js';
 
-/** レコード形式のバージョン（プロトコルワイヤーバージョン §15 とは無関係）。 */
+/** レコード形式のバージョン（プロトコルワイヤーバージョン §16 とは無関係）。 */
 export const DOMAIN_RECORD_VERSION = 1;
 
 /** レコード 1 件の JSON 最大バイト数。 */
@@ -41,7 +41,7 @@ export const DEFAULT_DOMAIN_RECORD_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 /** `txt` フィールドの最大文字数。 */
 export const MAX_DOMAIN_TXT_CHARS = 255;
 
-/** 署名対象になる本文（specification.md §13.2）。 */
+/** 署名対象になる本文（specification.md §14.2）。 */
 export interface DomainRecordBody {
     version: 1;
     /** 正規化済みの完全名（`.domain.global` を含む）。 */
@@ -76,7 +76,7 @@ export interface DomainOwnershipRecord {
 const encoder = new TextEncoder();
 
 /**
- * 本文を canonical バイト列へ変換する（specification.md §13.2）。
+ * 本文を canonical バイト列へ変換する（specification.md §14.2）。
  *
  * キー順は固定（`version, domain, nodeId, ownerPublicKey, serial, issuedAt, expiresAt,
  * revoked[, port][, txt]`）、空白なし JSON。`revoked` は `false` でも省略しない。
@@ -100,7 +100,7 @@ export function canonicalDomainRecordBodyBytes(body: DomainRecordBody): Uint8Arr
 }
 
 /**
- * commitment: 台帳の葉の入力となる `hex(SHA-256(canonical バイト列))`（§13.2）。
+ * commitment: 台帳の葉の入力となる `hex(SHA-256(canonical バイト列))`（§14.2）。
  */
 export async function commitDomainRecord(
     body: DomainRecordBody,
@@ -177,7 +177,7 @@ function isSafeInteger(value: unknown): value is number {
 }
 
 /**
- * 本文の構造検証（specification.md §13.2）。未知キーは拒否する。
+ * 本文の構造検証（specification.md §14.2）。未知キーは拒否する。
  *
  * @throws DomainRecordError
  */
@@ -286,13 +286,13 @@ export function parseDomainRecordBody(value: unknown): DomainRecordBody {
 export interface ParseDomainOwnershipRecordOptions {
     /**
      * `body.nodeId` と `ownerPublicKey` の指紋一致を確認する（既定 `true`）。
-     * 署名そのものの検証は §13.4 の検証器が担当する。
+     * 署名そのものの検証は §14.4 の検証器が担当する。
      */
     verifyFingerprint?: boolean;
 }
 
 /**
- * 受信した JSON / バイト列を厳格にパースする（specification.md §13.2）。
+ * 受信した JSON / バイト列を厳格にパースする（specification.md §14.2）。
  * ネットワーク経由の入力は必ず本関数を通さなければならない (MUST)。
  *
  * @throws DomainRecordError
@@ -369,7 +369,7 @@ export interface CreateDomainOwnershipRecordParams {
 }
 
 /**
- * 所有者署名付きの所有権レコードを生成する（specification.md §13.2）。
+ * 所有者署名付きの所有権レコードを生成する（specification.md §14.2）。
  *
  * canonical バイト列へ Ed25519 署名を付与する。台帳アンカーは付けない
  * （`DomainLedger.append()` が付与したレコードを返す）。

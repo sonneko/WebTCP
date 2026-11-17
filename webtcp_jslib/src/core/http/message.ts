@@ -1,5 +1,5 @@
 /**
- * HTTP/1.1 のメッセージ型（specification.md §15.2）。
+ * HTTP/1.1 のメッセージ型（specification.md §16.2）。
  *
  * ヘッダは名前を小文字化して保持し、重複は到着順の配列として保持する。
  * `HTTPHeaders.get()` は RFC 9110 のカンマ連結規則に従う。
@@ -98,7 +98,7 @@ export class HTTPHeaders {
     }
 }
 
-/** リクエストのボディ読み取りインターフェース（§15.3 / §15.4）。 */
+/** リクエストのボディ読み取りインターフェース（§16.3 / §16.4）。 */
 export interface HTTPBodyReader extends AsyncIterable<Uint8Array> {
     /** 本文が既に無い（`Content-Length: 0` または本文なし）かどうか。 */
     readonly empty: boolean;
@@ -114,7 +114,7 @@ export interface HTTPBodyReader extends AsyncIterable<Uint8Array> {
     arrayBuffer(): Promise<Uint8Array>;
 }
 
-/** 受信したリクエスト（§15.3）。 */
+/** 受信したリクエスト（§16.3）。 */
 export interface HTTPRequest {
     readonly method: string;
     /** リクエストターゲット（`/path?query`）。 */
@@ -131,10 +131,10 @@ export interface HTTPRequest {
     readonly body: HTTPBodyReader;
 }
 
-/** 応答本文の読み取りインターフェース（クライアント側、§15.4）。 */
+/** 応答本文の読み取りインターフェース（クライアント側、§16.4）。 */
 export type HTTPResponseBody = HTTPBodyReader;
 
-/** 受信した応答（§15.4）。 */
+/** 受信した応答（§16.4）。 */
 export interface HTTPResponse {
     readonly status: number;
     readonly statusText: string;
@@ -150,13 +150,13 @@ export interface HTTPResponse {
     arrayBuffer(): Promise<Uint8Array>;
 }
 
-/** サーバーハンドラ（§15.3）。 */
+/** サーバーハンドラ（§16.3）。 */
 export type HTTPHandler = (
     request: HTTPRequest,
     response: HTTPResponseWriter,
 ) => void | Promise<void>;
 
-/** 応答書き込みインターフェース（§15.3）。 */
+/** 応答書き込みインターフェース（§16.3）。 */
 export interface HTTPResponseWriter {
     statusCode: number;
     /** ヘッダが既に送信されたか。 */
@@ -190,7 +190,7 @@ export function normalizeHeaderName(name: string): string {
 }
 
 /**
- * ヘッダ値に CR / LF / NUL が含まれていないことを検証する（§15.7 のインジェクション防止）。
+ * ヘッダ値に CR / LF / NUL が含まれていないことを検証する（§16.7 のインジェクション防止）。
  * 前後の OWS（空白・水平タブ）は落とす。
  */
 export function normalizeHeaderValue(value: string): string {
@@ -258,7 +258,7 @@ export function splitTarget(target: string): { path: string; query: string } {
     return { path: target.slice(0, index), query: target.slice(index) };
 }
 
-/** メソッドが仕様（§15.3）で扱う既知のトークンか。 */
+/** メソッドが仕様（§16.3）で扱う既知のトークンか。 */
 export const KNOWN_HTTP_METHODS: ReadonlySet<string> = new Set([
     'GET',
     'HEAD',

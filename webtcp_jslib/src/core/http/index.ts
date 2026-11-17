@@ -1,5 +1,5 @@
 /**
- * HTTP トンネル層（specification.md §15 / #50）。
+ * HTTP トンネル層（specification.md §16 / #50）。
  *
  * `VirtualStream` の上で HTTP/1.1 のサブセットを運ぶ。ワイヤー形式は変更しない。
  */

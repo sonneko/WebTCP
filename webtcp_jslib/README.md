@@ -80,7 +80,7 @@ await network.start();
 ```
 
 公開鍵は DataChannel 開設時の `public-key` メッセージと `RT_UPDATE` の `publicKey` / `entries[].publicKey` フィールドで配布され、
-受信側は `KeyDirectory` に登録する前に必ず指紋一致を検証します（`specification.md` §10）。これにより事前鍵共有なしのマルチホップ署名検証が可能です。
+受信側は `KeyDirectory` に登録する前に必ず指紋一致を検証します（`specification.md` §11）。これにより事前鍵共有なしのマルチホップ署名検証が可能です。
 
 ## 名前解決と `webtcp://` URL（M4 / #25）
 
@@ -137,7 +137,7 @@ await ns.registerDomain({ ...record, anchor }); // 検証に失敗したレコ�
 const resolved = await ns.resolve('shop.domain.global'); // source: 'domain' / proof.anchorVerified: true
 ```
 
-- レコード形式・検証順序・HTTP 契約は [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md) §13 に規範的に定義しています。
+- レコード形式・検証順序・HTTP 契約は [specification.md](https://github.com/sonneko/WebTCP/blob/main/specification.md) §14 に規範的に定義しています。
 - 実ブロックチェーンへの裏付け（#42）とレジストリ運用ガバナンス（#43）は未実装です。ブラウザにチェーンクライアントは組み込みません。
 
 ## セキュリティ（M3 / #28）
@@ -151,7 +151,7 @@ const resolved = await ns.resolve('shop.domain.global'); // source: 'domain' / p
 | 衝突検出 | `NodeIdCollisionError` — 同一 NodeId に異なる鍵/身元が対応する場合に送出 |
 | 公開鍵配布 | シグナリング `public-key` 交換 + `RT_UPDATE.publicKey` / `entries[].publicKey`（どちらも指紋照合必須） |
 | 必要環境 | Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+（Ed25519 非対応時は v1 へフォールバック） |
-| ドメイン所有権（M5） | 所有者 Ed25519 署名 + SHA-256 commitment + 台帳の Merkle アンカー。信頼根拠はピン留めしたログ鍵で、未 PIN は fail-closed（`specification.md` §13） |
+| ドメイン所有権（M5） | 所有者 Ed25519 署名 + SHA-256 commitment + 台帳の Merkle アンカー。信頼根拠はピン留めしたログ鍵で、未 PIN は fail-closed（`specification.md` §14） |
 
 ## ビルド・テスト・デモ
 

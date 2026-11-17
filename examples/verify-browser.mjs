@@ -275,6 +275,12 @@ try {
             throw new Error(`Test 3 missing or failed HTTP tunnel step: ${JSON.stringify(httpStep ?? selfResult)}`);
         }
         console.log(`[verify-browser]   Test 3 HTTP step: ${httpStep.detail}`);
+        // #51: サービス状態の永続化・復元（IndexedDB）
+        const persistStep = selfResult.steps.find((step) => step.name.includes('永続化'));
+        if (!persistStep?.ok) {
+            throw new Error(`Test 3 missing or failed persistence step: ${JSON.stringify(persistStep ?? selfResult)}`);
+        }
+        console.log(`[verify-browser]   Test 3 persistence step: ${persistStep.detail}`);
         console.log(
             `[verify-browser]   Test 3 PASS (${selfResult.durationMs}ms, ${selfResult.steps.length} steps)!`,
         );

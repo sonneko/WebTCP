@@ -1,5 +1,5 @@
 /**
- * `domain.global` とドメイン所有権証明の公開API（specification.md §13、§14.4）。
+ * `domain.global` とドメイン所有権証明の公開API（specification.md §14、§15.4）。
  *
  * `src/core` の制約どおりブラウザ / Node.js どちらにも依存しない。HTTP レジストリ
  * クライアントは `adapters/domain/` にある。

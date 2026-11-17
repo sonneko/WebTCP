@@ -8,7 +8,7 @@ WebTCP の HTTP トンネル（M6 / [#50](https://github.com/sonneko/WebTCP/issu
 ワイヤー（パケット）形式は変わらないため、L4 までの実装・プロトコル v2 の署名検証・
 `NameServer` / `domain.global` とは独立に使えます。
 
-> 仕様は [specification.md §15](https://github.com/sonneko/WebTCP/blob/main/specification.md)、
+> 仕様は [specification.md §16](https://github.com/sonneko/WebTCP/blob/main/specification.md)、
 > 設計判断は [design.md §3.24–3.27](https://github.com/sonneko/WebTCP/blob/main/design.md) を参照してください。
 
 ## サーバー側: `serveHTTP()`
@@ -85,7 +85,7 @@ try {
 | `keep-alive`（逐次・非パイプライン）、アイドルタイムアウト | `CONNECT`（メソッドとしては 405） |
 | `HEAD`（本文抑止）、`Expect: 100-continue`（既定は無効、`send100Continue` で有効化） | パイプライン |
 | エラー応答: `400` / `404` / `413` / `414` / `417` / `431` / `500` / `501` / `503` / `505` | 圧縮（`gzip` 等）、Cookie ジャー、認証、リダイレクト追従 |
-| CRLF 厳格・行長 / ヘッダ数 / ヘッダ合計の上限（§15.2.1） | TLS 終端（`webtcp://` の外側で行う） |
+| CRLF 厳格・行長 / ヘッダ数 / ヘッダ合計の上限（§16.2.1） | TLS 終端（`webtcp://` の外側で行う） |
 | ヘッダ**インジェクション拒否**（値の CR/LF/NUL、名前の token 検証）とスマグリング拒否（`Content-Length` と `Transfer-Encoding` の併用） | 受信ウィンドウ（フロー制御、[#55](https://github.com/sonneko/WebTCP/issues/55)） |
 | `HTTPRouter`（`/users/:id` 記法） | 接続プールの上限 / LRU（[#57](https://github.com/sonneko/WebTCP/issues/57)） |
 
@@ -105,6 +105,6 @@ try {
 
 ## 既知の制約
 
-- タブが非可視になるとサスペンドされ、リロードすると待ち受け（HTTP ハンドラを含む）は失われます（[#51](https://github.com/sonneko/WebTCP/issues/51)）。
+- タブが非可視になると凍結され、その間は待ち受けに応答しません。リロード後は `restoreState()` で待ち受けポート・名前・所有権レコードを回復できますが、HTTP ハンドラは付け直す必要があります（[#51](https://github.com/sonneko/WebTCP/issues/51)、仕様 §9）。
 - 既存の TCP/HTTP クライアント（curl 等）をトンネルへ入れるブリッジはありません（[#52](https://github.com/sonneko/WebTCP/issues/52)）。HTTP を話せても、入り口は `HTTPClient` を呼べる相手だけです。
 - パケット形式に受信ウィンドウが無いため、巨大な応答は受信側メモリに依存します（[#55](https://github.com/sonneko/WebTCP/issues/55)）。

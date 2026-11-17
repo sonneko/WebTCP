@@ -1,7 +1,7 @@
 import { NodeId } from '../types/protocol.js';
 
 /**
- * シグナリングメッセージの種別（specification.md §9.2）。
+ * シグナリングメッセージの種別（specification.md §10.2）。
  *
  * - `offer` / `answer` / `candidate`: WebRTC のネゴシエーション
  * - `public-key`: Ed25519 公開鍵の交換（#28、プロトコル v2）
@@ -9,7 +9,7 @@ import { NodeId } from '../types/protocol.js';
 export type SignalMessageType = 'offer' | 'answer' | 'candidate' | 'public-key';
 
 /**
- * `public-key` メッセージの内容（specification.md §9.2.1 / §10.4.1）。
+ * `public-key` メッセージの内容（specification.md §10.2.1 / §11.4.1）。
  *
  * `publicKey` は 32 バイトの Ed25519 公開鍵を Base64url で表したもの。
  * `nodeId` は送信側の NodeId（= 公開鍵の指紋）。受信側は指紋の一致を検証する。
@@ -23,7 +23,7 @@ export interface PublicKeyPayload {
 }
 
 /**
- * シグナリングメッセージのペイロード構造（specification.md §9.2）。
+ * シグナリングメッセージのペイロード構造（specification.md §10.2）。
  * WebRTCのSDP（Offer/Answer）やICE Candidateが入る。
  */
 export interface SignalMessage {

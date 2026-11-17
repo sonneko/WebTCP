@@ -11,7 +11,7 @@ import {
 import type { Logger } from '../util/Logger.js';
 
 /**
- * ノード ID → Ed25519 公開鍵 のディレクトリ（#28, specification.md §10.4）。
+ * ノード ID → Ed25519 公開鍵 のディレクトリ（#28, specification.md §11.4）。
  *
  * 公開鍵の配布チャネルは 2 つある。
  * 1. **シグナリング時の交換**: `SendPublicKeyPayload` を `SignalMessage` で送受信する

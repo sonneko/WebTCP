@@ -1,9 +1,9 @@
 /**
- * `HTTPClient`（specification.md §15.4 / design.md §3.26）。
+ * `HTTPClient`（specification.md §16.4 / design.md §3.26）。
  *
  * `webtcp://` URL（または NodeId + 仮想ポート）へ HTTP/1.1 リクエストを送る。
  * - `fetch` 風の API（`fetch(url, init)` / `request({ nodeId, port, ... })`）
- * - `webtcp://` の `path` + `search` を request-target へ写像（§15.6）
+ * - `webtcp://` の `path` + `search` を request-target へ写像（§16.6）
  * - `(nodeId, port)` 単位の `keep-alive` プール（逐次・非パイプライン）
  * - ストリーミング本文（`AsyncIterable`）と、読み切る補助 API（`text` / `json` / `arrayBuffer`）
  */

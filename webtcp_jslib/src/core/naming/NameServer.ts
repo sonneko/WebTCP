@@ -4,6 +4,11 @@ import { NodeId, VirtualPort } from '../types/protocol.js';
 import type { VirtualStream } from '../transport/VirtualStream.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { normalizeWebTCPName } from './url.js';
+import {
+    SERVICE_STATE_VERSION,
+    type PersistedNameRecord,
+    type PersistedServiceState,
+} from '../persistence/ServiceState.js';
 import { isDomainGlobalName } from '../domain/names.js';
 import { DomainOwnershipError, DomainResolutionUnavailableError } from '../domain/errors.js';
 import {
@@ -38,7 +43,7 @@ export interface NameResolution {
     nodeId: NodeId;
     /** Remaining TTL of the answer chain in milliseconds. */
     ttlMs: number;
-    /** `'domain'` = 所有権レコードを検証済みの `domain.global` 解決（specification.md §13.5）。 */
+    /** `'domain'` = 所有権レコードを検証済みの `domain.global` 解決（specification.md §14.5）。 */
     source: 'local' | 'cache' | 'remote' | 'domain';
     /** Names traversed, including the queried name and final A name. */
     chain: string[];
@@ -60,7 +65,7 @@ export interface NameServerOptions {
     /** Explicit resolver NodeIds queried before neighbors and routing-table destinations. */
     resolvers?: NodeId[];
     /**
-     * `domain.global` の権威（specification.md §13.5）。
+     * `domain.global` の権威（specification.md §14.5）。
      * 未指定の場合、ゾーン内名前の**解決**は `DomainResolutionUnavailableError` で失敗し、
      * ローカル検証（署名・指紋・有効期間）でのみ `registerDomain()` が使える。
      */
@@ -121,11 +126,11 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Application-layer NameServer (specification.md §12). Local registrations are
+ * Application-layer NameServer (specification.md §13). Local registrations are
  * authoritative; remote answers are iterative, TTL-cached hints, not global
  * ownership proofs. Uses signed VirtualStreams on a configurable virtual port.
  *
- * `domain.global` 内の名前は §13 に従い、常に所有権レコードの検証を伴う。
+ * `domain.global` 内の名前は §14 に従い、常に所有権レコードの検証を伴う。
  */
 export class NameServer {
     public readonly port: VirtualPort;
@@ -166,7 +171,7 @@ export class NameServer {
         });
         this.logger = createScopedLogger(options.logger ?? defaultLogger, 'NS');
         this.domains = options.domains ?? null;
-        // 権威が未指定でも、ローカル登録（自分のレコード）の検証は行う (§13.4)。
+        // 権威が未指定でも、ローカル登録（自分のレコード）の検証は行う (§14.4)。
         this.localVerifier = createDomainOwnershipVerifier({});
     }
 
@@ -203,7 +208,7 @@ export class NameServer {
     }
 
     /**
-     * 所有権レコードからゾーン内名前の提供を始める（specification.md §12.2 / §13.5）。
+     * 所有権レコードからゾーン内名前の提供を始める（specification.md §13.2 / §14.5）。
      *
      * 検証 → ローカル A レコード登録 → 応答用レコードの保管の順で行い、
      * **検証に失敗したレコードは登録しない** (MUST)。
@@ -231,7 +236,7 @@ export class NameServer {
                 record: resolution.record,
             };
         }
-        // 名前レコードの TTL は §12.1 の上限 (86 400 000 ms) とレコード残存期間の小さいほう。
+        // 名前レコードの TTL は §13.1 の上限 (86 400 000 ms) とレコード残存期間の小さいほう。
         const ttlMs = validTtl(Math.min(options.ttlMs ?? remaining, remaining, MAX_NAME_TTL_MS));
         this.local.set(resolution.domain, {
             type: 'A',
@@ -245,6 +250,55 @@ export class NameServer {
             `registered ${resolution.domain} -> ${resolution.record.body.nodeId} (serial ${resolution.record.body.serial})`,
         );
         return resolution;
+    }
+
+    /**
+     * 復元に必要なローカル登録の状態を取り出す（#51 / specification.md §10.3）。
+     *
+     * `domain.global` の名前は所有権レコードから再登録するため `names` には含めない。
+     * 戻り値は JSON 化できる（そのまま `ServiceStateStorage` へ保存できる）。
+     */
+    public exportState(): Pick<PersistedServiceState, 'names' | 'domainRecords'> {
+        const names: PersistedNameRecord[] = [];
+        for (const record of this.local.values()) {
+            if (this.ownership.has(record.name)) continue;
+            names.push({ type: record.type, name: record.name, target: record.target, ttlMs: record.ttlMs });
+        }
+        names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return {
+            names,
+            domainRecords: this.servedDomainRecords().map((record) => domainRecordToJSON(record)),
+        };
+    }
+
+    /**
+     * `exportState()` の結果から登録を復元する（#51 / specification.md §10.3）。
+     *
+     * 所有権レコードは `registerDomain()` と同じ検証を通り、検証に失敗したものは
+     * 登録されない (MUST)。戻り値に成功・失敗の件数を返す。
+     */
+    public async restoreState(
+        state: Pick<PersistedServiceState, 'names' | 'domainRecords'> & { version?: number },
+    ): Promise<{ names: number; domainRecords: number; rejected: number }> {
+        this.assertOpen();
+        if (state.version !== undefined && state.version !== SERVICE_STATE_VERSION) {
+            throw new Error(`unsupported service state version: ${state.version}`);
+        }
+        let names = 0;
+        for (const entry of state.names) {
+            if (entry.type === 'A') this.registerA(entry.name, entry.target, entry.ttlMs);
+            else this.registerCNAME(entry.name, entry.target, entry.ttlMs);
+            names += 1;
+        }
+        let domainRecords = 0;
+        let rejected = 0;
+        for (const record of state.domainRecords) {
+            const result = await this.registerDomain(record).catch(() => null);
+            if (result?.ok) domainRecords += 1;
+            else rejected += 1;
+        }
+        this.logger.info(`restored ${names} name(s) and ${domainRecords} domain record(s); rejected ${rejected}`);
+        return { names, domainRecords, rejected };
     }
 
     /** ゾーン内名前の提供を取り消す。 */
@@ -300,7 +354,7 @@ export class NameServer {
         options.signal?.addEventListener('abort', onAbort, { once: true });
         if (options.signal?.aborted) controller.abort();
         const deadline = Date.now() + timeoutMs;
-        // デッドラインと中断は絶対である (MUST, §12.2 / #40): 問い合わせ先が
+        // デッドラインと中断は絶対である (MUST, §13.2 / #40): 問い合わせ先が
         // `connect()` で宙吊りになっても、この guard が reject して解決を打ち切る。
         let rejectGuard: ((error: Error) => void) | null = null;
         const guard = new Promise<never>((_, reject) => {
@@ -348,7 +402,7 @@ export class NameServer {
             chain.push(current);
             const found = this.lookup(current);
             if (found && isDomainGlobalName(current)) {
-                // ローカル登録でも所有権レコードの再検証（失効・焼却）を必須とする (§13.4)。
+                // ローカル登録でも所有権レコードの再検証（失効・焼却）を必須とする (§14.4)。
                 const owned = this.ownership.get(current);
                 if (!owned) {
                     throw new DomainResolutionUnavailableError(
@@ -383,7 +437,7 @@ export class NameServer {
     }
 
     /**
-     * `domain.global` 名の解決（specification.md §13.5）。
+     * `domain.global` 名の解決（specification.md §14.5）。
      *
      * (1) 権威自身の収集元（HTTP レジストリ等）、(2) 既知ノードの `wantOwnership` 応答、
      * の順で候補を集め、**検証を通った候補のみ**で勝者を決める。
@@ -399,7 +453,7 @@ export class NameServer {
         if (!this.domains) {
             throw new DomainResolutionUnavailableError(
                 domain,
-                `resolving ${domain} requires a DomainAuthority (NameServerOptions.domains, §13.5)`,
+                `resolving ${domain} requires a DomainAuthority (NameServerOptions.domains, §14.5)`,
             );
         }
         const remaining = deadline - Date.now();
@@ -426,7 +480,7 @@ export class NameServer {
         return this.toResolution(original, resolution, chain, ttlMs);
     }
 
-    /** ローカル登録済みのゾーン名を再検証して解決結果へ変換する（§13.4 の失効・焼却確認）。 */
+    /** ローカル登録済みのゾーン名を再検証して解決結果へ変換する（§14.4 の失効・焼却確認）。 */
     private async finishDomain(
         original: string,
         domain: string,
@@ -495,7 +549,7 @@ export class NameServer {
 
     /**
      * 既知ノードへ問い合わせる。`wantOwnership` 時は**全応答を集める**（候補の競合解決に使うため）。
-     * 単一ノードの停滞が全体を遅らせてはならない (MUST NOT, §12.2 / #40) ので、
+     * 単一ノードの停滞が全体を遅らせてはならない (MUST NOT, §13.2 / #40) ので、
      * 応答は `queryTimeoutMs` と `deadline` の早いほうで打ち切る。
      */
     private async queryKnownNodes(
@@ -610,7 +664,7 @@ export class NameServer {
             const isZoneName = isDomainGlobalName(request.name);
             const owned = isZoneName ? this.ownership.get(request.name) : undefined;
             if (isZoneName && !owned) {
-                // 所有権レコード無しでゾーン内名前に応答してはならない (MUST NOT, §12.2)。
+                // 所有権レコード無しでゾーン内名前に応答してはならない (MUST NOT, §13.2)。
                 await this.respond(stream, { protocol: 1, type: 'error', id: request.id, name: request.name, code: 'NXDOMAIN' });
                 return;
             }
@@ -641,12 +695,12 @@ export class NameServer {
     private assertOpen(): void { if (this.closed) throw new Error('NameServer is closed'); }
 }
 
-/** `domain.global` のラベルを持つ名前はローカル登録できない (MUST NOT, §12.1)。 */
+/** `domain.global` のラベルを持つ名前はローカル登録できない (MUST NOT, §13.1)。 */
 function assertNotZoneName(name: string): void {
     if (isDomainGlobalName(name)) {
         throw new Error(
             `"${name}" belongs to the ${'domain.global'} zone and cannot be registered with registerA()/registerCNAME(); ` +
-                'use registerDomain() with a signed ownership record (specification.md §12.1 / §13.5)',
+                'use registerDomain() with a signed ownership record (specification.md §13.1 / §14.5)',
         );
     }
 }
@@ -736,7 +790,7 @@ async function parseResponse(raw: Uint8Array, id: string, name: string): Promise
 }
 
 /**
- * 応答の `ownership` 配列を厳格検証する（specification.md §12.2 / §13.2）。
+ * 応答の `ownership` 配列を厳格検証する（specification.md §13.2 / §14.2）。
  *
  * ゾーン内名前の応答に所有権レコードが無い場合、その応答は解決に**使用できない** (MUST NOT)。
  */
@@ -748,7 +802,7 @@ async function parseOwnershipAnswer(
 ): Promise<DomainOwnershipRecord[]> {
     if (value === undefined) {
         if (isZoneName) {
-            throw new Error(`answer for ${name} carries no ownership record (required by §12.2)`);
+            throw new Error(`answer for ${name} carries no ownership record (required by §13.2)`);
         }
         return [];
     }

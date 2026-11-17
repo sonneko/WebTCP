@@ -20,7 +20,7 @@ export interface RoutingInfoPacket {
     withdrawals?: NodeId[];
     /**
      * 送信元の Ed25519 公開鍵（Base64url、任意）。
-     * プロトコル v2 では RT_UPDATE に同梱して全隣接へ配布する（specification.md §10.4.2）。
+     * プロトコル v2 では RT_UPDATE に同梱して全隣接へ配布する（specification.md §11.4.2）。
      */
     publicKey?: string;
 }
@@ -164,7 +164,7 @@ export class RoutingTableManager {
             return;
         }
 
-        // 同梱された公開鍵を配布する（§10.4.2）。指紋照合は受け取り側で行う。
+        // 同梱された公開鍵を配布する（§11.4.2）。指紋照合は受け取り側で行う。
         if (info.publicKey) {
             this.onPublicKey?.(senderId, info.publicKey);
         }

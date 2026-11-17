@@ -1,5 +1,5 @@
 /**
- * 領域分離付き Merkle 木と包含証明（specification.md §13.3）。
+ * 領域分離付き Merkle 木と包含証明（specification.md §14.3）。
  *
  * - 葉: `H(0x00 || commitmentBytes)`
  * - 内部ノード: `H(0x01 || left || right)`
@@ -81,7 +81,7 @@ export async function domainMerkleLevels(
     return levels;
 }
 
-/** 木サイズを顶层ハッシュへバインドしてルートにする（specification.md §13.3）。 */
+/** 木サイズを顶层ハッシュへバインドしてルートにする（specification.md §14.3）。 */
 export async function bindDomainMerkleRoot(
     top: Uint8Array,
     treeSize: number,
@@ -105,7 +105,7 @@ export async function computeDomainMerkleRoot(
     return bindDomainMerkleRoot(levels[levels.length - 1]![0]!, leafBytes.length, hashFn);
 }
 
-/** チェックポイントの `root` に使う Base64url ルート（specification.md §14.4 の `buildDomainMerkleRoot`）。 */
+/** チェックポイントの `root` に使う Base64url ルート（specification.md §15.4 の `buildDomainMerkleRoot`）。 */
 export async function buildDomainMerkleRoot(
     leafBytes: readonly Uint8Array[],
     hashFn: DomainHashFn = defaultDomainHash,
@@ -138,7 +138,7 @@ export async function buildDomainMerkleProof(
 }
 
 export interface VerifyDomainMerkleProofParams {
-    /** `hex(SHA-256(canonical バイト列))`（specification.md §13.2 の commitment）。 */
+    /** `hex(SHA-256(canonical バイト列))`（specification.md §14.2 の commitment）。 */
     commitment: string;
     leafIndex: number;
     treeSize: number;
@@ -148,7 +148,7 @@ export interface VerifyDomainMerkleProofParams {
 }
 
 /**
- * 包含証明を検証する。`leafIndex < treeSize` と証明長の一致を必須とする（§13.3）。
+ * 包含証明を検証する。`leafIndex < treeSize` と証明長の一致を必須とする（§14.3）。
  */
 export async function verifyDomainMerkleProof(
     params: VerifyDomainMerkleProofParams,

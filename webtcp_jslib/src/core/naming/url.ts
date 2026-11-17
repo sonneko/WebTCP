@@ -2,7 +2,7 @@ import { NODE_ID_PATTERN, isValidNodeId } from '../routing/keys.js';
 import { NodeId, VirtualPort } from '../types/protocol.js';
 import { isDomainGlobalName, normalizeDomainName } from '../domain/names.js';
 
-/** Parsed `webtcp://` URL (specification.md §12.3). Port is mandatory. */
+/** Parsed `webtcp://` URL (specification.md §13.3). Port is mandatory. */
 export interface WebTCPUrl {
     /** Normalized host: a NodeId literal or a registered name. */
     host: string;
@@ -10,7 +10,7 @@ export interface WebTCPUrl {
     nodeId?: NodeId;
     /** Present when host is a name resolved through NameServer. */
     name?: string;
-    /** `name` が `domain.global` 内にあるときのゾーン名（specification.md §12.3 / §13.1）。 */
+    /** `name` が `domain.global` 内にあるときのゾーン名（specification.md §13.3 / §14.1）。 */
     zone?: string;
     port: VirtualPort;
     /** Path begins with `/`; defaults to `/`. */
@@ -79,7 +79,7 @@ export function parseWebTCPUrl(input: string): WebTCPUrl {
     if (isValidNodeId(rawHost)) return { host: rawHost, nodeId: rawHost, ...base };
     const name = normalizeWebTCPName(rawHost);
     if (!isDomainGlobalName(name)) return { host: name, name, ...base };
-    // 完全名は §13.1 の規則で再度正規化する（IDNA 未実装のため LDH のみ受理）。
+    // 完全名は §14.1 の規則で再度正規化する（IDNA 未実装のため LDH のみ受理）。
     const canonical = normalizeDomainName(name);
     return { host: canonical, name: canonical, zone: 'domain.global', ...base };
 }

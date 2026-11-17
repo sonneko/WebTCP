@@ -6,14 +6,14 @@ export interface EntranceSearcherAdapterHubOptions {
     url: string;
     /** パス。既定 `/entrances`。 */
     path?: string;
-    /** 候補から除外するノードID（通常は自身の NodeId、specification.md §9.5）。 */
+    /** 候補から除外するノードID（通常は自身の NodeId、specification.md §10.5）。 */
     exclude?: NodeId;
     /** fetch の実装（テスト用に差し替え可能）。 */
     fetchImpl?: typeof fetch;
 }
 
 /**
- * HTTP 経由でエントランス（接続候補ノード）を取得する（specification.md §9.5）。
+ * HTTP 経由でエントランス（接続候補ノード）を取得する（specification.md §10.5）。
  *
  * サーバーは次の形で応答する。
  * ```json

@@ -1,5 +1,5 @@
 /**
- * ストリーム上の本文読み取り（specification.md §15.2 / §15.4）。
+ * ストリーム上の本文読み取り（specification.md §16.2 / §16.4）。
  *
  * `HTTPBodyStream` はプル型の `read()` を持ち、`AsyncIterable` でも消費できる。
  * `Content-Length` / `chunked` / 本文なしの 3 経路を同じインターフェースに均す。

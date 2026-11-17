@@ -1,7 +1,7 @@
 import { NodeId } from '../types/protocol.js';
 
 /**
- * P2Pリンク層の抽象化インターフェース（specification.md §9.1）。
+ * P2Pリンク層の抽象化インターフェース（specification.md §10.1）。
  *
  * WebRTC DataChannel（またはその他のメッセージ指向のP2P通信手段）を抽象化する。
  * この層は「メッセージの輸送」のみを責務とし、順序保証・再送・多重化は行わない。

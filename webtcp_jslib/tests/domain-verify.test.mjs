@@ -53,14 +53,14 @@ test('domain-verify: an owner-signed record without an anchor passes and reports
     assert.equal(proof.anchorVerified, false);
     assert.equal(proof.chainVerified ?? null, null);
     assert.equal(proof.commitment, await commitDomainRecord(record.body));
-    // canonical バイト列は署名対象として固定されている (§13.2)
+    // canonical バイト列は署名対象として固定されている (§14.2)
     assert.equal(
         new TextDecoder().decode(canonicalDomainRecordBodyBytes(record.body)).length > 0,
         true,
     );
 });
 
-test('domain-verify: garbage input yields a failure result instead of throwing (§13.4.1 MUST)', async () => {
+test('domain-verify: garbage input yields a failure result instead of throwing (§14.4.1 MUST)', async () => {
     for (const input of [null, undefined, 0, 'x', {}, { version: 1 }, { version: 1, body: {}, signature: '' }]) {
         const proof = await verifier().verify(input);
         assert.equal(proof.ok, false, `must reject ${JSON.stringify(input) ?? String(input)}`);
@@ -76,7 +76,7 @@ test('domain-verify: expected-domain mismatch, expiry, not-yet-valid and stale s
         (await verifier().verify(record, { nowMs: NOW, expectedDomain: 'other.domain.global' })).code,
         'zone-mismatch',
     );
-    // 既定 clockSkewMs = 300 000 ms（§11.3）の分だけ境界が動く
+    // 既定 clockSkewMs = 300 000 ms（§12.3）の分だけ境界が動く
     assert.equal((await verifier().verify(record, { nowMs: NOW + 3_600_000 + 1 })).ok, true, '猶予内だから有効');
     assert.equal(
         (await verifier().verify(record, { nowMs: NOW + 3_600_000 + 300_001 })).code,
@@ -102,7 +102,7 @@ test('domain-verify: expected-domain mismatch, expiry, not-yet-valid and stale s
         () => null,
         (error) => error,
     );
-    assert.ok(tooLong instanceof DomainRecordError, '寿命上限は生成時点で弾く (§13.2)');
+    assert.ok(tooLong instanceof DomainRecordError, '寿命上限は生成時点で弾く (§14.2)');
 });
 
 test('domain-verify: tampered signatures, swapped keys and revocation are detected', async () => {
@@ -126,7 +126,7 @@ test('domain-verify: tampered signatures, swapped keys and revocation are detect
     assert.ok(proof.commitment, '失効でも commitment は返す');
 });
 
-test('domain-verify: anchors need a trusted log key and an intact proof (§13.4.1 の 7)', async () => {
+test('domain-verify: anchors need a trusted log key and an intact proof (§14.4.1 の 7)', async () => {
     const keyManager = await NodeKeyManager.create();
     const log = await NodeKeyManager.create();
     const ledger = createDomainLedger({ keyManager: log, logId: 'demo-log', logger: noopLogger });
@@ -218,7 +218,7 @@ test('domain-verify: pinned checkpoints reject rolled-back anchors', async () =>
         ).ok,
         true,
     );
-    // 区間を渡せば prevHash 連鎖も追える（§13.3）
+    // 区間を渡せば prevHash 連鎖も追える（§14.3）
     const chain = await verifyDomainCheckpointChain({
         pinned: first.record.anchor.checkpoint,
         target: later.record.anchor.checkpoint,
@@ -228,7 +228,7 @@ test('domain-verify: pinned checkpoints reject rolled-back anchors', async () =>
     assert.deepEqual(await ledger.checkpointsBetween({ afterTreeSize: 1, toTreeSize: 3 }).then((list) => list.map((entry) => entry.treeSize)), [2]);
 });
 
-test('domain-verify: on-chain anchors are delegated to IChainAnchorVerifier (§13.4.2)', async () => {
+test('domain-verify: on-chain anchors are delegated to IChainAnchorVerifier (§14.4.2)', async () => {
     const keyManager = await NodeKeyManager.create();
     const log = await NodeKeyManager.create();
     const ledger = createDomainLedger({ keyManager: log, logId: 'chain-log', logger: noopLogger });

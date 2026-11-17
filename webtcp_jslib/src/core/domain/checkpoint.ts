@@ -1,5 +1,5 @@
 /**
- * 台帳アンカーとチェックポイント（specification.md §13.3）。
+ * 台帳アンカーとチェックポイント（specification.md §14.3）。
  *
  * 台帳（registry / transparency log）は受領したレコードの commitment を追記専用の
  * Merkle 木へ積上げ、`{ logId, treeSize, root, prevHash, timestamp }` をログ鍵で署名した
@@ -44,7 +44,7 @@ export interface SignedDomainCheckpoint extends DomainCheckpoint {
     signature: string;
 }
 
-/** 実チェーンへの追加コミットメント（検証は `IChainAnchorVerifier` が担う、§13.4.2）。 */
+/** 実チェーンへの追加コミットメント（検証は `IChainAnchorVerifier` が担う、§14.4.2）。 */
 export interface DomainAnchorChainRef {
     network: string;
     txId?: string;
@@ -52,7 +52,7 @@ export interface DomainAnchorChainRef {
     commitment?: string;
 }
 
-/** 台帳アンカー（§13.3）。 */
+/** 台帳アンカー（§14.3）。 */
 export interface DomainAnchor {
     /** 0 起始の葉番号。 */
     leafIndex: number;
@@ -67,7 +67,7 @@ export interface DomainAnchor {
 /** genesis の `prevHash`（32 バイトの 0）。 */
 export const GENESIS_PREV_HASH = '0'.repeat(64);
 
-/** 未来時刻チェックの既定許容幅（ログと検証側の時計ずれ、§11.3）。 */
+/** 未来時刻チェックの既定許容幅（ログと検証側の時計ずれ、§12.3）。 */
 export const DEFAULT_CHECKPOINT_CLOCK_SKEW_MS = 300_000;
 
 /** チェックポイント本文の上限（暴走防止）。 */
@@ -271,7 +271,7 @@ export interface DomainCheckpointVerifyResult {
 }
 
 /**
- * 署名済みチェックポイントを検証する（specification.md §13.3 / §13.4.1 の 7）。
+ * 署名済みチェックポイントを検証する（specification.md §14.3 / §14.4.1 の 7）。
  *
  * ログ鍵が設定されていない場合は `anchor-untrusted-log`（fail-closed）。
  */
@@ -353,7 +353,7 @@ export interface DomainCheckpointChainResult {
 }
 
 /**
- * `pinned` -> `target` の `prevHash` 連鎖を検証する（specification.md §13.3）。
+ * `pinned` -> `target` の `prevHash` 連鎖を検証する（specification.md §14.3）。
  *
  * 区間を提供できない台帳に対しては `unavailable` を返す（呼び出し側が拒否可否を決める）。
  */
