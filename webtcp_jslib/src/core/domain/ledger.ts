@@ -1,5 +1,5 @@
 /**
- * 開発用・参照実装のドメイン台帳（specification.md §13.3 / §13.7）。
+ * 開発用・参照実装のドメイン台帳（specification.md §14.3 / §14.7）。
  *
  * 追記専用の Merkle 木と署名済みチェックポイントを管理する**インメモリ台帳**である。
  * 本番の透明性ログ（実チェーンアンカーを含む）は #42 のスコープであり、
@@ -67,7 +67,7 @@ export interface DomainLedgerOptions {
     /** 追加前に所有者署名を検証する（既定 `true`）。 */
     requireOwnerSignature?: boolean;
     hashFn?: DomainHashFn;
-    /** 葉数の上限（既定 65 536。超過時の追加は拒否する = §13.7 の増幅防止）。 */
+    /** 葉数の上限（既定 65 536。超過時の追加は拒否する = §14.7 の増幅防止）。 */
     maxEntries?: number;
     logger?: Logger;
 }
@@ -79,7 +79,7 @@ interface LedgerEntry {
     record: DomainOwnershipRecord;
 }
 
-/** 台帳の葉数の既定上限（specification.md §13.7）。 */
+/** 台帳の葉数の既定上限（specification.md §14.7）。 */
 export const MAX_DOMAIN_LEDGER_LEAVES = 65_536;
 
 function positiveInt(value: number, name: string): number {
@@ -112,7 +112,7 @@ export async function verifyDomainRecordSelfSignature(
 }
 
 /**
- * インメモリ台帳。`append()` は衝突解決（§13.4.3）を通ったレコードのみを葉として
+ * インメモリ台帳。`append()` は衝突解決（§14.4.3）を通ったレコードのみを葉として
  * 追加し、新しいチェックポイントを発行する。
  */
 export class DomainLedger implements IDomainRecordSource {
@@ -145,7 +145,7 @@ export class DomainLedger implements IDomainRecordSource {
         return this.logIdValue;
     }
 
-    /** ログ鍵の公開鍵（Base64url）。`GET /domain/log` の TOFU ピン留めに使う (§13.6)。 */
+    /** ログ鍵の公開鍵（Base64url）。`GET /domain/log` の TOFU ピン留めに使う (§14.6)。 */
     get publicKeyEncoded(): string {
         return encodePublicKey(this.keyManager.publicKey);
     }
@@ -262,7 +262,7 @@ export class DomainLedger implements IDomainRecordSource {
      * 葉から根への包含証明を、現行木の直近チェックポイントと組み合わせる（追加はしない）。
      *
      * チェックポイントを**再発行しない**のが要点である。読み出しのたびに新しい
-     * チェックポイントを作ると `prevHash` 連鎖が自己参照で壊れる（§13.3）。
+     * チェックポイントを作ると `prevHash` 連鎖が自己参照で壊れる（§14.3）。
      */
     async buildAnchor(leafIndex: number): Promise<DomainAnchor> {
         const treeSize = this.entries.length;

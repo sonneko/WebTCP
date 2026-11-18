@@ -39,7 +39,7 @@ test('domain-ledger: appending an owner-signed record yields a verifiable anchor
     const owner = await NodeKeyManager.create();
     const log = await NodeKeyManager.create();
     const ledger = createDomainLedger({ keyManager: log, logger: noopLogger });
-    assert.equal(ledger.logId, log.nodeId, '既定 logId はログ鍵の NodeId (§13.3)');
+    assert.equal(ledger.logId, log.nodeId, '既定 logId はログ鍵の NodeId (§14.3)');
     assert.equal(ledger.size, 0);
     assert.equal(await ledger.root(), null);
 
@@ -63,7 +63,7 @@ test('domain-ledger: appending an owner-signed record yields a verifiable anchor
     const checkpointCheck = await verifyDomainCheckpoint(anchor.checkpoint, { logKeys: { [log.nodeId]: log.publicKey } });
     assert.equal(checkpointCheck.ok, true);
     assert.equal((await ledger.checkpoint()).treeSize, 1);
-    // 追加済みレコードは anchor 込みで格納される (§13.5)
+    // 追加済みレコードは anchor 込みで格納される (§14.5)
     const stored = await ledger.lookupByDomain('shop.domain.global');
     assert.ok(stored.anchor);
     assert.equal(stored.signature, record.signature);
@@ -85,7 +85,7 @@ test('domain-ledger: the ledger refuses records it cannot verify itself', async 
     assert.equal(await verifyDomainRecordSelfSignature(record), true);
     assert.equal(await verifyDomainRecordSelfSignature(tampered), false);
     assert.equal(ledger.size, 0);
-    // 検証を省略させれば入る（呼び出し側が検証する構成も許す、§13.7）
+    // 検証を省略させれば入る（呼び出し側が検証する構成も許す、§14.7）
     const permissive = createDomainLedger({ keyManager: log, requireOwnerSignature: false, logger: noopLogger });
     await permissive.append(tampered);
     assert.equal(permissive.size, 1);
@@ -98,7 +98,7 @@ test('domain-ledger: re-appending the identical record is idempotent, older seri
     const first = await ownerRecord(owner, 'shop.domain.global', { serial: 5 });
     const appended = await ledger.append(first);
     const again = await ledger.append(first);
-    assert.equal(ledger.size, 1, '同一 commitment は再追加しない (§13.4.3)');
+    assert.equal(ledger.size, 1, '同一 commitment は再追加しない (§14.4.3)');
     assert.equal(again.commitment, appended.commitment);
     assert.equal(again.anchor.leafIndex, 0);
     await assert.rejects(
@@ -166,7 +166,7 @@ test('domain-ledger: checkpoint chain and merkle roots stay consistent across ap
             `leaf ${index} proof must verify at append time`,
         );
     }
-    // prevHash 連鎖が途切れていないこと（§13.3）
+    // prevHash 連鎖が途切れていないこと（§14.3）
     let previous = appended[0].anchor.checkpoint;
     for (const entry of appended.slice(1)) {
         assert.equal(entry.anchor.checkpoint.prevHash, await domainCheckpointHex(previous));
@@ -178,7 +178,7 @@ test('domain-ledger: checkpoint chain and merkle roots stay consistent across ap
         (await ledger.checkpointsBetween({ afterTreeSize: 1, toTreeSize: 5 })).map((entry) => entry.treeSize),
         [2, 3, 4],
     );
-    // 追記専用なので、古い葉の証明は現在の木でも検証できる (§13.3)
+    // 追記専用なので、古い葉の証明は現在の木でも検証できる (§14.3)
     const rebuilt = await ledger.buildAnchor(0);
     assert.equal(rebuilt.checkpoint.root, snapshot.root);
     assert.equal(
@@ -220,7 +220,7 @@ test('domain-ledger: the leaf cap is enforced and snapshot exposes current recor
     assert.equal(MAX_DOMAIN_TREE_SIZE > 0, true);
 });
 
-test('domain-ledger: conflict resolution follows the documented order (§13.4.3)', () => {
+test('domain-ledger: conflict resolution follows the documented order (§14.4.3)', () => {
     const a = { serial: 2, commitment: 'aa', anchorLeafIndex: 4 };
     const b = { serial: 3, commitment: 'bb', anchorLeafIndex: 1 };
     assert.equal(conflictVerdict(a, b), 'candidate', 'max(serial) が勝つ');

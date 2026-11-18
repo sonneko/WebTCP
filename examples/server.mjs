@@ -3,8 +3,8 @@
  * WebTCP デモサーバー。
  *
  * 1. `examples/demo/` と `webtcp_jslib/dist/` を静的配信する
- * 2. シグナリングハブ（specification.md §9.4）を提供する
- * 3. エントランス探索（specification.md §9.5）を提供する
+ * 2. シグナリングハブ（specification.md §10.4）を提供する
+ * 3. エントランス探索（specification.md §10.5）を提供する
  *
  * 依存パッケージはない。Node.js 20 以上で動作する。
  *
@@ -23,7 +23,7 @@ const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SIGNAL_TTL_MS = 60_000;
 const PRESENCE_TTL_MS = 60_000;
 const MAX_BODY_BYTES = 1 << 20;
-/** `/domain/record` のリクエストボディ上限（レコード 1 件 + 多少の余裕、specification.md §13.6）。 */
+/** `/domain/record` のリクエストボディ上限（レコード 1 件 + 多少の余裕、specification.md §14.6）。 */
 const MAX_RECORD_BODY_BYTES = 64 * 1024;
 
 const CONTENT_TYPES = {
@@ -48,7 +48,7 @@ export function createDemoServer() {
     /** @type {Map<string, number>} */
     const presence = new Map();
     let nextMessageId = 1;
-    /** `domain.global` の参照レジストリ（specification.md §13.6）。 */
+    /** `domain.global` の参照レジストリ（specification.md §14.6）。 */
     const domains = createDomainRegistry();
 
     function sendJson(res, status, body) {
@@ -148,7 +148,7 @@ export function createDemoServer() {
         sendJson(res, 200, { messages });
     }
 
-    /** JSON ボディを読みながら `/domain/*` を処理する（specification.md §13.6）。 */
+    /** JSON ボディを読みながら `/domain/*` を処理する（specification.md §14.6）。 */
     async function handleDomain(request, url, res) {
         const route = url.pathname;
         if (route === '/domain/record' && request.method === 'POST') {

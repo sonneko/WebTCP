@@ -1,12 +1,12 @@
 /**
- * ドメイン所有権関連のエラー（specification.md §13.2 / §13.4 / §11.2）。
+ * ドメイン所有権関連のエラー（specification.md §14.2 / §14.4 / §12.2）。
  *
  * `DomainProofCode` は解決・検証の**失敗理由**を表す安定した識別子である。
- * 転送時は §13.5 の名前一貫性エラー文字列（`domain zone mismatch: ...` /
+ * 転送時は §14.5 の名前一貫性エラー文字列（`domain zone mismatch: ...` /
  * `domain proof unavailable: ...`）へ写像される。
  */
 
-/** 所有権・解決の検証結果コード（specification.md §13.4.1）。 */
+/** 所有権・解決の検証結果コード（specification.md §14.4.1）。 */
 export type DomainProofCode =
     | 'ok'
     | 'invalid-record'
@@ -26,7 +26,7 @@ export type DomainProofCode =
     | 'chain-unverified'
     | 'resolution-unavailable';
 
-/** `DomainProofCode` を転送用の説明文字列へ写像する（specification.md §13.5）。 */
+/** `DomainProofCode` を転送用の説明文字列へ写像する（specification.md §14.5）。 */
 export function domainProofCodeToReason(code: DomainProofCode): string {
     switch (code) {
         case 'ok':
@@ -50,7 +50,7 @@ export function domainProofCodeToReason(code: DomainProofCode): string {
     }
 }
 
-/** 衝突解決に必要な最小情報（specification.md §13.4.3）。 */
+/** 衝突解決に必要な最小情報（specification.md §14.4.3）。 */
 export interface DomainConflictCandidate {
     serial: number;
     commitment: string;
@@ -59,7 +59,7 @@ export interface DomainConflictCandidate {
 }
 
 /**
- * 同一ドメインに有効なレコードが複数あるときの勝者を選ぶ（specification.md §13.4.3）。
+ * 同一ドメインに有効なレコードが複数あるときの勝者を選ぶ（specification.md §14.4.3）。
  *
  * 比較順序は `serial` -> `anchor.leafIndex`。どちらも及ばず内容も違う場合は
  * 勝者無し（`'conflict'`）を返す。**勝者が決められない競合を黙って解決してはならない (MUST NOT)**。
@@ -73,7 +73,7 @@ export function conflictVerdict(
     if (candidate.serial < current.serial) return 'current';
     if (candidate.commitment === current.commitment) return 'identical';
     if (candidate.anchorLeafIndex !== undefined && current.anchorLeafIndex !== undefined) {
-        // 先に台帳へ入った（葉番号が小さい）ほうを決定的な勝者とする (§13.4.3)
+        // 先に台帳へ入った（葉番号が小さい）ほうを決定的な勝者とする (§14.4.3)
         if (candidate.anchorLeafIndex < current.anchorLeafIndex) return 'candidate';
         if (candidate.anchorLeafIndex > current.anchorLeafIndex) return 'current';
     }
@@ -83,10 +83,10 @@ export function conflictVerdict(
 /**
  * 所有権レコードの検証に失敗した（候補はあるが信頼できない）。
  *
- * `NameServer` はこれを `webtcp://` 解決失敗へ写像する（specification.md §13.5）。
+ * `NameServer` はこれを `webtcp://` 解決失敗へ写像する（specification.md §14.5）。
  */
 export class DomainOwnershipError extends Error {
-    /** 失敗理由（specification.md §13.4.1）。 */
+    /** 失敗理由（specification.md §14.4.1）。 */
     readonly code: DomainProofCode;
     readonly domain: string;
 
@@ -99,7 +99,7 @@ export class DomainOwnershipError extends Error {
 }
 
 /**
- * ゾーン内名前を解決するための権威・収集元が無い（§12.2 / §13.5）。
+ * ゾーン内名前を解決するための権威・収集元が無い（§13.2 / §14.5）。
  * 名前が「存在しない」ことと「検証できない」ことを区別するための型である。
  */
 export class DomainResolutionUnavailableError extends Error {

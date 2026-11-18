@@ -1,7 +1,7 @@
 import http from 'node:http';
 
 /**
- * テスト用のシグナリングハブ（specification.md §9.4 / §9.5）。
+ * テスト用のシグナリングハブ（specification.md §10.4 / §10.5）。
  */
 export async function startHub() {
     /** @type {Map<string, Array<{id: number, fromId: string, message: unknown}>>} */

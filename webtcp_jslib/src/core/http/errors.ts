@@ -1,5 +1,5 @@
 /**
- * HTTP トンネル層のエラー（specification.md §15.8）。
+ * HTTP トンネル層のエラー（specification.md §16.8）。
  *
  * すべて `HTTPError` を継承し、`status` は「サーバーが返すべき 4xx/5xx」、
  * `code` は機械判定用の短い識別子である。パース段階のエラーは `HTTPParseError`。

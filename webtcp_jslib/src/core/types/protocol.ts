@@ -61,11 +61,11 @@ export type StreamState =
  * 現在の WebTCP プロトコルバージョン（ワイヤーフォーマット）。
  *
  * v2 では Ed25519 署名が必須であり、NodeId は公開鍵の指紋でなければならない（#28）。
- * v1（署名なし・ランダム NodeId）は後方互換のため受信のみ受理する（§13）。
+ * v1（署名なし・ランダム NodeId）は後方互換のため受信のみ受理する（§14）。
  */
 export const WEBTCP_PROTOCOL_VERSION = 2;
 
-/** 署名なしの旧プロトコルバージョン（受信のみ受理。specification.md §13）。 */
+/** 署名なしの旧プロトコルバージョン（受信のみ受理。specification.md §14）。 */
 export const WEBTCP_PROTOCOL_VERSION_V1 = 1;
 
 /** 受信側が受理するプロトコルバージョン。 */

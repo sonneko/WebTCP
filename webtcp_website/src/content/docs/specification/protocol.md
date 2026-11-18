@@ -1,9 +1,9 @@
 ---
 title: プロトコル仕様サマリー
-description: specification.md（0.6.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、HTTP トンネル、シグナリング契約の要約。
+description: specification.md（0.7.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、HTTP トンネル、シグナリング契約の要約。
 ---
 
-このページはリポジトリの `specification.md`（バージョン 0.6.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
+このページはリポジトリの `specification.md`（バージョン 0.7.0 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
 
 ## バイナリパケット形式（固定 24 バイトヘッダー）
 
@@ -66,7 +66,7 @@ description: specification.md（0.6.0 / プロトコル v2）のパケット形�
 - **鍵管理**: ブラウザは Web Crypto + IndexedDB（**非抽出 CryptoKey**）、Node.js は `node:crypto`。
 - **公開鍵の配布**: シグナリング時の `public-key` 交換 + `RT_UPDATE` の `publicKey` / `entries[].publicKey` 同梱。どちらも指紋一致を必須とし、事前鍵共有なしのマルチホップ署名検証を可能にします。
 - **永続 NodeId と衝突検出（M4）**: ブラウザ復元時は署名チャレンジで秘密鍵と公開鍵の対応を検証。Node.js は `NodeKeyManager.open({ keyFile })` で PKCS#8 PEM を `0600` 永続化。同一 NodeId に異なる鍵が対応する場合は `NodeIdCollisionError`。
-- 詳細は [仕様書 §10](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
+- 詳細は [仕様書 §11](https://github.com/sonneko/WebTCP/blob/main/specification.md) を参照してください。
 
 ## シグナリング・エントランス HTTP 契約
 
@@ -76,7 +76,7 @@ description: specification.md（0.6.0 / プロトコル v2）のパケット形�
 | `GET` | `/messages?nodeId=<id>&after=<cursor>` | 自ノード宛シグナリングメッセージのポーリング取得 |
 | `GET` | `/entrances?exclude=<NodeId>` | 接続候補ノード ID 一覧の取得 |
 
-DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'public-key', publicKey: <Base64url>, nodeId }`）を交換します（§9.2.1）。
+DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'public-key', publicKey: <Base64url>, nodeId }`）を交換します（§10.2.1）。
 
 
 ## 名前解決と WebTCP URL（M4 / #25）
@@ -87,7 +87,7 @@ DataChannel が開くと、双方が `public-key` メッセージ（`{ type: 'pu
 - `webtcp://<host>:<port><path>?<query>#<fragment>` はポート必須（1–65535）。host は NodeId リテラルまたは LDH 名。`parseWebTCPUrl()` / `formatWebTCPUrl()` / `network.connectURL()` を提供します。
 - ゾーン外の名前解決はグローバルな所有権証明ではありません（応答ノードの自己申告）。所有権は次節の `domain.global` に限って検証可能です。
 
-## HTTP トンネル（M6 / #50・仕様 §15）
+## HTTP トンネル（M6 / #50・仕様 §16）
 
 HTTP/1.1 のサブセットを `VirtualStream` のバイト列として運びます。**パケット形式は変更しません**。
 
@@ -98,7 +98,7 @@ HTTP/1.1 のサブセットを `VirtualStream` のバイト列として運びま
 - エラー: `400` / `404` / `413` / `414` / `417` / `431` / `500` / `501` / `503` / `505`。
 - ヘッダ書き込み時に CR/LF/NUL を拒否（インジェクション対策）、`remoteNodeId` は接続元のみ（エンドツーエンド認証ではない）。
 
-## `domain.global` と所有権証明（M5 / #25・仕様 §13）
+## `domain.global` と所有権証明（M5 / #25・仕様 §14）
 
 - **ゾーン**: `domain.global` 直下 1 ラベルのみ（LDH、1 ラベル 1–63 文字、完全名 253 文字まで）。ゾーン名そのものは登録不可。
 - **レコード**: `DomainOwnershipRecord` は `body`（domain / nodeId / ownerPublicKey / serial / issuedAt / expiresAt / revoked / port / txt）+ `anchor` + Ed25519 `signature`。署名対象は canonical バイト列（固定長ヘッダ + 長さ接頭辞文字列）。サイズ上限 16 KiB、寿命は既定 30 日・上限 365 日。

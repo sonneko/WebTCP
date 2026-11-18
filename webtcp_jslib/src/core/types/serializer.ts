@@ -62,7 +62,7 @@ export interface IPacketSerializer {
     deserialize(buffer: Uint8Array): WebTCPPacket;
 
     /**
-     * 署名フィールドを除いた「署名対象バイト列」を生成する（プロトコル v2、specification.md §10.3）。
+     * 署名フィールドを除いた「署名対象バイト列」を生成する（プロトコル v2、specification.md §11.3）。
      *
      * 署名対象は「署名フィールドを除くシリアライズ済みパケット」、すなわち
      * ヘッダー（`signatureLen` は 0）+ senderId + destinationId + payload である。
@@ -96,7 +96,7 @@ const UINT32_MAX = 0xffffffff;
  * 完全に共通で、`version` フィールドと `signature` の有無だけが異なる。
  * マルチバイト整数はすべてビッグエンディアン。
  *
- * 送信時のバージョンは次の規則で決まる（specification.md §13）。
+ * 送信時のバージョンは次の規則で決まる（specification.md §14）。
  * - `packet.version` が明示されていればそれを使う。
  * - それ以外は `signature` が 64 バイト（Ed25519 署名）なら v2、空なら v1。
  *

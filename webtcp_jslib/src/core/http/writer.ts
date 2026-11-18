@@ -1,5 +1,5 @@
 /**
- * HTTP メッセージの書き出し（specification.md §15.2 / §15.7）。
+ * HTTP メッセージの書き出し（specification.md §16.2 / §16.7）。
  *
  * ヘッダ名・値はここで検証する。CR/LF/NUL を含む値は `HTTPHeaderInjectionError` となり、
  * アプリケーションがユーザー入力をそのままヘッダへ流してもスマグリングが成立しない。
@@ -50,7 +50,7 @@ export function serializeHTTPRequest(options: HTTPRequestWriteOptions): Uint8Arr
     const headers = toHeaders(options.headers);
     const host = headers.get('host');
     if (!options.omitHost && !host) {
-        throw new HTTPError('HTTP/1.1 requests must carry a Host header (specification.md §15.2)', {
+        throw new HTTPError('HTTP/1.1 requests must carry a Host header (specification.md §16.2)', {
             status: 400,
             code: 'missing-host',
         });

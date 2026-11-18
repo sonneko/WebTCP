@@ -24,7 +24,7 @@ import {
     NodeKeyManager,
 } from '../dist/index.js';
 
-// specification.md §13.1 / §13.2 の名前規則と所有権レコード形式。
+// specification.md §14.1 / §14.2 の名前規則と所有権レコード形式。
 test('domain-record: names are normalized and restricted to LDH labels in domain.global', () => {
     assert.equal(DOMAIN_GLOBAL_ZONE, 'domain.global');
     assert.equal(normalizeDomainName('Shop.Domain.Global.'), 'shop.domain.global');
@@ -57,7 +57,7 @@ test('domain-record: canonical bytes fix the key order, always emit revoked and 
     );
     assert.ok(!text.includes('"port"'));
     assert.ok(!text.includes('"txt"'));
-    // `port` / `txt` は存在時のみ、この順で末尾に書く (§13.2)。
+    // `port` / `txt` は存在時のみ、この順で末尾に書く (§14.2)。
     const withExtras = await createDomainOwnershipRecord({
         domain: 'shop.domain.global',
         keyManager,
@@ -117,7 +117,7 @@ test('domain-record: strict parsing rejects unknown fields, bad types and out-of
     assert.equal(
         record.body.expiresAt - record.body.issuedAt,
         DEFAULT_DOMAIN_RECORD_LIFETIME_MS,
-        '既定寿命は 30 日 (§11.3)',
+        '既定寿命は 30 日 (§12.3)',
     );
     const json = domainRecordToJSON(record);
     await assert.rejects(
@@ -148,7 +148,7 @@ test('domain-record: strict parsing rejects unknown fields, bad types and out-of
         () => parseDomainOwnershipRecord({ ...json, anchor: { leafIndex: 0 } }),
         /anchor/,
     );
-    // 指紋と公開鍵の組替えは構造検証段階で拒否する (§13.2)。
+    // 指紋と公開鍵の組替えは構造検証段階で拒否する (§14.2)。
     const other = await NodeKeyManager.create();
     await assert.rejects(
         () => parseDomainOwnershipRecord({ ...json, body: { ...json.body, nodeId: other.nodeId } }),
@@ -156,7 +156,7 @@ test('domain-record: strict parsing rejects unknown fields, bad types and out-of
     );
 });
 
-test('domain-record: lifetime, port and txt limits are enforced (§13.2 / §13.7)', async () => {
+test('domain-record: lifetime, port and txt limits are enforced (§14.2 / §14.7)', async () => {
     const keyManager = await NodeKeyManager.create();
     await assert.rejects(
         () =>
@@ -172,7 +172,7 @@ test('domain-record: lifetime, port and txt limits are enforced (§13.2 / §13.7
     assert.equal(
         record.body.expiresAt - record.body.issuedAt,
         DEFAULT_DOMAIN_RECORD_LIFETIME_MS,
-        '既定寿命は 30 日 (§11.3)',
+        '既定寿命は 30 日 (§12.3)',
     );
     const json = domainRecordToJSON(record);
     assert.throws(() => parseDomainRecordBody({ ...json.body, port: 0 }), /port/);

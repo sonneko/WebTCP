@@ -429,7 +429,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             this.connectedPeers.set(peerId, true);
             this.resolveOpenWaiters(state);
             this.emit('connection-status', peerId, true);
-            // 公開鍵の交換（#28, §10.4.1）。ピアのリンク確立直後に行う。
+            // 公開鍵の交換（#28, §11.4.1）。ピアのリンク確立直後に行う。
             void this.sendPublicKey(peerId).catch((error) => {
                 this.logger.warn(`Failed to exchange public key with ${peerId}:`, error);
             });
@@ -451,7 +451,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     }
 
     /**
-     * 自身の Ed25519 公開鍵をピアへ送る（シグナリング経由、§10.4.1）。
+     * 自身の Ed25519 公開鍵をピアへ送る（シグナリング経由、§11.4.1）。
      *
      * 鍵管理が未設定の場合は何もしない（v1 相当の動作）。
      */
@@ -470,7 +470,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     }
 
     /**
-     * `public-key` メッセージを処理する（§10.4.1）。
+     * `public-key` メッセージを処理する（§11.4.1）。
      *
      * 受信した公開鍵が `fromId` の指紋と一致することを確認してから、
      * 公開鍵ディレクトリへ登録する。指紋が一致しない鍵は破棄する。

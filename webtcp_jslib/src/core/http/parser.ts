@@ -1,5 +1,5 @@
 /**
- * HTTP/1.1 の逐次パーサ（specification.md §15.2 / §15.2.1）。
+ * HTTP/1.1 の逐次パーサ（specification.md §16.2 / §16.2.1）。
  *
  * `HTTPMessageParser` は与えられたバイト列を**消費しながら**状態を進める。
  * ストリームの分割位置に依存しないため、1 バイトずつ渡しても、ヘッダ途中で
@@ -14,7 +14,7 @@
 import { HTTPParseError } from './errors.js';
 import { HTTPHeaders, normalizeHeaderName, normalizeHeaderValue } from './message.js';
 
-/** パーサの上限（§15.2.1）。 */
+/** パーサの上限（§16.2.1）。 */
 export interface HTTPParserLimits {
     /** リクエストライン / ステータスラインの最大バイト数。既定 8 KiB。 */
     maxLineBytes?: number;
@@ -222,7 +222,7 @@ export function findHeadEnd(bytes: Uint8Array): number {
     return -1;
 }
 
-/** `Transfer-Encoding` / `Content-Length` からリクエストの本文フレーミングを決める（§15.2）。 */
+/** `Transfer-Encoding` / `Content-Length` からリクエストの本文フレーミングを決める（§16.2）。 */
 export function determineRequestFraming(headers: HTTPHeaders): HTTPBodyFraming {
     return determineFraming(headers, true);
 }

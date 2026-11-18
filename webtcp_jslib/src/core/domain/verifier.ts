@@ -1,5 +1,5 @@
 /**
- * ドメイン所有権の検証（specification.md §13.4）。
+ * ドメイン所有権の検証（specification.md §14.4）。
  *
  * 既定実装 `createDomainOwnershipVerifier()` は **fail-closed** である:
  * 構造・指紋・署名・有効期間・（要求時は）台帳アンカーのうち 1 つでも検証できなければ
@@ -34,7 +34,7 @@ import { verifyDomainMerkleProof } from './merkle.js';
 import { isDomainGlobalName, normalizeDomainName } from './names.js';
 import { DomainProofCode } from './errors.js';
 
-/** 検証結果コードは `./errors.js` が単一の定義源（specification.md §13.4.1）。 */
+/** 検証結果コードは `./errors.js` が単一の定義源（specification.md §14.4.1）。 */
 export type { DomainProofCode } from './errors.js';
 
 /** 検証結果。 */
@@ -74,7 +74,7 @@ export interface DomainVerifyContext {
     checkpointChain?: DomainCheckpointSource;
 }
 
-/** 所有権検証器のインターフェース（specification.md §13.4.1）。 */
+/** 所有権検証器のインターフェース（specification.md §14.4.1）。 */
 export interface IDomainOwnershipVerifier {
     readonly name?: string;
     verify(
@@ -83,7 +83,7 @@ export interface IDomainOwnershipVerifier {
     ): Promise<DomainVerifyResult>;
 }
 
-/** 実チェーン検証への差し替え点（specification.md §13.4.2、参照実装は #42）。 */
+/** 実チェーン検証への差し替え点（specification.md §14.4.2、参照実装は #42）。 */
 export interface IChainAnchorVerifier {
     readonly name?: string;
     verify(input: {
@@ -136,7 +136,7 @@ function fail(
 }
 
 /**
- * 既定の所有権検証器を作る（specification.md §13.4.1 の 1〜8 をこの順序で実施する）。
+ * 既定の所有権検証器を作る（specification.md §14.4.1 の 1〜8 をこの順序で実施する）。
  */
 export function createDomainOwnershipVerifier(
     options: DomainOwnershipVerifierOptions = {},
@@ -436,7 +436,7 @@ export function createDomainOwnershipVerifier(
 }
 
 /**
- * 受理済みレコードの `serial` とチェックポイントを記憶する器（§13.4.1 の 6・§13.5）。
+ * 受理済みレコードの `serial` とチェックポイントを記憶する器（§14.4.1 の 6・§14.5）。
  * ロールバック（古い `serial` / 後退した `treeSize`）の検出に使う。
  */
 export interface DomainProofState {

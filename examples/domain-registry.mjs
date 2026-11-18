@@ -1,5 +1,5 @@
 /**
- * `domain.global` 参照レジストリ（specification.md §13.6）。
+ * `domain.global` 参照レジストリ（specification.md §14.6）。
  *
  * デモサーバーに組み込む小さなラッパーで、実装はビルド済み `webtcp_jslib` を
  * そのまま使う。canonical バイト列・Ed25519 署名・Merkle 木・チェックポイント署名を
@@ -9,16 +9,16 @@
  * `unavailable` を返し、サーバーは 503 を返す（デモ自体は落ちない）。
  *
  * 注意: ログ鍵は**起動のたびに作り直す**。恒久化すると、その鍵を PIN したクライアントに
- * 対して台帳を書換える能力を持つことになる（§13.7 の信頼境界）。本来の透明性ログは #42。
+ * 対して台帳を書換える能力を持つことになる（§14.7 の信頼境界）。本来の透明性ログは #42。
  */
 
 /** ビルド済みライブラリの場所（`npm run build` で生成される）。 */
 const LIBRARY_URL = new URL('../webtcp_jslib/dist/index.js', import.meta.url);
 
-/** 1 レコードの JSON 上限（specification.md §13.2 / §13.6）。 */
+/** 1 レコードの JSON 上限（specification.md §14.2 / §14.6）。 */
 export const MAX_RECORD_JSON_BYTES = 16 * 1024;
 
-/** 1 応答に載せるレコード数の上限（specification.md §13.6）。 */
+/** 1 応答に載せるレコード数の上限（specification.md §14.6）。 */
 export const MAX_RECORDS_PER_RESPONSE = 8;
 
 let cachedLibrary = null;
@@ -78,7 +78,7 @@ export function createDomainRegistry(options = {}) {
         },
 
         /**
-         * `POST /domain/record`。検証（§13.4 の 1〜6）を通ったものだけを受け付ける。
+         * `POST /domain/record`。検証（§14.4 の 1〜6）を通ったものだけを受け付ける。
          * @param {unknown} payload
          */
         async submit(payload) {
@@ -132,7 +132,7 @@ export function createDomainRegistry(options = {}) {
                 };
             } catch (error) {
                 if (error instanceof lib.DomainConflictError) {
-                    // `conflictVerdict()` の裁定語をそのまま HTTP の code に写像する (§13.4.3)
+                    // `conflictVerdict()` の裁定語をそのまま HTTP の code に写像する (§14.4.3)
                     const verdict = /verdict "([a-z-]+)"/.exec(error.message)?.[1] ?? 'conflict';
                     return {
                         status: 409,

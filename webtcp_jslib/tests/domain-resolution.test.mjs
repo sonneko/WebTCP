@@ -46,11 +46,11 @@ test('domain-resolution: the authority resolves from its sources and fail-closes
     const resolution = await authority.resolve('shop.domain.global');
     assert.equal(resolution.ok, true);
     assert.equal(resolution.nodeId, owner.nodeId);
-    assert.equal(resolution.port, 8443, 'port はヒントとして返す (§13.2)');
+    assert.equal(resolution.port, 8443, 'port はヒントとして返す (§14.2)');
     assert.equal(resolution.proof.anchorVerified, true);
     assert.equal(resolution.via, 'memory');
 
-    // 候補 0 件は「名前が存在しない」として区別される (§13.5)
+    // 候補 0 件は「名前が存在しない」として区別される (§14.5)
     await assert.rejects(
         () => authority.resolve('missing.domain.global'),
         (error) => error instanceof DomainResolutionUnavailableError && error.domain === 'missing.domain.global',
@@ -75,7 +75,7 @@ test('domain-resolution: the authority resolves from its sources and fail-closes
     await assert.rejects(() => authority.resolve('shop.domain.global'), /closed/);
 });
 
-test('domain-resolution: same serial with different content is an unresolved conflict (§13.4.3)', async () => {
+test('domain-resolution: same serial with different content is an unresolved conflict (§14.4.3)', async () => {
     const owner = await NodeKeyManager.create();
     const a = await makeRecord(owner, 'shop.domain.global', { txt: 'from-a' });
     const b = await makeRecord(owner, 'shop.domain.global', { txt: 'from-b' });
@@ -91,7 +91,7 @@ test('domain-resolution: same serial with different content is an unresolved con
     assert.equal(resolution.ok, false);
     assert.equal(resolution.code, 'conflict');
     assert.match(resolution.message, /unresolved ownership conflict/);
-    // 失敗は短い TTL でキャッシュされる (§13.5)
+    // 失敗は短い TTL でキャッシュされる (§14.5)
     const cached = await authority.settle('shop.domain.global');
     assert.equal(cached.code, 'conflict');
 });
@@ -140,7 +140,7 @@ test('domain-resolution: the authority feeds verified public keys to the key res
     const key = await resolver.getPublicKey(owner.nodeId);
     assert.deepEqual(key, owner.publicKey);
 
-    // 検証に失敗する束縛は鍵配布に流用しない (§13.5 MUST NOT)
+    // 検証に失敗する束縛は鍵配布に流用しない (§14.5 MUST NOT)
     const stranger = await NodeKeyManager.create();
     assert.equal(await resolver.getPublicKey(stranger.nodeId), null);
     // inner へのフォールバック
@@ -155,7 +155,7 @@ test('domain-resolution: the authority feeds verified public keys to the key res
     assert.equal(authority.storedSize, 1);
 });
 
-test('domain-resolution: NameServer refuses direct registration of zone names (§12.1 MUST NOT)', async () => {
+test('domain-resolution: NameServer refuses direct registration of zone names (§13.1 MUST NOT)', async () => {
     const hub = new LoopbackNetwork();
     const keys = await Promise.all([NodeKeyManager.create(), NodeKeyManager.create()]);
     const nodes = keys.map((keyManager) =>
@@ -179,7 +179,7 @@ test('domain-resolution: NameServer refuses direct registration of zone names (�
             /domain\.global/,
         );
         assert.throws(() => ns.registerCNAME('shop.domain.global', 'alias'), /domain\.global/);
-        // CNAME の**到達先**がゾーン内に入ることは許す (§12.1)。ただし最終解決は所有権検証が必須。
+        // CNAME の**到達先**がゾーン内に入ることは許す (§13.1)。ただし最終解決は所有権検証が必須。
         ns.registerCNAME('alias', 'shop.domain.global');
         // 非ゾーン名は従来どおり
         ns.registerA('my-service', b.localNodeId);
@@ -188,14 +188,14 @@ test('domain-resolution: NameServer refuses direct registration of zone names (�
             () => ns.resolve('alias'),
             (error) => error instanceof DomainResolutionUnavailableError && error.domain === 'shop.domain.global',
         );
-        // 検証失敗のレコードは登録されない (§13.5)
+        // 検証失敗のレコードは登録されない (§14.5)
         const owner = await NodeKeyManager.create();
         const record = await makeRecord(owner, 'shop.domain.global');
         const noAuthority = await ns.registerDomain({ ...record, body: { ...record.body, txt: 'tampered' } });
         assert.equal(noAuthority.ok, false);
         assert.equal(noAuthority.code, 'bad-signature');
         assert.equal(ns.servedDomainRecords().length, 0);
-        // 権威なしのゾーン名解決は失敗する (MUST, §12.2)
+        // 権威なしのゾーン名解決は失敗する (MUST, §13.2)
         await assert.rejects(
             () => ns.resolve('shop.domain.global'),
             (error) => error instanceof DomainResolutionUnavailableError,
@@ -279,7 +279,7 @@ test('domain-resolution: answers for zone names must carry ownership, and peers 
             resolveTimeoutMs: 4000,
         });
         // C の応答は所有権レコードを添えないので候補 0 件（MUST NOT により素の A レコードは使えない）。
-        // 台帳にも既知ノードにも無いのだから not-found であり、検証失敗（DomainOwnershipError）とは区別される (§13.5)。
+        // 台帳にも既知ノードにも無いのだから not-found であり、検証失敗（DomainOwnershipError）とは区別される (§14.5)。
         await assert.rejects(
             () => nsNoProof.resolve('other.domain.global'),
             (error) => error.name === 'NameNotFoundError',
@@ -295,7 +295,7 @@ test('domain-resolution: answers for zone names must carry ownership, and peers 
     }
 });
 
-test('domain-resolution: connectURL works over a domain.global name and exposes the zone (§12.3)', async () => {
+test('domain-resolution: connectURL works over a domain.global name and exposes the zone (§13.3)', async () => {
     const hub = new LoopbackNetwork();
     const keys = await Promise.all([NodeKeyManager.create(), NodeKeyManager.create()]);
     const nodes = keys.map((keyManager) =>
@@ -387,7 +387,7 @@ test('domain-resolution: resolve honors its deadline and caller abort even when 
         const elapsed = Date.now() - started;
         assert.ok(elapsed < 2000, `resolve() must not wait for the stalled peer (elapsed ${elapsed}ms)`);
 
-        // 呼び出し側の明示中断はデッドライン到達と区別する (§11.2)
+        // 呼び出し側の明示中断はデッドライン到達と区別する (§12.2)
         const controller = new AbortController();
         const pending = ns.resolve('nowhere', { signal: controller.signal, timeoutMs: 10_000 });
         setTimeout(() => controller.abort(), 50);
@@ -395,7 +395,7 @@ test('domain-resolution: resolve honors its deadline and caller abort even when 
             () => pending,
             (error) => /aborted/.test(error.message) && !(error instanceof NameResolutionTimeoutError),
         );
-        // 名前解決の中断はゾーン内名前の経路でも同じ (§13.5)
+        // 名前解決の中断はゾーン内名前の経路でも同じ (§14.5)
         const domainNs = new NameServer(a, {
             logger: noopLogger,
             domains: createDomainAuthority({

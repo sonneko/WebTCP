@@ -170,7 +170,7 @@ test('demo server: the /domain/* registry contract accepts owner-signed records 
         assert.equal(verified.ok, true);
         assert.equal(verified.anchorVerified, true);
 
-        // 同アダプタ経由でも同じ結果になる（§13.6 の契約を実装が守っている）
+        // 同アダプタ経由でも同じ結果になる（§14.6 の契約を実装が守っている）
         const client = createHttpDomainRegistryClient({ baseUrl, logger: noopLogger });
         assert.equal((await client.lookupByDomain('demo.domain.global'))[0].body.serial, 1);
         assert.deepEqual(await client.lookupByDomain('nope.domain.global'), []);

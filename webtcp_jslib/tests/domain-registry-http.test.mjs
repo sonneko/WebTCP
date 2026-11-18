@@ -17,7 +17,7 @@ import {
 } from '../dist/index.js';
 
 /**
- * `fetch` のスタブ（specification.md §13.6 の HTTP 契約だけを相手にする）。
+ * `fetch` のスタブ（specification.md §14.6 の HTTP 契約だけを相手にする）。
  * 台帳そのものは `DomainLedger` を使い、レスポンス生成に流用する。
  */
 function makeRegistry(ledger) {
@@ -79,7 +79,7 @@ function makeRegistry(ledger) {
     return { calls, fetchImpl: handler };
 }
 
-test('domain-registry: submit, lookup and checkpoint endpoints follow the §13.6 contract', async () => {
+test('domain-registry: submit, lookup and checkpoint endpoints follow the §14.6 contract', async () => {
     const owner = await NodeKeyManager.create();
     const log = await NodeKeyManager.create();
     const ledger = createDomainLedger({ keyManager: log, logger: noopLogger });
@@ -198,7 +198,7 @@ test('domain-registry: the authority resolves through the registry and caches li
     void authority.proofState.size;
 });
 
-test('domain-registry: the registry timeout and abort do not hang resolution (§12.2 / #40)', async () => {
+test('domain-registry: the registry timeout and abort do not hang resolution (§13.2 / #40)', async () => {
     const client = createHttpDomainRegistryClient({
         baseUrl: 'http://registry.test',
         timeoutMs: 120,
@@ -258,7 +258,7 @@ function readJsonUntilEnd(stream, maxBytes = 64 * 1024) {
     });
 }
 
-test('domain-registry: the ownership answer format on the wire matches §12.2', async () => {
+test('domain-registry: the ownership answer format on the wire matches §13.2', async () => {
     const hub = new LoopbackNetwork();
     const keys = await Promise.all([NodeKeyManager.create(), NodeKeyManager.create()]);
     const nodes = keys.map((keyManager) =>
@@ -305,13 +305,13 @@ test('domain-registry: the ownership answer format on the wire matches §12.2', 
         assert.equal(typeof answer.ownership[0].signature, 'string');
         stream.destroy();
 
-        // A 側はNameServer 経由でも同じレコードを候補に取れる (§13.5 の (3))
+        // A 側はNameServer 経由でも同じレコードを候補に取れる (§14.5 の (3))
         nsA.listen();
         const resolved = await nsA.resolve('solo.domain.global');
         assert.equal(resolved.nodeId, b.localNodeId);
         assert.equal(resolved.source, 'domain');
         assert.equal(resolved.record.body.serial, 3);
-        // ゾーン外の名前は NXDOMAIN を返す (§12.2)
+        // ゾーン外の名前は NXDOMAIN を返す (§13.2)
         const missing = await a.connect(b.localNodeId, nsB.port);
         const missingReply = readJsonUntilEnd(missing);
         await missing.send(JSON.stringify({ protocol: 1, type: 'query', id: 'zz', name: 'other.domain.global' }));
@@ -326,7 +326,7 @@ test('domain-registry: the ownership answer format on the wire matches §12.2', 
 });
 
 test('domain-registry: a node serves an ANCHORED record that peers verify through the pinned log key', async () => {
-    // デモ自己テスト 1d と同じ流れを Node 側でなぞる (§13.4.1 / §13.5):
+    // デモ自己テスト 1d と同じ流れを Node 側でなぞる (§14.4.1 / §14.5):
     // 台帳受理 → サーバー側が登録 → ピアは wantOwnership 応答だけで解決する。
     const owner = await NodeKeyManager.create();
     const log = await NodeKeyManager.create();

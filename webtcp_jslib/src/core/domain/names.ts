@@ -1,5 +1,5 @@
 /**
- * `domain.global` ゾーンの名前規則（specification.md §13.1）。
+ * `domain.global` ゾーンの名前規則（specification.md §14.1）。
  *
  * このモジュールはプラットフォーム非依存の純粋関数だけを提供する。
  */

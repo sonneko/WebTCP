@@ -1,5 +1,5 @@
 /**
- * `VirtualStream` からの HTTP メッセージ読み取り（specification.md §15.2）。
+ * `VirtualStream` からの HTTP メッセージ読み取り（specification.md §16.2）。
  *
  * `HTTPMessageReader` は受信バイトを内部バッファへ積み、ヘッダ部が揃った時点で
  * `HTTPHeadParser` を通し、以降は本文のフレーミングに応じて残りを返す。

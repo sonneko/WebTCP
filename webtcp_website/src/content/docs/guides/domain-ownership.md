@@ -37,7 +37,7 @@ domainZone('shop.domain.global'); // 'domain.global'
 | `anchor` | 台帳が発行する包含証明（後述）。**無くてもレコードは成立**するが、検証ポリシー次第で拒否される |
 | `signature` | `body` の canonical バイト列に対する Ed25519 署名 |
 
-canonical シリアライズ（固定長ヘッダ + 長さ接頭辞付き文字列）と SHA-256 による 32 バイトの commitment は仕様 §13.2 のとおりです。commitment が台帳に載る値であり、レコード本体は carrier として扱われます。
+canonical シリアライズ（固定長ヘッダ + 長さ接頭辞付き文字列）と SHA-256 による 32 バイトの commitment は仕様 §14.2 のとおりです。commitment が台帳に載る値であり、レコード本体は carrier として扱われます。
 
 ```ts
 import { createDomainOwnershipRecord, commitDomainRecord, domainRecordToJSON } from '@sonneko/webtcp-tunneler';
@@ -55,7 +55,7 @@ const commitment = await commitDomainRecord(record.body); // 64 hex 文字
 
 ## 台帳アンカーとチェックポイント
 
-参照台帳は**追記専用**のハッシュチェーン + Merkle ツリーです（仕様 §13.3）。
+参照台帳は**追記専用**のハッシュチェーン + Merkle ツリーです（仕様 §14.3）。
 
 - 各レコードはリーフ `H(0x00 || commitment)` としてツリーに追加され、`DomainAnchor` が包含証明（`leafIndex` と `proof`）を返します。
 - ルートはツリーサイズに束縛されます: `H(0x02 || uint64BE(treeSize) || top)`。よって 5 リーフの証明を 4 リーフのルートに通すことはできません。
@@ -64,7 +64,7 @@ const commitment = await commitDomainRecord(record.body); // 64 hex 文字
 
 ## 検証は fail-closed
 
-`DomainAuthority` は次の順序で**1 つでも失敗したらその候補を棄却**します（§13.4.1）。候補が 0 件なら「解決失敗」であり、空の結果を黙って受理することはありません。
+`DomainAuthority` は次の順序で**1 つでも失敗したらその候補を棄却**します（§14.4.1）。候補が 0 件なら「解決失敗」であり、空の結果を黙って受理することはありません。
 
 1. レコード形式と canonical バイト列の一致（16 KiB 上限を含む）
 2. 公開鍵 → NodeId 指紋の一致、および `expectedDomain` / ゾーンの一致
@@ -122,7 +122,7 @@ const stream = await network.connectURL('webtcp://shop.domain.global:8080/orders
 
 ## 参照 HTTP レジストリ
 
-`examples/domain-registry.mjs` は仕様 §13.6 のエンドポイントを実装した実験用の台帳です。`examples/server.mjs` が `/domain/*` としてマウントし、デモページから使えます（**起動のたびに ephemeral なログ鍵**を発行し、永続化しません）。
+`examples/domain-registry.mjs` は仕様 §14.6 のエンドポイントを実装した実験用の台帳です。`examples/server.mjs` が `/domain/*` としてマウントし、デモページから使えます（**起動のたびに ephemeral なログ鍵**を発行し、永続化しません）。
 
 | エンドポイント | 用途 |
 | :--- | :--- |
@@ -145,5 +145,5 @@ const stream = await network.connectURL('webtcp://shop.domain.global:8080/orders
 - **公開ブロックチェーンへの裏付けは未実装**（#42）。参照台帳は信頼できる第三者ではなく、単なる実験用プロセスです。実運用にはログ鍵のピン留め方針（監視・複数鍵・CT 風の散発収集）と、紛争解決・失効回収を含むガバナンス設計が必要です（#43）。
 - **台帳の永続化・合意・監査は未実装**。参照実装はメモリ上で、再起動すると履歴を失います（`treeSize` が戻るため、ピン留め側はロールバックとして検出します）。
 - **レコードの発行・更新は手動**です。所有者側で `serial` を増やして再署名し、再び submit する必要があります。
-- **名前空間は実験用 zone** です。ICANN の `.global` 実在や DNS との排他は扱いません（仕様 §13.1）。
+- **名前空間は実験用 zone** です。ICANN の `.global` 実在や DNS との排他は扱いません（仕様 §14.1）。
 - 鍵ローテーションやオンデマンドの公開鍵照会は未実装です（#47）。レコードを失効させても、ピアが保持する古い公開鍵のマッピングは自動的に無効になりません。

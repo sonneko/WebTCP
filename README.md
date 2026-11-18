@@ -10,7 +10,7 @@ WebTCPは、ブラウザを単なるクライアントではなく、**自己完
 
 ブラウザの制限付きの`fetch`を使っているわけではないので、TCPレイヤーから自由に通信を操ることができます。
 
-> **現在のステータス**: **M6（アプリケーション層 HTTP トンネル）実装済み**。M5 までの NameServer / `webtcp://` URL / 永続 NodeId / 所有者署名付きドメインレコード・Merkle 台帳に対応したうえで、**`serveHTTP()` / `fetchURL()` による HTTP/1.1 サブセット（リクエストライン・ヘッダ・本文・`keep-alive`・`chunked`）**を追加しました。`webtcp://` URL の `path` / `query` はリクエストターゲットとして実際に転送されます（`fragment` は送りません）。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43）。HTTP はサブセットで、稼働維持（#51）と外部クライアントのブリッジ（#52）は未着手です。詳細は [plan.md](./plan.md)・[仕様 §13](./specification.md)・[仕様 §15](./specification.md) を参照してください。
+> **現在のステータス**: **M7（生存期間: サービス役の状態の永続化・復元と稼働維持の補助）実装済み**。M6 で **M6（アプリケーション層 HTTP トンネル）実装済み**。M5 までの NameServer / `webtcp://` URL / 永続 NodeId / 所有者署名付きドメインレコード・Merkle 台帳に対応したうえで、**`serveHTTP()` / `fetchURL()` による HTTP/1.1 サブセット（リクエストライン・ヘッダ・本文・`keep-alive`・`chunked`）**を追加しました。`webtcp://` URL の `path` / `query` はリクエストターゲットとして実際に転送されます（`fragment` は送りません）。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43）。HTTP はサブセットです。稼働維持（#51）は M7 で部分的に対応しました（状態の永続化・復元と keep-alive 補助、仕様 §9）が、非可視タブの凍結中は到達できないままです。外部クライアントのブリッジ（#52）は未着手です。詳細は [plan.md](./plan.md)・[仕様 §14](./specification.md)・[仕様 §16](./specification.md) を参照してください。
 
 ## 主な機能
 
@@ -129,7 +129,7 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 
 ### 現状の制約（M6）
 
-- 鍵のローテーション（同一 NodeId のままの鍵更新）、アプリケーションデータの E2E 暗号化、明示的なリプレイ検知の強化は未実装です（[specification.md](./specification.md) §10.7）。
+- 鍵のローテーション（同一 NodeId のままの鍵更新）、アプリケーションデータの E2E 暗号化、明示的なリプレイ検知の強化は未実装です（[specification.md](./specification.md) §11.7）。
 - Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+ です。非対応環境では v1 にフォールバックします。
 - `domain.global` は「検証できる」段階までです（M5 / #25）。**公開ブロックチェーンへの裏付け（#42）**、**レジストリの運用ガバナンス（紛争解決・失効回収・IDNA、#43）**、台帳の永続化は未実装で、同梱の参照レジストリは起動のたびにログ鍵を作り直す実験用プロセスです。ゾーン外の名前はいまも応答ノードの自己申告（ローカル信頼モデル）です。
 - RPF 厳格化と距離ベクトルの収束強化（#46）、SSE / WebSocket シグナリング（#45）は未着手です。
@@ -150,7 +150,7 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 
 **できていない部分（ビジョンに対して正直な穴）**
 
-1. **ブラウザは「サーバーとして生き残れない**（[#51](https://github.com/sonneko/WebTCP/issues/51)）。タブが非可視になればサスペンドされ、リロードすると待ち受け・名前登録・提供中の所有権レコード・HTTP ハンドラはすべて消えます（鍵だけが IndexedDB / PEM で永続する、という非対称）。 Wake Lock も Service Worker も使っていません。
+1. **ブラウザは「サーバーとして生き残れない**（[#51](https://github.com/sonneko/WebTCP/issues/51)）。タブが非可視になればサスペンドされ、リロードすると待ち受け・名前登録・提供中の所有権レコード・HTTP ハンドラはすべて消えます（鍵だけが IndexedDB / PEM で永続する、という非対称）。 M6 までは Wake Lock も Service Worker も使っていませんでした。M7 は Wake Lock と無音オーディオを任意の補助として提供します（Service Worker は使いません）。
 2. **入口が WebRTC を話せる相手に限られる**（[#52](https://github.com/sonneko/WebTCP/issues/52)）。HTTP を話せるようになっても（M6）、入り口は `HTTPClient` / `fetchURL()` を呼べる相手だけです。curl や既存アプリがブラウザ上のサービスへ入るためのブリッジ（ローカル TCP リッスン → トンネル）が無く、Node 側の WebRTC 実装も非同梱です。
 3. **所有権は「検証可能」であって「分散的に正しい」とは限らない**。参照レジストリは単一プロセス・メモリ保持・合意なしで、ログ鍵の信頼分配（監視、CT 風の散発収集、複数鍵）は未設計です（#42 / #43）。
 4. **マルチホップは動く範囲が限定的**です。RPF 厳格化と距離ベクトルの収束強化は #46、SSE / WebSocket シグナリングは #45 で未着手。転送をともなう構成は実験扱いしてください。
@@ -337,7 +337,7 @@ const resolved = await ns.resolve('shop.domain.global');
 
 - 検証順序は fail-closed（形式 → 指紋とゾーン → 所有者署名 → 有効期間 → serial と失効 → 衝突 → 台帳アンカー → 収集元全滅は `resolution-unavailable`）。
 - **信頼の根拠はピン留めしたログ鍵**です。`logKeys` に無い台帳のアンカーは `anchor-untrusted-log` で棄却されるため、実運用ではログ鍵の配布方針が別途必要になります（#42 / #43）。
-- 詳細は [specification.md §13](./specification.md) と公式ドキュメント `guides/domain-ownership` を参照してください。
+- 詳細は [specification.md §14](./specification.md) と公式ドキュメント `guides/domain-ownership` を参照してください。
 
 ### HTTP トンネル（M6 / #50）
 
@@ -364,7 +364,7 @@ console.log(response.status, response.headers.get('content-type'));
 const body = await response.text();      // text / json / arrayBuffer。ストリーミングは for await
 ```
 
-- **サブセットです**: リクエストライン・ヘッダ・本文（`Content-Length` / `chunked`）・`keep-alive`・`HEAD` は RFC 9112 に沿って実装していますが、HTTP/2・HTTP/3、`Upgrade` / WebSocket、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従は実装していません（[仕様 §15](./specification.md)）。
+- **サブセットです**: リクエストライン・ヘッダ・本文（`Content-Length` / `chunked`）・`keep-alive`・`HEAD` は RFC 9112 に沿って実装していますが、HTTP/2・HTTP/3、`Upgrade` / WebSocket、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従は実装していません（[仕様 §16](./specification.md)）。
 - `webtcp://` URL の `fragment` は送りません（HTTP の request-target に含まれないため）。
 - 既存の生 TCP API（`listen()` / `connect()` / `connectURL()`）はバイトストリームのままで、`connectURL()` は今も `path` / `query` を送りません。HTTP は `serveHTTP()` / `fetchURL()` / `HTTPClient` を使い分けてください。
 - `keep-alive` を維持して複数リクエストを再利用するには `new HTTPClient(network, { nameServer })` を直接使います（`fetchURL()` は 1 リクエストごとに閉じます）。
@@ -425,7 +425,7 @@ const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' }); //
 
 | 文書 | 内容 |
 | :--- | :--- |
-| [specification.md](./specification.md) | プロトコル仕様 0.6.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §10、**名前解決 §12**、**`domain.global` と所有権証明 §13**、**HTTP トンネル §15**） |
+| [specification.md](./specification.md) | プロトコル仕様 0.7.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §11、**名前解決 §13**、**`domain.global` と所有権証明 §14**、**HTTP トンネル §16**） |
 | [design.md](./design.md) | 実装構造と設計判断 |
 | [plan.md](./plan.md) | マイルストーン、将来課題、リスク |
 | [docs/layer.md](./docs/layer.md) | レイヤーと名前解決・所有権・HTTP の解説（M4〜M6 で実装済み部分と将来構想） |
@@ -468,6 +468,7 @@ npm run build
 - **M3（完了 / #28）**: Ed25519 署名（プロトコル v2）、NodeId の鍵指紋化、`BrowserKeyManager` / `NodeKeyManager`、公開鍵の自動配布
 - **M4（完了 / #25）**: NameServer（A/CNAME）、`webtcp://` URL、永続 NodeId と衝突検出、RT_UPDATE の受信元検証と鍵伝播
 - **M5（完了 / #25）**: `domain.global` の所有権レコード（Ed25519 署名 + canonical commitment）、追記専用 Merkle 台帳とチェックポイント、fail-closed 検証器と `DomainAuthority`、`NameServer` 統合、参照 HTTP レジストリ、デモと E2E 検証
+- **M7（完了 / #51）**: 生存期間。`network.persistState()` / `restoreState()`（IndexedDB、待ち受けポート・A/CNAME・所有権レコードを保存し、復元時に所有権を再検証）、`neighbor-connected` / `neighbor-disconnected` の再発行、`startBrowserKeepAlive()`（Wake Lock・無音オーディオ・前面復帰の再接続・pagehide の終了処理）。仕様 §9。
 - **M6（完了 / #50）**: アプリケーション層 HTTP トンネル。`core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient` / `HTTPRouter`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。**切り出した将来課題**: 実チェーンへの裏付け #42、レジストリ運用ガバナンス #43、RPF 厳格化 #46、SSE/WebSocket シグナリング #45、稼働維持 #51、外部ブリッジ #52、HTTP のフル実装 #57、接続プールの上限 #58、受信フロー制御 #56
 
 詳細は [plan.md](./plan.md) を参照してください。

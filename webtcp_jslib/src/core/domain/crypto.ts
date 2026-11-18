@@ -1,12 +1,12 @@
 import { ED25519_PUBLIC_KEY_BYTES } from '../routing/keys.js';
 
 /**
- * ドメイン所有権まわりで使う暗号プリミティブの最小ラッパ（specification.md §13.2 / §13.3）。
+ * ドメイン所有権まわりで使う暗号プリミティブの最小ラッパ（specification.md §14.2 / §14.3）。
  *
  * `src/core` の制約（ブラウザ・Node.js どちらにも依存しない）を守るため、
  * Web Crypto（`globalThis.crypto.subtle`）だけを使う。実チェーン検証のように
  * 追加プリミティブ（keccak-256 等）を要するものは `IChainAnchorVerifier` の側へ逃がす
- * （specification.md §13.4.2、plan.md §4.3 の #42）。
+ * （specification.md §14.4.2、plan.md §4.3 の #42）。
  */
 
 /** ハッシュ関数の型（テスト用に差し替え可能）。 */

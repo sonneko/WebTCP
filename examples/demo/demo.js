@@ -32,6 +32,7 @@ import {
     deriveNodeId,
     NameServer,
     parseWebTCPUrl,
+    IndexedDBServiceStateStorage,
 } from '../../webtcp_jslib/dist/index.js';
 
 const SERVER_PORT = 8080;
@@ -151,7 +152,7 @@ function demoDomainName(nodeId, label) {
 }
 
 /**
- * 参照レジストリへ接続し、`domain.global` 権威を作る（specification.md §13.5 / §13.6）。
+ * 参照レジストリへ接続し、`domain.global` 権威を作る（specification.md §14.5 / §14.6）。
  *
  * ログ鍵は起動のたびに `GET /domain/log` から得る（TOFU ピン留め）。取得できない場合は
  * アンカー検証なしの権威にする（その場合でも所有者署名と有効期間は必ず検証される）。
@@ -806,8 +807,8 @@ async function runSelfTest() {
     const keysClient = await makeIdentity();
     const keyDirectory = keysServer || keysClient ? new KeyDirectory({ logger }) : null;
 
-    const buildNetwork = (signaling, keys) => {
-        const options = { signaling, iceServers, logger };
+    const buildNetwork = (signaling, keys, extra = {}) => {
+        const options = { signaling, iceServers, logger, ...extra };
         if (keys && keyDirectory) {
             return createBrowserNetwork({
                 ...options,
@@ -830,7 +831,11 @@ async function runSelfTest() {
         logger,
         ...(keysClient ? { nodeId: keysClient.nodeId } : {}),
     });
-    const netServer = buildNetwork(sigServer, keysServer);
+    // サービス役の状態は一時的な IndexedDB ストアへ保存する（#51 / 1f）
+    const serviceStateStorage = new IndexedDBServiceStateStorage({
+        databaseName: `webtcp-service-selftest-${Math.random().toString(16).slice(2)}`,
+    });
+    const netServer = buildNetwork(sigServer, keysServer, { stateStorage: serviceStateStorage });
     const netClient = buildNetwork(sigClient, keysClient);
 
     const runStep = async (name, fn) => {
@@ -860,7 +865,7 @@ async function runSelfTest() {
         let serverSawEnd = false;
         // M5: 参照レジストリ（`/domain/*`）へ接続した `domain.global` 権威を作る。
         // サーバー側 NameServer は自分の所有権レコードをこの権威で検証してから登録し、
-        // ピアからの wantOwnership 問い合わせに同じ検証付きで答える (§13.5)。
+        // ピアからの wantOwnership 問い合わせに同じ検証付きで答える (§14.5)。
         const domainRegistry = createHttpDomainRegistryClient({ baseUrl: location.origin, logger });
         let domainLogInfo = null;
         let domainVerifierOptions = { requireAnchor: false, logger };
@@ -963,7 +968,7 @@ async function runSelfTest() {
                 txt: 'self-test',
                 lifetimeMs: 3_600_000,
             });
-            // 改ざんは台帳が 400 で拒否する (§13.4 の 1〜6 をレジストリも実施)
+            // 改ざんは台帳が 400 で拒否する (§14.4 の 1〜6 をレジストリも実施)
             const forged = { ...record, body: { ...record.body, txt: 'tampered' } };
             const forgedResponse = await fetch(`${location.origin}/domain/record`, {
                 method: 'POST',
@@ -993,7 +998,7 @@ async function runSelfTest() {
             const viaLedger = await ledgerNameServer.resolve(domain);
             ledgerNameServer.close();
 
-            // (b) 台帳を引かず、既知ノードの wantOwnership 応答だけで解決する (§12.2 / §13.5 の (3))
+            // (b) 台帳を引かず、既知ノードの wantOwnership 応答だけで解決する (§13.2 / §14.5 の (3))
             const peerNameServer = new NameServer(netClient, {
                 logger,
                 queryTimeoutMs: 1500,
@@ -1033,7 +1038,7 @@ async function runSelfTest() {
                 throw new Error('未登録のドメインが解決できてしまいました（fail-closed でありません）');
             }
             // 台帳も既知ノードもその名前を知らない → 「検証できない」ではなく単なる not-found として
-            // 区別できる (§13.5 の書き分け)。裏付け不足は DomainOwnershipError で返る。
+            // 区別できる (§14.5 の書き分け)。裏付け不足は DomainOwnershipError で返る。
             if (failure.name !== 'NameNotFoundError') {
                 throw new Error(`未登録名前は NameNotFoundError で失敗すべきでした: ${failure.name}: ${failure.message}`);
             }
@@ -1070,6 +1075,37 @@ async function runSelfTest() {
                 throw new Error(`remoteNodeId が一致しません: ${body.remoteNodeIdPrefix}`);
             }
             return `${response.status} ${body.path}${body.query} (remote=${body.remoteNodeIdPrefix}…)`;
+        });
+
+        await runStep('1f. サービス状態の永続化 (IndexedDB) & 復元 — 再読み込み後も名前を提供 (#51)', async () => {
+            await netServer.persistState({ nameServer: nsServer });
+            const saved = await serviceStateStorage.load();
+            if (!saved) throw new Error('保存された状態が読み込めません');
+            const expectedDomains = nsServer.servedDomainRecords().length;
+            if (saved.names.length < 2 || saved.domainRecords.length !== expectedDomains) {
+                throw new Error(`保存内容が不足: names=${saved.names.length} domains=${saved.domainRecords.length}`);
+            }
+            // 再読み込み後を模擬: 新しい NameServer へ復元し、名前と所有権レコードが引けることを確認する。
+            // 台帳アンカー付きのレコードは信頼するログ鍵を持つ権威でのみ検証できる（fail-closed）ため、
+            // 同じ権威を渡す。権威が無いと anchor-untrusted-log で拒否される。
+            const probe = new NameServer(netServer, {
+                logger,
+                ...(nsServer.domainAuthority ? { domains: nsServer.domainAuthority } : {}),
+            });
+            try {
+                const restored = await probe.restoreState(saved);
+                if (restored.rejected !== 0 || restored.domainRecords !== expectedDomains) {
+                    throw new Error(`復元結果が不一致: ${JSON.stringify(restored)}`);
+                }
+                const alias = await probe.resolve(DEMO_ALIAS_NAME);
+                if (alias.nodeId !== netServer.localNodeId) {
+                    throw new Error(`復元後の解決先が一致しません: ${alias.nodeId}`);
+                }
+                return `names=${restored.names} domains=${restored.domainRecords} rejected=${restored.rejected}`;
+            } finally {
+                probe.close();
+                await serviceStateStorage.clear();
+            }
         });
 
         // 2. 仮想 TCP 接続（ランダム ISN & ESTABLISHED）を webtcp:// URL で確立

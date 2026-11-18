@@ -34,13 +34,13 @@ async function leaves(count) {
     const out = [];
     for (let i = 0; i < count; i += 1) {
         const digest = await sha256Domain(encoder.encode(`leaf-${i}`));
-        // commitment は 32 バイトのハッシュそのもの（specification.md §13.2）。
+        // commitment は 32 バイトのハッシュそのもの（specification.md §14.2）。
         out.push(digest);
     }
     return out;
 }
 
-test('domain-merkle: leaf and node hashes use distinct domain-separation prefixes (§13.3)', async () => {
+test('domain-merkle: leaf and node hashes use distinct domain-separation prefixes (§14.3)', async () => {
     const data = encoder.encode('commitment');
     const leaf = await domainMerkleLeafHash(data);
     const node = await domainMerkleNodeHash(data, data);
@@ -114,7 +114,7 @@ test('domain-merkle: root computation matches a hand-built tree for three leaves
     const n01 = await domainMerkleNodeHash(l0, l1);
     const n22 = await domainMerkleNodeHash(l2, l2);
     const top = await domainMerkleNodeHash(n01, n22);
-    // ルートは木サイズへバインドする (§13.3)
+    // ルートは木サイズへバインドする (§14.3)
     const expected = encodeBase64Url(await bindDomainMerkleRoot(top, 3));
     assert.equal(await buildDomainMerkleRoot(leafBytes), expected);
     assert.equal(
@@ -144,7 +144,7 @@ test('domain-merkle: checkpoint canonical bytes, signing and log-key trust are e
     assert.equal(verified.ok, true);
     assert.equal(verified.code, 'ok');
 
-    // 未設定のログ鍵は fail-closed (§13.4.1 の 7)。
+    // 未設定のログ鍵は fail-closed (§14.4.1 の 7)。
     const stranger = await NodeKeyManager.create();
     const untrusted = await verifyDomainCheckpoint(signed, { logKeys: { [stranger.nodeId]: stranger.publicKey } });
     assert.equal(untrusted.ok, false);
@@ -164,12 +164,12 @@ test('domain-merkle: checkpoint canonical bytes, signing and log-key trust are e
     const future = await verifyDomainCheckpoint(signed, { logKeys: { [log.nodeId]: log.publicKey }, nowMs: 1 });
     assert.equal(future.code, 'anchor-bad-checkpoint');
 
-    // 遅延解決でも受け付ける（KeyDirectory 再利用を想定、§13.4.1）。
+    // 遅延解決でも受け付ける（KeyDirectory 再利用を想定、§14.4.1）。
     const resolved = await verifyDomainCheckpoint(signed, { resolveLogKey: () => encodeBase64Url(log.publicKey) });
     assert.equal(resolved.ok, true);
 });
 
-test('domain-merkle: prevHash chaining detects rollback and forks (§13.3)', async () => {
+test('domain-merkle: prevHash chaining detects rollback and forks (§14.3)', async () => {
     const log = await NodeKeyManager.create();
     const logKeys = { [log.nodeId]: log.publicKey };
     const first = await signDomainCheckpoint(

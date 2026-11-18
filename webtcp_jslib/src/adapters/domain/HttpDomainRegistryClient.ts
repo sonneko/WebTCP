@@ -1,9 +1,9 @@
 /**
- * 参照レジストリ（HTTP）のクライアント（specification.md §13.6）。
+ * 参照レジストリ（HTTP）のクライアント（specification.md §14.6）。
  *
  * `IDomainRecordSource` と `DomainCheckpointSource` を同時に実装するため、
  * `DomainAuthority` に `sources: [new HttpDomainRegistryClient({ baseUrl })]` と渡すだけで
- * 台帳アンカーつきの解決が動く。レジストリは**信頼の根元ではない** (§13.7) — ここで得た
+ * 台帳アンカーつきの解決が動く。レジストリは**信頼の根元ではない** (§14.7) — ここで得た
  * レコードは必ず所有者署名・台帳アンカーともに検証される。
  */
 

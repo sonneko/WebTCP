@@ -5,7 +5,7 @@ import { NodeId } from '../types/protocol.js';
  *
  * 16 バイトの乱数を hex 化した 32 文字の文字列を返す（specification.md §5.1）。
  * プロトコル v2 で `keyManager` を渡した場合は、この関数ではなく
- * `deriveNodeId(publicKey)`（公開鍵の SHA-256 先頭 16 バイト）が NodeId になる（§5.1 / §10.3）。
+ * `deriveNodeId(publicKey)`（公開鍵の SHA-256 先頭 16 バイト）が NodeId になる（§5.1 / §11.3）。
  *
  * @param byteLength 乱数のバイト数（既定 16）
  */

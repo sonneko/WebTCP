@@ -3,7 +3,7 @@ import { NodeId } from '../types/protocol.js';
 export type { NodeId } from '../types/protocol.js';
 
 /**
- * Ed25519 公開鍵指紋による NodeId の導出と、鍵表現のエンコード（#28, specification.md §5.1 / §10）。
+ * Ed25519 公開鍵指紋による NodeId の導出と、鍵表現のエンコード（#28, specification.md §5.1 / §11）。
  *
  * このモジュールはブラウザ・Node.js のどちらでも動く純粋関数だけを提供する。
  * ハッシュ計算には `globalThis.crypto.subtle`（Web Crypto）を使う。
@@ -67,7 +67,7 @@ export function hexToBytes(hex: string): Uint8Array {
 }
 
 /**
- * 公開鍵から NodeId を導出する（specification.md §5.1・§10）。
+ * 公開鍵から NodeId を導出する（specification.md §5.1・§11）。
  *
  * `NodeId = hex( SHA-256(rawEd25519PublicKey)[0..16] )`
  *

@@ -1,5 +1,5 @@
 /**
- * `HTTPRouter`（specification.md §15.3、任意の補助）。
+ * `HTTPRouter`（specification.md §16.3、任意の補助）。
  *
  * `router.add('GET', '/users/:id', handler)` のようにパターンを登録する。
  * パターンは `/` 区切りのセグメントで、`:name` は 1 セグメントにマッチし、

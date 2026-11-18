@@ -47,7 +47,7 @@ export interface RoutingLayerOptions {
      * 指定すると RT_UPDATE で学習した公開鍵を `Ed25519PacketVerifier` へ共有する。
      */
     keyDirectory?: KeyDirectory;
-    /** 自身の公開鍵（Base64url）。RT_UPDATE に同梱して全隣接へ配布する（§10.4.2）。 */
+    /** 自身の公開鍵（Base64url）。RT_UPDATE に同梱して全隣接へ配布する（§11.4.2）。 */
     localPublicKey?: Uint8Array;
     routingTableManager?: RoutingTableManagerOptions;
     /** 送信パケットの初期TTL。既定 64。 */
@@ -60,7 +60,7 @@ export interface RoutingLayerOptions {
  * WebTCPプロトコルのルーティング層（L3）。
  *
  * - パケットの宛先判定と転送
- * - 署名付与（送信）・署名検証（受信）（#28, specification.md §10）
+ * - 署名付与（送信）・署名検証（受信）（#28, specification.md §11）
  * - TTL 管理
  * - RPF（Reverse Path Forwarding）チェック
  * - RT_UPDATE のルーティングテーブルへの反映と公開鍵の配布
@@ -119,7 +119,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
                 void this.handleIncomingPacket(packet, fromId, rawBytes);
             },
         );
-        // RT_UPDATE で配布された公開鍵をディレクトリへ登録する（§10.4.2）
+        // RT_UPDATE で配布された公開鍵をディレクトリへ登録する（§11.4.2）
         this.manager.onPublicKey = (senderId, publicKeyBase64Url) => {
             void this.learnPublicKey(senderId, publicKeyBase64Url);
         };
@@ -183,7 +183,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
      * 上位層から受け取ったパケットに署名し、宛先へ送り出す。
      *
      * 署名は RoutingLayer で 1 度だけ付与する。中継転送時は TTL を変更するが、
-     * TTL は署名対象外（0 に正規化）なので再署名は不要である（§10.3）。
+     * TTL は署名対象外（0 に正規化）なので再署名は不要である（§11.3）。
      */
     public async sendPacket(packet: WebTCPPacket): Promise<void> {
         const signedPacket = await this.signPacket(packet);
@@ -268,7 +268,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
         fromId: NodeId,
         rawBytes?: Uint8Array,
     ): Promise<void> {
-        // --- 1. 署名検証（§10.2） ---
+        // --- 1. 署名検証（§11.2） ---
         const verification = await this.verifyIncoming(packet, rawBytes);
         if (!verification.ok) {
             this.logger.warn(
@@ -374,7 +374,7 @@ export class RoutingLayer extends EventEmitter implements IRoutingLayer {
     /**
      * ルーティング情報を RT_UPDATE パケットとして隣接ノードへ送る。
      *
-     * 自身の公開鍵をペイロードへ同梱し、受信側が署名検証できるようにする（§10.4.2）。
+     * 自身の公開鍵をペイロードへ同梱し、受信側が署名検証できるようにする（§11.4.2）。
      */
     public async sendRoutingUpdate(neighborId: NodeId, info: RoutingInfoPacket): Promise<boolean> {
         const payloadInfo: RoutingInfoPacket = this.localPublicKey

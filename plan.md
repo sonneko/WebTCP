@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.6.0 |
-| 対応仕様 | `specification.md` 0.6.0 |
-| 対応設計 | `design.md` 0.6.0 |
+| 文書バージョン | 0.7.0 |
+| 対応仕様 | `specification.md` 0.7.0 |
+| 対応設計 | `design.md` 0.7.0 |
 | 最終更新 | 2026-11-16 |
 | 現在のマイルストーン | **M6 実装（アプリケーション層 HTTP トンネル / #50）** |
 
@@ -30,7 +30,8 @@
 | **M4** | **NameServer と webtcp:// URL** | ✅ 完了（#39 マージ済み） | NameServer（A/CNAME・ローカル登録・既知ノード問い合わせ）、`webtcp://`、永続 NodeId と衝突検出、デモ/サイト（#25） |
 | M5 | `domain.global` と検証可能なドメイン所有権証明 | ✅ 完了（PR #53 マージ済み） | 署名付き所有権レコード、追記型台帳の Merkle / チェックポイント検証、プラガブルな検証インターフェース、`NameServer` 統合、参照レジストリ（HTTP）、デモ（#25 / #40 / #41）。RPF 厳格化・SSE/WebSocket・鍵ライフサイクル等は #42〜#49 へ切り出し |
 | **M6** | **アプリケーション層 HTTP トンネル（L7）** | **実装済み（#50 / 本サイクル）** | `core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。将来課題は #51 / #52 と §4 に継続 |
-| M7 | （未定） | 未着手 | 実チェーン検証（#42）、ガバナンス（#43）、RPF 厳格化（#46）、SSE/WebSocket（#45）、鍵ライフサイクル（#47）、リプレイ強化（#48）、パッケージ公開（#49）、稼働維持（#51）、ブリッジ（#52） |
+| **M7** | **生存期間（サービス役の稼働維持）** | **実装済み（#51 / 本サイクル）** | `persistState` / `restoreState`（IndexedDB）、`neighbor-*` の再発行、`startBrowserKeepAlive`（Wake Lock・無音オーディオ・前面復帰・pagehide）。仕様 §9 |
+| M8 | （未定） | 未着手 | 実チェーン検証（#42）、ガバナンス（#43）、RPF 厳格化（#46）、SSE/WebSocket（#45）、鍵ライフサイクル（#47）、リプレイ強化（#48）、パッケージ公開（#49）、ブリッジ（#52） |
 
 ## 3. 完了済みマイルストーンのスコープ
 
@@ -46,7 +47,7 @@
 ### 3.2 M2（完了）
 
 - [x] ドキュメントと実装の同期チェックおよび新規発見バグ（#30, #31, #32）の修正
-- [x] `specification.md` §8.2〜§8.5 / §9.3〜§9.6 / §11〜§12 の拡張
+- [x] `specification.md` §8.2〜§8.5 / §10.3〜§10.6 / §12〜§13 の拡張
 - [x] **#23 TCP セマンティクス完成**:
   - バイト単位 Seq/Ack（RFC 1982 mod 2^32 ラップアラウンド対応）と部分読み取り（`read` / `readExact` / `readable`）
   - 60 KiB 超メッセージの MSS（既定 16 KiB）自動分割・送信バッファ・再結合
@@ -80,7 +81,7 @@
         (3) 受信側は `KeyDirectory` に指紋一致を検証して登録。`IPublicKeyResolver` で分散ストレージへ差し替え可能。
   - [x] **署名必須化に伴うプロトコルバージョン更新**: v2（24 バイトヘッダーは共通、`signature` に 64 バイトの Ed25519 署名）。
         v1 パケットは後方互換のため受信のみ受理する（`requireSignatures` で拒否可能。鍵管理を渡すと既定で必須）。
-  - [x] **specification.md §10 の全面更新**（脅威モデル・署名対象・鍵配布・リプレイ対策・既知の制約）
+  - [x] **specification.md §11 の全面更新**（脅威モデル・署名対象・鍵配布・リプレイ対策・既知の制約）
 - [x] テスト追加（`tests/keys.test.mjs` / `tests/signed-network.test.mjs` / `tests/browser-keys.test.mjs`）— 全 86 件通過
 - [x] デモと Playwright 実ブラウザ検証を Ed25519 署名（v2）に対応（`?insecure=1` で v1 比較、`?e2e=1` でタブごとに独立した鍵）
 
@@ -106,16 +107,16 @@
 着手前に main（`b4a9c54` = PR #39 マージ後）でドキュメントと実装の網羅同期チェックを行い、新規発見分を #40（`NameServer.resolve()` のデッドライン未遵守）と #41（`Ed25519PacketVerifier` のシリアライザ非同一性）へ整理した。M4 で修正済みだった #35〜#38 は内容確認のうえ close した。
 
 - [x] 仕様書 0.5.0 → 設計書 0.5.0 → 計画書 0.5.0 の順に更新（§13 を新設し、公開 API を §14 へ繰下げ）（当時）
-- [x] **`domain.global` ゾーン**（specification.md §13.1）: 単一ゾーン、ASCII LDH、ローカル登録からの予約（`registerA` / `registerCNAME` はゾーン名を拒否）
-- [x] **所有権レコード**（§13.2）: 固定キー順の canonical バイト列 + 所有者 Ed25519 署名 + 指紋照合 + `serial` / 有効期間 / 失効。**未知キー拒否の厳格パース**を必須化
-- [x] **追記型台帳と検証可能なアンカー**（§13.3）: 領域分離付き Merkle 木（葉 `0x00`、内部 `0x01`、奇数 promote）、包含証明、ログ鍵による署名済みチェックポイント、`treeSize` 単調性と `prevHash` 連鎖によるロールバック検出
-- [x] **プラガブルな検証インターフェース**（§13.4）: `IDomainOwnershipVerifier`（既定実装は fail-closed）、`IChainAnchorVerifier`（実チェーン検証への差し替え点。未設定は `chainVerified: null` として正直に区別）、`createDomainProofCache`
-- [x] **解決フロー**（§13.5）: `DomainAuthority`（ローカル / `IDomainRecordSource` / 既知ノードの 3 系統を並列収集 → 検証 → `serial` → `leafIndex` → commitment で勝敗決定、同 serial 異内容は `conflict` で失敗）、成功・失敗両キャッシュ、上限とタイムアウト
-- [x] **NameServer / `webtcp://` 統合**（§12.2 / §12.3）: `protocol: 1` への `wantOwnership` / `ownership` 追加（後方互換）、`ns.registerDomain()`、ゾーン名の `registerA` 拒否、`NameResolution.source === 'domain'`、所有権レコード無し応答は不使用
-- [x] **参照レジストリの実装**（§13.6）: `examples/server.mjs` に `/domain/*`（登録・検索・チェックポイント）、`HttpDomainRegistryClient` アダプタ
+- [x] **`domain.global` ゾーン**（specification.md §14.1）: 単一ゾーン、ASCII LDH、ローカル登録からの予約（`registerA` / `registerCNAME` はゾーン名を拒否）
+- [x] **所有権レコード**（§14.2）: 固定キー順の canonical バイト列 + 所有者 Ed25519 署名 + 指紋照合 + `serial` / 有効期間 / 失効。**未知キー拒否の厳格パース**を必須化
+- [x] **追記型台帳と検証可能なアンカー**（§14.3）: 領域分離付き Merkle 木（葉 `0x00`、内部 `0x01`、奇数 promote）、包含証明、ログ鍵による署名済みチェックポイント、`treeSize` 単調性と `prevHash` 連鎖によるロールバック検出
+- [x] **プラガブルな検証インターフェース**（§14.4）: `IDomainOwnershipVerifier`（既定実装は fail-closed）、`IChainAnchorVerifier`（実チェーン検証への差し替え点。未設定は `chainVerified: null` として正直に区別）、`createDomainProofCache`
+- [x] **解決フロー**（§14.5）: `DomainAuthority`（ローカル / `IDomainRecordSource` / 既知ノードの 3 系統を並列収集 → 検証 → `serial` → `leafIndex` → commitment で勝敗決定、同 serial 異内容は `conflict` で失敗）、成功・失敗両キャッシュ、上限とタイムアウト
+- [x] **NameServer / `webtcp://` 統合**（§13.2 / §13.3）: `protocol: 1` への `wantOwnership` / `ownership` 追加（後方互換）、`ns.registerDomain()`、ゾーン名の `registerA` 拒否、`NameResolution.source === 'domain'`、所有権レコード無し応答は不使用
+- [x] **参照レジストリの実装**（§14.6）: `examples/server.mjs` に `/domain/*`（登録・検索・チェックポイント）、`HttpDomainRegistryClient` アダプタ
 - [x] **`HttpDomainRegistryClient` の `fetch` バインド修正**: `globalThis.fetch` を切り離して保持していたため実ブラウザで `Illegal invocation` になっていた（CI の browser-e2e で発覚、Node テストは素通り）。既存アダプタと同じく `bind(globalThis)` に統一し、レシーバを要求する `fetch` を渡す回帰テストを追加
 - [x] **#40 修正**: 問い合わせを `AbortController` で統一し、`connect()` 宙吊りでもデッドラインを守る（最初の成功 or 全体タイムアウトで return、待機残は破棄）
-- [x] **§13.5 の失敗分類を規範化**: 候補 0 件（台帳にも既知ノードにも無い）は `NameNotFoundError`、候補はあるが検証に落ちたものは `DomainOwnershipError`（`code` を伝播）へ書き分ける。実ブラウザ自己チェック 1d がこの区別を要求しており、CI 実行でデモ側の逆アサーションとして露見したため仕様・テスト・実装を揃えた
+- [x] **§14.5 の失敗分類を規範化**: 候補 0 件（台帳にも既知ノードにも無い）は `NameNotFoundError`、候補はあるが検証に落ちたものは `DomainOwnershipError`（`code` を伝播）へ書き分ける。実ブラウザ自己チェック 1d がこの区別を要求しており、CI 実行でデモ側の逆アサーションとして露見したため仕様・テスト・実装を揃えた
 - [x] **#41 修正**: `WebTCPNetwork` が注入 `serializer` を検証器へ伝播、`serializeForSigning` 非実装時の黙ったフォールバックを構築時エラーへ変更
 - [x] **CI が拾った実バグ修正**: `HttpDomainRegistryClient` が `fetch` をレシーバ切り離しで保持しており、実ブラウザ（Chromium）で `POST /domain/record` が `Illegal invocation` で失敗した。`SignalingAdapterHub` / `EntranceSearcherAdapterHub` と同じく `bind(globalThis)` に統一し、レシーバを要求する `fetch` を渡す回帰テストを追加（Node のみで通るテストではこの種のバグは出てこない）
 - [x] デモ拡張: セクション 3 で「自分のドメインクレームに署名 → 参照台帳へ submit → アンカー付きで `registerDomain()` →ピア経由で解決」を手動操作でき、1 タブ自己チェックのステップ **1d** が同じ流れを自動化する（(a) 台帳経由、(b) 既知ノードの `wantOwnership` 応答のみ、(c) 未登録名前は `NameNotFoundError` / 検証に落ちた名前は `DomainOwnershipError` という書き分け、(d) 改ざんの 400 拒否）。`examples/verify-browser.mjs` は 1d の成功を必須化した
@@ -136,9 +137,9 @@
 | :--- | :--- | :--- | :--- |
 | S1 | `plan.md` §2 / §3.5 | M5 が「実装済み（PR #53・レビュー待ち）」のまま。実際は PR #53 が main にマージ済みで、M6 の記述も「未着手」 | 状態を「✅ 完了（マージ済み）」へ更新し、M6 を本サイクルの実装として記述。M5 節の最終チェックボックスを `[x]` に |
 | S2 | `README.md` ロードマップ / `webtcp_website/reference/roadmap.md` | M4 が「実装済み」のまま（M4 は #39 でマージ済み）。README のテスト件数も 150 件（M5 時点）で古い | M4 / M5 を「完了」に、テスト件数を 206 件（実測）へ更新 |
-| S3 | `specification.md` §12.3 / `docs/layer.md` / website `guides/name-resolution` | 「`path` / `query` は送信しない。HTTP セマンティクスは定義しない」と明記されており、#50 の実装と矛盾する | M6 で `query` は HTTP 層が転送する旨へ改訂し、生ストリームでは送らないことを明示（§12.3 / §15.6） |
-| S4 | `specification.md` §11.3 | `DomainAuthority.queryTimeoutMs`（実装既定 1 500 ms）が既定値表に無い | 表へ追加し、HTTP 層の既定値も併記 |
-| S5 | `specification.md` §8.3.1 / `design.md` §10 | パケットに受信ウィンドウが無い（フロー制御なし）ことが何処にも書かれていない。実装は `maxWindowBytes` と輻輳制御のみ | 「受信ウィンドウの広告は行わない」を明記し、HTTP 層の大きな応答に関する注意を追加 |
+| S3 | `specification.md` §13.3 / `docs/layer.md` / website `guides/name-resolution` | 「`path` / `query` は送信しない。HTTP セマンティクスは定義しない」と明記されており、#50 の実装と矛盾する | M6 で `query` は HTTP 層が転送する旨へ改訂し、生ストリームでは送らないことを明示（§13.3 / §16.6） |
+| S4 | `specification.md` §12.3 | `DomainAuthority.queryTimeoutMs`（実装既定 1 500 ms）が既定値表に無い | 表へ追加し、HTTP 層の既定値も併記 |
+| S5 | `specification.md` §8.3.1 / `design.md` §11 | パケットに受信ウィンドウが無い（フロー制御なし）ことが何処にも書かれていない。実装は `maxWindowBytes` と輻輳制御のみ | 「受信ウィンドウの広告は行わない」を明記し、HTTP 層の大きな応答に関する注意を追加 |
 | S6 | `design.md` §3.22 / §4 | 存在しない `DomainQueryTransport` を依存として記載。実装は `NameServer.settleCandidates()` に候補配列を渡す形 | 記述を実装に合わせて修正 |
 | S7 | `README.md` ビジョン評価 | 全角の混入（`范围`）と「HTTP が無い」の記述（M6 で解消） | 修正 |
 | S8 | `webtcp_website` の roadmap / API | M5 が「一部実装済み（#25）」で、HTTP の記述が無い | M5 完了・M6 実装済みへ更新し、HTTP ガイドを追加 |
@@ -162,7 +163,31 @@
 - [x] `examples/verify-browser.mjs` に HTTP ステップを追加（実ブラウザでの `serveHTTP` + `fetchURL`）
 - [x] `README.md` / `docs/layer.md` / `webtcp_website`（新ガイド `guides/http-tunnel`）を同期
 
-**M6 のスコープ外**: 稼働維持（#51）、ブリッジ（#52）、HTTP/2 以降（§15.9）、受信フロー制御（`specification.md` §8.3.1 に注記、Issue 化は §6.6）。
+**M6 のスコープ外**: 稼働維持（#51）、ブリッジ（#52）、HTTP/2 以降（§16.9）、受信フロー制御（`specification.md` §8.3.1 に注記、Issue 化は §6.6）。
+
+### 3.7 M7（実装済み / #51・本サイクル）
+
+#### 3.7.1 スコープ判断
+
+- 「タブが止まらないこと」は Web の制約上保証できない。M7 は**停止後に失った状態を回復する**ことと、止まりにくくする補助に限定した。
+- 名前は **pull 型**のまま（NameServer は自分のローカル登録だけを応答する、§13.2 の不変条件）。未要求の push は行わない。再広告は既存の RT_UPDATE（隣接確立時）と、復元後の登録で行う。
+- 状態は JSON（`PersistedServiceState`、version 1）。鍵は既存の `BrowserKeyManager`（IndexedDB）に任せ、重複保存しない。
+
+#### 3.7.2 M7 の本体（#51）
+
+- [x] 仕様書 0.7.0（§9 生存期間を新設、§10 以降を繰り下げ。§18 から #51 の非目標を除去）→ 設計書 0.7.0（§3.28）→ 計画書 0.7.0 の順に更新
+- [x] **`core/persistence`**: `PersistedServiceState`、`ServiceStateStorage`、`MemoryServiceStateStorage`、`parsePersistedServiceState()`（不正な版・ポート・名前を拒否）
+- [x] **`adapters/persistence/IndexedDBServiceStateStorage`**: 既定 DB `webtcp-service` / store `state`、`indexedDB` を注入可能（テストは FakeIndexedDB）
+- [x] **`NameServer.exportState()` / `restoreState()`**: ローカル A/CNAME と所有権レコード（JSON）の往復。所有権レコードは `registerDomain()` と同じ検証を通し、失敗は登録しない
+- [x] **`WebTCPNetwork.persistState({ nameServer? })` / `restoreState({ nameServer? })`**: `stateStorage` オプション、NodeId 不一致の拒否、NameServer ポートの再待ち受け
+- [x] **`WebTCPNetwork` の `neighbor-connected` / `neighbor-disconnected` 再発行**（LinkManager から転送）
+- [x] **`startBrowserKeepAlive()`**（`adapters/keepalive`）: Wake Lock（非対応は no-op）、無音オーディオ（既定オフ）、`visibilitychange` での再接続、`pagehide` での `onPageHide` と状態保存、`stop()` で全解除
+- [x] デモ（`?selftest=1`）に **1f 項目**（IndexedDB 永続化 → 別 NameServer へ復元）を追加。`verify-browser.mjs` が「永続化」を含むステップを検査
+- [x] テスト `service-persistence.test.mjs`（7 件）。既存 206 件と合わせて 213 件
+
+**M7 のスコープ外（残課題）**: 凍結中のタブの到達不能（本質的制約、仕様 §9.6）。HTTP ハンドラ・`onPageHide` の再登録は利用者の責務。定期的な自動 `persistState()`（現状は利用者が呼ぶ / pagehide のみ）。
+
+---
 
 ## 4. 将来課題
 
@@ -174,7 +199,7 @@
 | NodeId の鍵指紋化 | `SHA-256(公開鍵)` の先頭 16 バイトを NodeId とする自己証明型識別子 | ✅ 完了 |
 | 鍵管理 | `BrowserKeyManager`（IndexedDB + 非抽出 CryptoKey）/ `NodeKeyManager`（`node:crypto`） | ✅ 完了 |
 | 公開鍵配布 | シグナリング時交換 + `RT_UPDATE` 同梱 + `KeyDirectory` / `IPublicKeyResolver` | ✅ 完了 |
-| リプレイ対策 | 基本方針は仕様化（§10.6）。トランスポートのシーケンス空間で重複を排除する。セッション Nonce による明示的な再生検知は将来強化 | 仕様化済み・強化は #48 |
+| リプレイ対策 | 基本方針は仕様化（§11.6）。トランスポートのシーケンス空間で重複を排除する。セッション Nonce による明示的な再生検知は将来強化 | 仕様化済み・強化は #48 |
 | 鍵のローテーション | NodeId が鍵指紋であるため、鍵更新 = ノード ID 変更。証明書チェーン的な移行手段は未実装 | #47 |
 | 鍵の分散ストレージ | `IPublicKeyResolver` を実装した IPFS 等のバックエンド | #47 |
 
@@ -189,7 +214,7 @@
 
 ### 4.3 名前解決と分散ドメイン（M4 / M5 で実装・残課題は M7 以降）
 
-M3 の NodeId 鍵指紋化により**ノードの真正性**は検証できるが、**名前のグローバル所有権**は別問題である。M5 ではこれを「フルクライアントを載せない代わりに、検証可能にする」方針で解いた（specification.md §13、design.md §3.21）。チェーンへの実際の書き込み・実データとの照合は範囲外として切り出した。
+M3 の NodeId 鍵指紋化により**ノードの真正性**は検証できるが、**名前のグローバル所有権**は別問題である。M5 ではこれを「フルクライアントを載せない代わりに、検証可能にする」方針で解いた（specification.md §14、design.md §3.21）。チェーンへの実際の書き込み・実データとの照合は範囲外として切り出した。
 
 | 課題 | 内容 | 状態 | Issue |
 | :--- | :--- | :--- | :--- |
@@ -222,7 +247,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 
 | ギャップ | 現状 | Issue |
 | :--- | :--- | :--- |
-| ブラウザはサーバーとして生き残れない | 非可視タブのサスペンド、リロード時の待ち受け・名前登録・提供レコード・HTTP ハンドラの消失（鍵だけが永続する非対称）。Wake Lock / Service Worker / 状態復元はいずれも未実装 | **#51** |
+| ブラウザはサーバーとして生き残れない（M7 で緩和。凍結中の到達不能は残る） | 非可視タブのサスペンド、リロード時の待ち受け・名前登録・提供レコード・HTTP ハンドラの消失（鍵だけが永続する非対称）。Wake Lock / Service Worker / 状態復元はいずれも未実装 | **#51** |
 | 入口が WebRTC 話者に限定される | curl や既存アプリをトンネルへ入れるブリッジ（ローカル TCP リッスン → `connect()`）が無く、Node 側 WebRTC 実装も非同梱。**HTTP トンネルができても、入り口は依然 `HTTPClient` を呼べる相手だけ** | **#52** |
 
 なお、これらは各マイルストーンの受け入れ条件（ブラウザにチェーンクライアントを載せず検証可能な所有権に絞る、HTTP はサブセットに留める）とは別軸の評価である。**「HTTP を話せるようにした」ことと「既存の HTTP クライアントから使える」ことは別**であり、#52 が無い限り後者は成立しない — この線引きは次サイクルでも守る。
@@ -239,8 +264,8 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | ドメイン台帳のログ鍵が単一障害点 | 台帳が過去を書換えると検出不可能（PIN 以降のみ検出） | チェックポイントの `prevHash` 連鎖と `treeSize` 単調性で抑止（M5）。複数ログの M-of-N 合意は #43。ログ鍵は `KeyDirectory` と同じ指紋自己証明。 |
 | 実チェーン未検証の誤解 | 「オンチェーンで保証されたドメイン」と誤読されるリスク | `chainVerified: null` を結果へ明示し、`requireChainAnchor` で fail-closed。README / サイトにも「検証可能な設計まで」を明記（M5）。 |
 | 仕様と実装の乖離 | 保守性低下 | 各サイクル冒頭でドキュメント同期チェックを行い、仕様変更時は同一 PR で更新する。 |
-| サービス役のブラウザが停止する | 「常時稼働する P2P サービス」の実用性がゼロに近い | 未解決（#51）。M6 でも稼働維持策を一切実装していないことを README / サイトで明示する。 |
-| HTTP 層の入力検証漏れ（スマグリング・インジェクション） | プロキシ的な位置づけのため、フレーミングの曖昧さが乗っ取りに直結する | `Content-Length` と `Transfer-Encoding` の併用拒否、CRLF 厳格、ヘッダ書き込みのインジェクション拒否、行長・ヘッダ数・本文サイズの上限を仕様（§15.2.1 / §15.7）とテストで固定する。 |
+| サービス役のブラウザが停止する | 「常時稼働する P2P サービス」の実用性がゼロに近い | M7 で緩和（#51）: 状態の永続化・復元と keep-alive 補助。凍結中のタブは到達不能のままで、仕様 §9.6 と README / サイトに明記する。 |
+| HTTP 層の入力検証漏れ（スマグリング・インジェクション） | プロキシ的な位置づけのため、フレーミングの曖昧さが乗っ取りに直結する | `Content-Length` と `Transfer-Encoding` の併用拒否、CRLF 厳格、ヘッダ書き込みのインジェクション拒否、行長・ヘッダ数・本文サイズの上限を仕様（§16.2.1 / §16.7）とテストで固定する。 |
 | HTTP 応答の無制限バッファ | 遅い／巨大なレスポンスでメモリを枯渇させる | `HTTPClient` の `maxResponseBytes`（既定 8 MiB）とストリーミング API を既定にする。受信ウィンドウが無いことは仕様に明記（§8.3.1）。 |
 | ブリッジ経由の無認証アクセス | ローカルポートを開く設計はトンネルへの無認証入口を作る | #52 では `requireSignatures` 必須・localhost バインド既定・v1 ノードへの転送拒否を設計条件として明記する。 |
 
@@ -267,7 +292,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 
 | # | 種別 | 内容 |
 | :--- | :--- | :--- |
-| #28 | security | Ed25519 署名（`Ed25519PacketVerifier`）・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager`・公開鍵配布・プロトコル v2・仕様書 §10 更新 |
+| #28 | security | Ed25519 署名（`Ed25519PacketVerifier`）・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager`・公開鍵配布・プロトコル v2・仕様書 §11 更新 |
 | #13 | security | Null 検証器の暫定対応を解消（既定は v2。`NullPacketVerifier` は v1 相互運用専用として残置） |
 
 ### 6.4 M4 で参照した Issue（完了・close 済み）
@@ -296,7 +321,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #48 | enhancement | セッション Nonce / タイムスタンプによるリプレイ検知 | M7 以降 |
 | #49 | enhancement | npm 公開・semver・`exports` サブパス | M7 以降 |
 | #50 | enhancement | アプリケーション層 HTTP トンネル（L7）未実装 — README 構想の後半 | ビジョン評価で起票 → **M6 で実装**（§6.6） |
-| #51 | enhancement | タブ停止・リロードに耐えるサービス継続（稼働維持と状態の永続化） | ビジョン評価で起票（M7 以降） |
+| #51 | enhancement | タブ停止・リロードに耐えるサービス継続（稼働維持と状態の永続化） | ビジョン評価で起票 → M7 で部分対応（仕様 §9） |
 | #52 | enhancement | ブラウザ外部の既存クライアントをトンネルへ入れるブリッジ | ビジョン評価で起票（M7 以降） |
 
 ### 6.6 M6（本サイクル）で対応・起票した Issue
@@ -304,7 +329,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | # | 種別 | 内容 | 扱い |
 | :--- | :--- | :--- | :--- |
 | #50 | enhancement | アプリケーション層 HTTP トンネル（L7）が未実装 | 本 PR で実装 → close |
-| #54 | bug | `VirtualStream.destroy()` が RST も FIN も送らず、相手側ストリームが `ESTABLISHED` のまま残る（M6 実装中に発見。HTTP 層は `end()` のみで回避） | 起票して M7 以降。仕様 §15.5 の 7〜9 に回避規則を明記 |
+| #54 | bug | `VirtualStream.destroy()` が RST も FIN も送らず、相手側ストリームが `ESTABLISHED` のまま残る（M6 実装中に発見。HTTP 層は `end()` のみで回避） | 起票して M7 以降。仕様 §16.5 の 7〜9 に回避規則を明記 |
 | #55 | documentation | M6 開始時の網羅同期チェックで見つかった文書の陳腐化（`plan.md` の M5 ステータス、README の M4「実装済み」・テスト件数、`path` / `query` の記述、`DomainQueryTransport` の残存、全角混入） | 本 PR で修正 → close |
 | #56 | enhancement | 受信ウィンドウ（フロー制御）の広告が無く、大きな HTTP 応答が受信側メモリに依存する | 起票して M7 以降（§4.4） |
 | #57 | enhancement | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従（HTTP 層のフル実装） | 起票して M7 以降（§4.4） |

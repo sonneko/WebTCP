@@ -1,5 +1,5 @@
 /**
- * `HTTPServer`（specification.md §15.3 / design.md §3.26）。
+ * `HTTPServer`（specification.md §16.3 / design.md §3.26）。
  *
  * 仮想ポートで `VirtualStream` を待ち受け、接続ごとに逐次リクエストループを回す。
  * - `keep-alive`（既定）と `Connection: close`（FIN 後も応答を書ける）
@@ -36,11 +36,11 @@ export interface HTTPServerOptions {
     maxConnections?: number;
     /** アイドル接続のタイムアウト（ms）。既定 30 000。`0` で無効。 */
     idleTimeoutMs?: number;
-    /** パーサの上限（§15.2.1）。 */
+    /** パーサの上限（§16.2.1）。 */
     limits?: HTTPParserLimits;
     /** 最大リクエスト本文（バイト）。既定 `0`（無制限、ストリーミング）。 */
     maxRequestBodyBytes?: number;
-    /** `Expect: 100-continue` を自動応答するか。既定 `false`（§15.2.2）。 */
+    /** `Expect: 100-continue` を自動応答するか。既定 `false`（§16.2.2）。 */
     send100Continue?: boolean;
     /** サーバー名（`Server` ヘッダ）。既定 `webtcp`。`''` で付与しない。 */
     serverName?: string;
@@ -178,7 +178,7 @@ export class HTTPServer {
                 const { path, query } = splitTarget(target);
                 const headers = head.headers;
 
-                // Host は必須（§15.2）
+                // Host は必須（§16.2）
                 if (!headers.has('host')) {
                     await this.respondError(connection, 400, 'missing Host header');
                     break;
@@ -273,7 +273,7 @@ export class HTTPServer {
                         response.statusCode = 500;
                         await response.end('internal server error');
                     } else if (!response.finished) {
-                        // 応答開始済みならフレーミングが壊れている。接続を切る（§15.3）
+                        // 応答開始済みならフレーミングが壊れている。接続を切る（§16.3）
                         connection.closed = true;
                     }
                 }
@@ -286,7 +286,7 @@ export class HTTPServer {
                     }
                 }
 
-                // 本文を読み切っていなければ読み捨てる（keep-alive のフレーミング維持、§15.3）
+                // 本文を読み切っていなければ読み捨てる（keep-alive のフレーミング維持、§16.3）
                 await drainBody(body);
                 connection.currentBody = null;
 
@@ -401,7 +401,7 @@ async function drainBody(body: HTTPBodyStream): Promise<void> {
 }
 
 /**
- * サーバー側の応答ライタ（§15.3）。
+ * サーバー側の応答ライタ（§16.3）。
  *
  * 初回 `write()` でヘッダを送る。`Content-Length` を指定せずに `write()` した場合は
  * `Transfer-Encoding: chunked` を使う。
@@ -497,7 +497,7 @@ class ServerResponseWriter implements HTTPResponseWriter {
         const declared = this.headers.get('content-length');
         if (contentLength === null && declared !== undefined && /^[0-9]+$/.test(declared)) {
             // アプリケーションが `setHeader('content-length', n)` で長さを宣言している。
-            // ここで `Transfer-Encoding: chunked` を足すと両立となりスマグリング判定になる（§15.7）。
+            // ここで `Transfer-Encoding: chunked` を足すと両立となりスマグリング判定になる（§16.7）。
             if (this.headers.has('transfer-encoding')) {
                 this.headers.delete('transfer-encoding');
             }

@@ -8,7 +8,7 @@ import {
 } from './keys.js';
 
 /**
- * パケットの署名付与・検証を行うインターフェース（specification.md §7.2 / §7.3 / §10）。
+ * パケットの署名付与・検証を行うインターフェース（specification.md §7.2 / §7.3 / §11）。
  *
  * - 既定実装は `Ed25519PacketVerifier`（プロトコル v2、署名必須）。
  * - `NullPacketVerifier` は署名なしのレガシー実装（v1 相互運用・テスト用）。
@@ -59,7 +59,7 @@ export class NullPacketVerifier implements IPacketVerifier {
 }
 
 /**
- * ノード ID → Ed25519 公開鍵 の解決を行う抽象（specification.md §10.4）。
+ * ノード ID → Ed25519 公開鍵 の解決を行う抽象（specification.md §11.4）。
  *
  * 本ライブラリの `KeyDirectory` が既定実装であり、
  * 分散ストレージ（IPFS 等）から鍵を引く実装に差し替えることもできる。
@@ -114,9 +114,9 @@ export interface Ed25519PacketVerifierOptions {
  *   ローカル秘密鍵で署名し、`packet.signature` に 64 バイトの署名を設定する。
  * - **受信時**: `senderId` が「署名を検証できる公開鍵の指紋」と一致することを確認し、
  *   さらに署名そのものを検証する。どちらかが失敗すれば `false` を返し、
- *   `RoutingLayer` はパケットを破棄する（specification.md §10.2）。
+ *   `RoutingLayer` はパケットを破棄する（specification.md §11.2）。
  *
- * 公開鍵の解決順序（specification.md §10.4）:
+ * 公開鍵の解決順序（specification.md §11.4）:
  * 1. 公開鍵ディレクトリ（シグナリング時の交換・RT_UPDATE による学習・手動登録）
  * 2. パケット自体に同梱された公開鍵（RT_UPDATE の `publicKey`。指紋一致を必須とする）
  */
@@ -136,11 +136,11 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
         this.keys = options.keyManager;
         const serializer = options.serializer ?? new BinaryPacketSerializer();
         if (typeof serializer.serializeForSigning !== 'function') {
-            // specification.md §10.3: 署名対象の導出は実際の送信と同一のシリアライザでなければならない。
+            // specification.md §11.3: 署名対象の導出は実際の送信と同一のシリアライザでなければならない。
             // 近似生成にフォールバックすると、v1 ヘッダーで導出した署名対象が v2 の検証と一致しない (#41)。
             throw new Error(
                 'Ed25519PacketVerifier requires a serializer implementing serializeForSigning() ' +
-                    '(specification.md §10.3); the packet serializer must be the signing-input serializer',
+                    '(specification.md §11.3); the packet serializer must be the signing-input serializer',
             );
         }
         this.serializer = serializer;
@@ -175,12 +175,12 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
 
     /**
      * 署名対象バイト列（署名フィールドを除き、TTL を 0 に正規化したもの）。
-     * specification.md §10.3。
+     * specification.md §11.3。
      */
     public signatureInputFor(packet: WebTCPPacket): Uint8Array {
         const serializeForSigning = this.serializer.serializeForSigning;
         if (!serializeForSigning) {
-            throw new Error('packet serializer does not implement serializeForSigning() (§10.3)');
+            throw new Error('packet serializer does not implement serializeForSigning() (§11.3)');
         }
         return serializeForSigning.call(this.serializer, { ...packet, ttl: 0 });
     }
@@ -214,11 +214,11 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
 
     /**
      * 受信した生バイト列から署名対象バイト列を作る。
-     * TTL を 0 に正規化する（中継で減算されるため署名対象外、§10.3）。
+     * TTL を 0 に正規化する（中継で減算されるため署名対象外、§11.3）。
      */
     private signatureInputFromRaw(rawBytes: Uint8Array): Uint8Array {
         if (!this.serializer.signatureInputFromBytes) {
-            // `serializeForSigning()` が保証されているため、復元 → 再導出でも §10.3 の正規形と一致する。
+            // `serializeForSigning()` が保証されているため、復元 → 再導出でも §11.3 の正規形と一致する。
             return this.signatureInputFor(this.serializer.deserialize(rawBytes));
         }
         const input = this.serializer.signatureInputFromBytes(rawBytes);
@@ -231,7 +231,7 @@ export class Ed25519PacketVerifier implements IPacketVerifier {
         const known = await this.lookup(packet.senderId);
         if (known) return known;
 
-        // RT_UPDATE は公開鍵を同梱して自己証明できる（§10.4.2）。
+        // RT_UPDATE は公開鍵を同梱して自己証明できる（§11.4.2）。
         // 同梱鍵は「senderId の指紋と一致する」ことを必ず確認する。
         const embedded = extractEmbeddedPublicKey(packet);
         if (embedded) {

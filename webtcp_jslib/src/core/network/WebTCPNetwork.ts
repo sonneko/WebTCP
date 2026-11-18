@@ -11,6 +11,11 @@ import { Ed25519PacketVerifier, IPacketVerifier, NullPacketVerifier } from '../r
 import { KeyDirectory } from '../routing/KeyDirectory.js';
 import { Ed25519KeyManager, NodeIdCollisionError, isValidNodeId } from '../routing/keys.js';
 import type { NameServer } from '../naming/NameServer.js';
+import {
+    SERVICE_STATE_VERSION,
+    type PersistedServiceState,
+    type ServiceStateStorage,
+} from '../persistence/ServiceState.js';
 import { formatWebTCPUrl, parseWebTCPUrl, WebTCPUrl } from '../naming/url.js';
 import { RoutingLayer } from '../routing/RoutingLayer.js';
 import { RoutingTable } from '../routing/RoutingTable.js';
@@ -57,6 +62,11 @@ export interface WebTCPNetworkOptions {
     verifier?: IPacketVerifier;
     routingTableManager?: RoutingTableManagerOptions;
     transport?: TransportLayerOptions;
+    /**
+     * サービス役の状態の保存先（任意、#51 / specification.md §10.3）。
+     * `persistState()` / `restoreState()` で使う。省略時はこれらの呼び出しは失敗する。
+     */
+    stateStorage?: ServiceStateStorage;
     /** 送信パケットの初期TTL。既定 64。 */
     defaultTtl?: number;
     /** 注入するロガー（任意。指定時は `logLevel` より優先）。 */
@@ -109,12 +119,22 @@ export interface BootstrapResult {
  * 層の組み立てと、アプリケーション向けのAPI（listen / connect / bootstrap）を提供する。
  * ブラウザで使う場合は `createBrowserNetwork()`（`src/browser.ts`）を利用するとよい。
  */
+/** `restoreState()` の結果。 */
+export interface RestoredServiceState {
+    state: PersistedServiceState;
+    /** 利用者が `listen()` し直すべき仮想ポート（NameServer のポートは含まない）。 */
+    listenPorts: VirtualPort[];
+    /** `nameServer` を渡した場合の復元結果。 */
+    nameServer: { names: number; domainRecords: number; rejected: number } | null;
+}
+
 export class WebTCPNetwork extends EventEmitter {
     public readonly localNodeId: NodeId;
     public readonly linkManager: LinkManager;
     public readonly routingLayer: RoutingLayer;
     public readonly transportLayer: TransportLayer;
     public readonly logger: Logger;
+    private readonly stateStorage: ServiceStateStorage | null;
     /** Ed25519 鍵管理（未指定なら null）。 */
     public readonly keyManager: Ed25519KeyManager | null;
     /** 公開鍵ディレクトリ（鍵管理・検証器を使わない場合は null）。 */
@@ -154,6 +174,16 @@ export class WebTCPNetwork extends EventEmitter {
             options.serializer,
             baseLogger,
         );
+        this.stateStorage = options.stateStorage ?? null;
+
+        // 隣接の入れ替わりを利用者へ再発行する（#51 / §10.4）。
+        // RT_UPDATE による再広告は RoutingLayer が neighbor-connected で行う。
+        this.linkManager.on('neighbor-connected', (peerId: NodeId) => {
+            this.emit('neighbor-connected', peerId);
+        });
+        this.linkManager.on('neighbor-disconnected', (peerId: NodeId) => {
+            this.emit('neighbor-disconnected', peerId);
+        });
 
         this.routingLayer = new RoutingLayer(this.localNodeId, this.linkManager, routingTable, {
             verifier: this.verifier,
@@ -230,7 +260,7 @@ export class WebTCPNetwork extends EventEmitter {
      * `webtcp://` URL へ接続する（M4 / #25）。名前は NameServer で解決する。
      *
      * **生のバイトストリーム**を返す。`path` / `query` / `fragment` はここでは送信しない。
-     * HTTP の意味論（リクエストライン・ヘッダ・本文）は `fetchURL()` / `HTTPClient` が担う（§15.6）。
+     * HTTP の意味論（リクエストライン・ヘッダ・本文）は `fetchURL()` / `HTTPClient` が担う（§16.6）。
      */
     public async connectURL(
         url: string | WebTCPUrl,
@@ -252,7 +282,7 @@ export class WebTCPNetwork extends EventEmitter {
     }
 
     /**
-     * 仮想ポートで HTTP/1.1 を待ち受ける（M6 / #50、specification.md §15.3）。
+     * 仮想ポートで HTTP/1.1 を待ち受ける（M6 / #50、specification.md §16.3）。
      *
      * `listen()` の薄いラッパーであり、HTTP のフレーミング・`keep-alive`・
      * エラー応答は `HTTPServer` が担う。待ち受けの解除は戻り値の `close()` で行う。
@@ -278,7 +308,7 @@ export class WebTCPNetwork extends EventEmitter {
     }
 
     /**
-     * `webtcp://` URL へ HTTP リクエストを送る（M6 / #50、specification.md §15.4）。
+     * `webtcp://` URL へ HTTP リクエストを送る（M6 / #50、specification.md §16.4）。
      *
      * `path` と `query` を request-target として転送する。`fragment` は送らない。
      * 1 リクエストごとに接続を閉じる。`keep-alive` を維持する場合は
@@ -319,7 +349,7 @@ export class WebTCPNetwork extends EventEmitter {
     }
 
     /**
-     * エントランス探索結果から候補ノードへ順に接続を試みる（#27, specification.md §9.5）。
+     * エントランス探索結果から候補ノードへ順に接続を試みる（#27, specification.md §10.5）。
      *
      * 目標接続数（既定 1）に達するまで候補へ順次 `connectToPeer()` を試行し、
      * 候補が無い・全候補への接続に失敗した場合は指数バックオフでリトライする。
@@ -413,6 +443,59 @@ export class WebTCPNetwork extends EventEmitter {
         return this.routingLayer.getRoutingTable();
     }
 
+    /**
+     * サービス役の状態を保存する（#51 / specification.md §10.3）。
+     *
+     * 保存対象は待ち受けポート、`nameServer` のローカル登録と所有権レコード。
+     * 鍵・接続・ストリームは保存しない。`nameServer` のポートは `restoreState()` が
+     * 再待ち受けするため `listenPorts` から除く。
+     */
+    public async persistState(options: { nameServer?: NameServer } = {}): Promise<PersistedServiceState> {
+        if (!this.stateStorage) throw new Error('persistState requires stateStorage');
+        const nsPort = options.nameServer?.port;
+        const state: PersistedServiceState = {
+            version: SERVICE_STATE_VERSION,
+            savedAt: Date.now(),
+            listenPorts: this.transportLayer.getListeningPorts().filter((port) => port !== nsPort),
+            names: [],
+            domainRecords: [],
+            nodeId: this.localNodeId,
+        };
+        if (options.nameServer) {
+            const exported = options.nameServer.exportState();
+            state.names = exported.names;
+            state.domainRecords = exported.domainRecords;
+        }
+        await this.stateStorage.save(state);
+        this.scopedLogger.info(
+            `persisted service state (${state.listenPorts.length} port(s), ${state.names.length} name(s), ${state.domainRecords.length} domain record(s))`,
+        );
+        return state;
+    }
+
+    /**
+     * 保存済みのサービス状態を読み込んで適用する（#51 / specification.md §10.3）。
+     *
+     * `nameServer` を渡すと、その待ち受けを開始して登録を復元する。
+     * `listenPorts` は保存時に待ち受けていたポートで、利用者がハンドラを付けて `listen()` する。
+     * 保存された状態が無い・不正な場合は `null`。
+     */
+    public async restoreState(options: { nameServer?: NameServer } = {}): Promise<RestoredServiceState | null> {
+        if (this.closed) throw new Error('WebTCPNetwork is closed');
+        if (!this.stateStorage) throw new Error('restoreState requires stateStorage');
+        const state = await this.stateStorage.load();
+        if (!state) return null;
+        if (state.nodeId && state.nodeId !== this.localNodeId) {
+            throw new Error(`saved service state belongs to ${state.nodeId}, not ${this.localNodeId}`);
+        }
+        let nameServer: RestoredServiceState['nameServer'] = null;
+        if (options.nameServer) {
+            options.nameServer.listen();
+            nameServer = await options.nameServer.restoreState(state);
+        }
+        return { state, listenPorts: [...state.listenPorts], nameServer };
+    }
+
     /** 全層を停止する。 */
     public close(): void {
         if (this.closed) return;
@@ -427,7 +510,7 @@ export class WebTCPNetwork extends EventEmitter {
      * NodeId を解決する。
      *
      * 優先順位: 明示指定 → 鍵管理の指紋 → シグナリングアダプタ → ランダム生成。
-     * 鍵管理が指定されている場合、明示 NodeId は指紋と一致しなければならない（§10.1）。
+     * 鍵管理が指定されている場合、明示 NodeId は指紋と一致しなければならない（§11.1）。
      */
     private resolveLocalNodeId(options: WebTCPNetworkOptions): NodeId {
         const candidate =
@@ -473,7 +556,7 @@ export class WebTCPNetwork extends EventEmitter {
                 return new Ed25519PacketVerifier({
                     keyManager: options.keyManager,
                     keyDirectory: this.keyDirectory,
-                    // 署名対象の導出は実際の送信と同一のシリアライザで行う (MUST, §10.3 / #41)
+                    // 署名対象の導出は実際の送信と同一のシリアライザで行う (MUST, §11.3 / #41)
                     ...(options.serializer ? { serializer: options.serializer } : {}),
                 });
             }
@@ -483,7 +566,7 @@ export class WebTCPNetwork extends EventEmitter {
             return new Ed25519PacketVerifier({
                 keyManager: options.keyManager,
                 ...(this.keyDirectory ? { keyDirectory: this.keyDirectory } : {}),
-                // §10.3 / #41: 送信に使うシリアライザで署名対象も導出する
+                // §11.3 / #41: 送信に使うシリアライザで署名対象も導出する
                 ...(options.serializer ? { serializer: options.serializer } : {}),
             });
         }

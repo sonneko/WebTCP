@@ -14,6 +14,7 @@ export * from './core/network/index.js';
 export * from './core/naming/index.js';
 export * from './core/domain/index.js';
 export * from './core/http/index.js';
+export * from './core/persistence/index.js';
 
 // アダプタ
 export * from './adapters/webrtc/index.js';
@@ -21,6 +22,8 @@ export * from './adapters/signaling/index.js';
 export * from './adapters/entrance-searcher/index.js';
 export * from './adapters/keys/index.js';
 export * from './adapters/domain/index.js';
+export * from './adapters/persistence/index.js';
+export * from './adapters/keepalive/index.js';
 
 // ブラウザ向けヘルパー
 export * from './browser.js';

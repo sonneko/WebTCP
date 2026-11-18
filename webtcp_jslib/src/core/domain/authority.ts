@@ -1,16 +1,16 @@
 /**
- * `domain.global` 名前解決のオーケストレーション（specification.md §13.5）。
+ * `domain.global` 名前解決のオーケストレーション（specification.md §14.5）。
  *
  * 責務は 4 つだけ:
  *
  * 1. 完全名を `.domain.global` として**正規化**し、収集元（`local` -> `sources` -> `peers`）
  *    へ並列に問い合わせる（全体デッドライン付き）。
  * 2. 候補レコードを {@link IDomainOwnershipVerifier} で検証する。
- * 3. 検証に成功した候補だけから §13.4.3 の衝突解決で勝者を決める。
+ * 3. 検証に成功した候補だけから §14.4.3 の衝突解決で勝者を決める。
  * 4. 勝者の `body.nodeId` を返し、`IPublicKeyResolver` への bridge を提供する。
  *
  * ローカル `NameServer` へのフォールバックも、エラーを `webtcp://` 解決失敗へ写像するのも
- * {@link NameServer} 側の仕事である（§12.2 / §13.5）。
+ * {@link NameServer} 側の仕事である（§13.2 / §14.5）。
  */
 
 import type { NodeId } from '../routing/keys.js';
@@ -47,9 +47,9 @@ export interface DomainSourceContext {
 }
 
 /**
- * ドメイン解決が使うレコード源（specification.md §13.5 / §13.6）。
+ * ドメイン解決が使うレコード源（specification.md §14.5 / §14.6）。
  *
- * 1 件でも複数件でも返せる。複数件は「同一ドメインに対する競合候補」として §13.4.3 に
+ * 1 件でも複数件でも返せる。複数件は「同一ドメインに対する競合候補」として §14.4.3 に
  * かける。無関係な名前を混在させてはならない (MUST NOT)。
  */
 export interface IDomainRecordSource {
@@ -104,7 +104,7 @@ export interface ResolveDomainOptions {
 export interface DomainAuthorityOptions {
     /** 所有権検証器。`verifier: null` で検証を無効化できる（実験モード、既定は fail-closed 実装）。 */
     verifier?: IDomainOwnershipVerifier | null;
-    /** `verifier` を渡さないときの検証器オプション（§13.4.1）。 */
+    /** `verifier` を渡さないときの検証器オプション（§14.4.1）。 */
     verifierOptions?: Parameters<typeof createDomainOwnershipVerifier>[0];
     /** 最優先の収集元（`NameServer.registerDomain()` のローカルストア等）。 */
     local?: IDomainRecordSource | null;
@@ -126,7 +126,7 @@ export interface DomainAuthorityOptions {
     maxRecordsPerDomain?: number;
     /** 受理したチェックポイントを記憶し、後退を拒否する（既定 `true`）。 */
     pinCheckpoints?: boolean;
-    /** チェックポイント連結の追跡源（`HttpDomainRegistryClient` 等が実装する、§13.3）。 */
+    /** チェックポイント連結の追跡源（`HttpDomainRegistryClient` 等が実装する、§14.3）。 */
     checkpointChain?: DomainCheckpointSource | null;
     logger?: Logger;
 }
@@ -134,7 +134,7 @@ export interface DomainAuthorityOptions {
 type NameVerdict = { ok: true; domain: string } | { ok: false; code: DomainProofCode; message: string };
 
 /**
- * 入力をゾーン名として分類する（specification.md §13.1）。
+ * 入力をゾーン名として分類する（specification.md §14.1）。
  * ゾーン外の正当な名前は `zone-mismatch`、形式自体が不正なら `invalid-record`。
  */
 function classifyName(input: string): NameVerdict {
@@ -153,7 +153,7 @@ function classifyName(input: string): NameVerdict {
             ? {
                   ok: false,
                   code: 'zone-mismatch',
-                  message: `${prepared} does not belong to the domain.global zone (§13.1)`,
+                  message: `${prepared} does not belong to the domain.global zone (§14.1)`,
               }
             : { ok: false, code: 'invalid-record', message: `invalid domain name: ${prepared}` };
     }
@@ -177,7 +177,7 @@ const DEFAULT_CACHE_TTL_MS = 60_000;
 const DEFAULT_NEGATIVE_TTL_MS = 5_000;
 
 /**
- * 検証済み結果を記憶し、ロールバック検出（§13.4.1 の 6）に使う `serial` /
+ * 検証済み結果を記憶し、ロールバック検出（§14.4.1 の 6）に使う `serial` /
  * チェックポイント台帳を保持するドメイン権威者。
  */
 export class DomainAuthority {
@@ -212,7 +212,7 @@ export class DomainAuthority {
         this.cacheTtlMs = positive(options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS, 'cacheTtlMs');
         this.negativeTtlMs = positive(options.negativeTtlMs ?? DEFAULT_NEGATIVE_TTL_MS, 'negativeTtlMs');
         if (this.negativeTtlMs > this.cacheTtlMs) {
-            throw new Error('negativeTtlMs must not exceed cacheTtlMs (specification.md §13.5)');
+            throw new Error('negativeTtlMs must not exceed cacheTtlMs (specification.md §14.5)');
         }
         this.maxCacheEntries = positiveInt(options.maxCacheEntries ?? 256, 'maxCacheEntries');
         this.resolveTimeoutMs = positive(options.resolveTimeoutMs ?? 5_000, 'resolveTimeoutMs');
@@ -322,7 +322,7 @@ export class DomainAuthority {
     }
 
     /**
-     * レコードをローカルに信託する（§13.5）。**検証は必ず通す** — 検証に失敗した
+     * レコードをローカルに信託する（§14.5）。**検証は必ず通す** — 検証に失敗した
      * レコードは保存しない。
      */
     async remember(
@@ -347,10 +347,10 @@ export class DomainAuthority {
     }
 
     /**
-     * 収集元を参照せず、呼び出し側が持てる候補だけを権威で検証して解決する（§13.5）。
+     * 収集元を参照せず、呼び出し側が持てる候補だけを権威で検証して解決する（§14.5）。
      *
      * `NameServer` が既知ノードの `wantOwnership` 応答から集めた候補をここに流す。
-     * 成否はキャッシュされる（§13.5 の TTL 規則に従い、失敗は短い TTL）。
+     * 成否はキャッシュされる（§14.5 の TTL 規則に従い、失敗は短い TTL）。
      */
     async settleCandidates(
         input: string,
@@ -375,7 +375,7 @@ export class DomainAuthority {
     }
 
     /**
-     * レコードをローカルストアへ信託する（§13.5 の `register`）。検証に成功した場合のみ保存し、
+     * レコードをローカルストアへ信託する（§14.5 の `register`）。検証に成功した場合のみ保存し、
      * 解決結果と同じ形の値を返す。
      */
     async register(
@@ -427,11 +427,11 @@ export class DomainAuthority {
     }
 
     /**
-     * `IPublicKeyResolver`（§10.4.3）と同じ契約で公開鍵を返す bridge。
+     * `IPublicKeyResolver`（§11.4.3）と同じ契約で公開鍵を返す bridge。
      *
      * 収集元から引いたレコードのうち**検証に成功したもの**が该当 NodeId を束縛していれば、
      * その `ownerPublicKey` を返す。レコードが無い・検証に失敗した場合は `inner` へ委譲する
-     * （§13.5 の bridge。検証失敗の束縛を鍵配布に流用してはならない MUST NOT）。
+     * （§14.5 の bridge。検証失敗の束縛を鍵配布に流用してはならない MUST NOT）。
      */
     createPublicKeyResolver(inner?: IPublicKeyResolver | null): IPublicKeyResolver {
         const authority = this;
@@ -534,7 +534,7 @@ export class DomainAuthority {
         return Math.max(1, Math.min(this.queryTimeoutMs, budget));
     }
 
-    /** 候補を検証し、勝者を決める（specification.md §13.4 / §13.4.3）。 */
+    /** 候補を検証し、勝者を決める（specification.md §14.4 / §14.4.3）。 */
     private async verifyCandidates(
         domain: string,
         candidates: readonly { record: DomainOwnershipRecord; via: string }[],
@@ -629,7 +629,7 @@ export class DomainAuthority {
     }
 
     /**
-     * 検証器を 1 回通す（§13.4）。収集元名はログにだけ使う（成否には影響しない）。
+     * 検証器を 1 回通す（§14.4）。収集元名はログにだけ使う（成否には影響しない）。
      * 呼び出し側が既に候補を持っている場合（`NameServer` の応答など）に使う。
      */
     async verifyRecord(
@@ -678,7 +678,7 @@ export function createDomainAuthority(options: DomainAuthorityOptions = {}): Dom
 }
 
 /**
- * 配列／Map から作るインメモリ収集元（テスト・ローカル信託用、specification.md §14.4）。
+ * 配列／Map から作るインメモリ収集元（テスト・ローカル信託用、specification.md §15.4）。
  *
  * 追加時に構造検証だけを行う（署名検証は解決時に権威が実施する）。
  */
@@ -731,7 +731,7 @@ export function memoryDomainRecordSource(
     };
 }
 
-/** 複数の収集元を 1 つに束ねる（§13.5 の収集順を明示的に組み立てるためのヘルパ）。 */
+/** 複数の収集元を 1 つに束ねる（§14.5 の収集順を明示的に組み立てるためのヘルパ）。 */
 export function chainDomainRecordSources(
     sources: readonly (IDomainRecordSource | null | undefined)[],
 ): IDomainRecordSource {
