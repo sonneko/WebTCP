@@ -1,13 +1,13 @@
 # WebTCP のレイヤーと名前解決
 
-> この文書は [specification.md](../specification.md) 0.7.0 / [design.md](../design.md) 0.7.0 の補助解説です。
+> この文書は [specification.md](../specification.md) 0.8.0 / [design.md](../design.md) 0.8.0 の補助解説です。
 > M4 で `NameServer` と `webtcp://` URL が、M5 で `domain.global` の**所有権レコード検証**（#25）が、M6 で **HTTP トンネル**（#50）が実装済みです。
 > 実ブロックチェーンへの裏付け（#42）とレジストリの運用ガバナンス（#43）は将来課題として切り出しています。
 > マイルストーンは [plan.md](../plan.md) を参照してください。
 >
 > M1–M7 で実装済み（M7 で `persistState` / `restoreState`・`startBrowserKeepAlive` を追加）: `WebTCPNetwork`（`bootstrap` / `connectURL` / `serveHTTP` / `fetchURL` 含む） / `VirtualStream`（バイトストリーム・自動分割・動的 RTO・輻輳制御・SACK・Half-Close） / `BrowserWebRTCChannel`（ICE 再起動・`iceServersProvider`） / `SignalingAdapterHub` / `EntranceSearcherAdapterHub` / `Logger` / Ed25519 署名・NodeId の鍵指紋化・`BrowserKeyManager` / `NodeKeyManager` / `KeyDirectory` / `NameServer`・`parseWebTCPUrl`・永続 NodeId と衝突検出 / `core/domain`（所有権レコード・Merkle 台帳・チェックポイント・`DomainAuthority`・HTTP レジストリクライアント） / **`core/http`（`HTTPServer` / `HTTPClient` / `HTTPRouter` / HTTP/1.1 サブセット）**
 >
-> 未実装: 実ブロックチェーンへのアンカー検証（#42）、レジストリ運用ガバナンス（#43）、HTTP/2・WebSocket・`CONNECT` などのフル実装（#57）、受信フロー制御（#56）、接続プールの上限（#58）、ブラウザ外部クライアント向けブリッジ（#52）、鍵ローテーション（#47）、明示的なリプレイ検知強化（#48）
+> 未実装: 実ブロックチェーンへのアンカー検証（#42）、レジストリ運用ガバナンス（#43）、HTTP/2・WebSocket・`CONNECT` などのフル実装（#57）、受信フロー制御（#56）、接続プールの上限（#58）、鍵ローテーション（#47）、明示的なリプレイ検知強化（#48）
 
 ## レイヤーモデル
 
@@ -130,7 +130,7 @@ await ns.resolve('shop.domain.global');               // source: 'domain'
 - HTTP のフル実装（HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従・TLS 終端） — #57
 - 受信ウィンドウ（フロー制御）の広告と、`HTTPClient` の接続プール上限 — #56 / #58
 - タブが凍結されている間の到達不能（#51 の本質的制約、仕様 §9.6）。状態の永続化・復元は M7 で対応済み
-- ブラウザ外部の既存クライアントのためのブリッジ — #52
+- ブラウザ外部の既存クライアントのためのブリッジ — #52 は M8 で対応（仕様 §19）。ローカル TCP 待ち受けからトンネルへ中継する。UDP・SOCKS・ローカル側の認証は未実装
 - 権威サーバー階層 / DNS 相互運用 — 未 Issue（必要になるまで起票しない）
 
 これらは [plan.md](../plan.md) §4.3 と GitHub Issues に整理しています。

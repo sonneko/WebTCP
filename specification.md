@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.7.0 |
+| 文書バージョン | 0.8.0 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
 | プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決・M5 のドメイン所有権証明・M6 の HTTP トンネルはいずれも v2 上のアプリケーション層） |
 | ステータス | 実験的（破壊的変更あり） |
@@ -1547,5 +1547,98 @@ HTTP 層は `Logger` を注入でき、`console.*` を直接呼んではなら�
 - セッション Nonce / タイムスタンプによる明示的なリプレイ検知の強化（§11.6 の限界、#48）。
 - `domain.global` 問い合わせの秘匿（段階的開示・暗号化）。
 - HTTP/2・HTTP/3、`Upgrade` / WebSocket ハンドシェイク、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従、TLS 終端（§16.9）。HTTP/1.1 のサブセット（§16）のみ実装する。
-- ブラウザ外（Node.js）での WebRTC 実装の同梱。
-- ブラウザ外の既存 TCP クライアント（curl 等）を HTTP トンネルへ入れるブリッジ（#52）。
+- ブラウザ外（Node.js）での WebRTC 実装の同梱。`@roamhq/wrtc` / `node-datachannel` はいずれも**利用者が任意で導入する依存**であり、パッケージに同梱しない（§19.8）。
+- ブリッジの npm パッケージ分割と `bin` 登録（`webtcp-bridge`）。公開方針は #49 に従い、本版は `examples/bridge.mjs` を正とする（§19.8）。
+- ブリッジの UDP・SOCKS・TLS 終端・ローカル側の認証（§19.7）。
+
+## 19. ブリッジ（ブラウザ外の TCP クライアントの入口 / M8・#52）
+
+本章は、curl や既存アプリのような **WebTCP を話さない TCP クライアント**を、WebTCP の仮想ストリームへ入れる**ローカル側の入口**を定義する。ワイヤー（パケット）形式は変更しない。ブリッジは通常の WebTCP ノード（v2）の一部として動き、既存の `network.connect()` だけに依存する。
+
+### 19.1 目的とスコープ
+
+- ローカルで TCP を待ち受け、受け入れた接続ごとに `network.connect(nodeId, port)` で仮想ストリームを開き、双方向にバイトを中継する。
+- 中継はバイト列のみを扱う。HTTP を解釈しない（HTTP の意味付けは §16 の `HTTPServer` / `HTTPClient` の責務）。したがって `curl http://127.0.0.1:18080/…` は、宛先が HTTP サービスであれば HTTP として成立する。
+- 対象は**ループバック上のローカルクライアント**である。インターネットからの入口ではない（§19.4）。
+
+### 19.2 中継モデル
+
+| 項目 | 規則 |
+| :--- | :--- |
+| 接続単位 | 受け入れた 1 つの TCP ソケットは、1 つの仮想ストリームに対応する。 |
+| 上り（ソケット → 仮想） | 読み取ったバイトを `VirtualStream.send()` へ渡す。`Send buffer full` で拒否されたら `drain` を待って同じチャンクを再送する (MUST)。 |
+| 下り（仮想 → ソケット） | `VirtualStream` の `data` をソケットへ書く。ソケットの `write` が背圧を返したら、仮想側の読み取りを一時停止し `drain` で再開する (MUST)。 |
+| Half-Close | クライアントの FIN は仮想ストリームの `end()` へ写す。仮想側の FIN はソケットの `end()` へ写す。どちらか一方が閉じても、他方向の送信は完了まで継続する (MUST)。 |
+| 切断 | どちらかが `RST` / エラーで終わったら、もう一方も破棄する。 |
+| 接続ごとの状態 | 同時接続数に上限は設けない（M8 時点。HTTP 層の上限 #58 と同じく将来課題）。 |
+
+**実装上の注意（#62）**: Node.js の `net.createServer()` は既定で `allowHalfOpen: false` である。この既定のままだと、クライアントの FIN でサーバーの書き込み側も閉じ、半クローズ後の応答が届かない。ブリッジは `allowHalfOpen: true` で待ち受けなければならない (MUST)。
+
+### 19.3 `webtcp://` URL との対応
+
+ブリッジの宛先は次の形式で指定する。
+
+```
+webtcp://<nodeId | name>:<port>
+```
+
+- `port` は必須である（§16.6 と同じく既定ポートを持たない）。
+- ホストが 32 桁の hex（NodeId）なら直接接続する。
+- ホストが名前なら、`NameServer`（§13）で NodeId に解決してから接続する。解決はブリッジ起動時に 1 回行い、以後は固定する。名前の解決には `--resolve-name` のような明示的な指定を要する。明示なしで名前を渡した場合は起動を拒否する。
+- `path` / `query` は**中継しない**（バイト列として扱わない）。HTTP のパスを使いたい場合は `HTTPClient` / `fetchURL()` を使う（§16.6）。
+
+### 19.4 セキュリティ（規範）
+
+ブリッジはローカルの TCP 入口であり、**ローカルプロセスからの接続に認証は無い**。したがって次の規則を満たさなければならない。
+
+1. **署名必須（`requireSignatures`）**: ブリッジは署名付き（v2）パケットだけを扱うノードでのみ起動する (MUST)。鍵管理が無い、または `requireSignatures` が偽のノードでは起動を拒否し、`BridgeSecurityError`（コード `signatures-required`）を投げる (MUST)。
+2. **ループバック既定**: 待ち受けアドレスの既定は `127.0.0.1` である (MUST)。ループバック（`127.0.0.0/8`、`::1`、`localhost`）以外への待ち受けは、利用者が明示的に `allowNonLoopbackBind` を指定した場合にのみ許す (MUST)。違反は `BridgeSecurityError`（コード `non-loopback-bind`）で拒否する。
+3. **v1 宛先の転送拒否（既定）**: 宛先ノードの公開鍵がノードの鍵ディレクトリに無い（＝ v1 の未署名ノードと見なす）場合、接続を転送してはならない (MUST NOT)。公開鍵は近隣からの RT_UPDATE で届くのを一定時間（既定 5 秒）待ってよい。それでも不明なら拒否する。`allowUnsignedPeers` を明示した場合のみ転送する。
+4. **アクセスログ（必須）**: すべての接続を記録する (MUST)。記録は 1 接続につき次の JSON 行とする。
+   - `event`: `open`（受け入れて転送開始）、`refused`（§19.4 の 3 により拒否）、`error`（転送中のエラー）、`close`（終了）。
+   - 項目: `at`（ISO 8601）、`id`（接続番号）、`client`（クライアントの `host:port`）、`target`（`nodeId:port`）、`bytesUp` / `bytesDown`、`durationMs`（`close` のみ）。
+   - 既定は `logger.info` へ出力する。`onAccess` を渡すと呼び出し側へ渡す。記録を無効化する設定は設けない (MUST NOT)。
+5. **ローカル側の無認証は既知の制約**: 同一マシン上の任意のプロセスと、ブラウザ上の任意のページ（ループバックへの HTTP リクエストを送れる）はブリッジを利用できる。したがって、ブリッジ越しに公開されるサービスは、§16.7 と同様に**呼び出し元を信頼しないこと**を前提に設計しなければならない。ブラウザページからの CSRF 的な要求は、ブリッジを通して宛先へ届きうる。
+
+### 19.5 エラーと応答
+
+| 状況 | 挙動 |
+| :--- | :--- |
+| 起動時に署名要件・ループバック要件を満たさない | 起動を拒否（`BridgeSecurityError`）。ソケットを開かない。 |
+| 名前が解決できない | 起動を拒否する。 |
+| 宛先の v1 判定で拒否 | クライアントのソケットを閉じ、`refused` を 1 件記録する。 |
+| `network.connect()` の失敗・タイムアウト | クライアントのソケットを閉じ、`refused` を 1 件記録する。 |
+| 転送中のエラー | 両方向を閉じ、`error` と `close` を記録する。 |
+
+### 19.6 CLI（`examples/bridge.mjs`）
+
+```
+node examples/bridge.mjs webtcp://<nodeId>:8080 --listen 127.0.0.1:18080
+node examples/bridge.mjs webtcp://demo-service:8080 --listen 127.0.0.1:18080 --resolve-name
+curl http://127.0.0.1:18080/api/echo?x=1
+```
+
+| オプション | 既定 | 意味 |
+| :--- | :--- | :--- |
+| `--listen HOST:PORT` | `127.0.0.1:18080` | 待ち受け。ループバック以外は `--allow-non-loopback` が必要 |
+| `--signal URL` | `http://127.0.0.1:8787` | シグナリングハブ |
+| `--key-file PATH` | `~/.webtcp-bridge/identity.pem` | Ed25519 鍵（v2 の署名に使う） |
+| `--resolve-name` | off | 名前の解決を許可する |
+| `--allow-non-loopback` | off | ループバック以外の待ち受けを許可（§19.4 の 2） |
+| `--allow-unsigned-peers` | off | v1 宛先への転送を許可（§19.4 の 3） |
+| `--rtc-bind ADDRESS` | 未指定 | ICE のバインド先を指定する（§19.8 の既知の制約） |
+
+起動時は接続先のシグナリングに到達し、ブートストラップで 1 件以上の隣接に接続してから待ち受ける。
+
+### 19.7 非目標（M8 時点）
+
+- UDP・SOCKS・プロキシ認証・TLS 終端（ローカル側の暗号化は行わない）。
+- ローカル側の認証（トークン、Unix ソケットの権限など）。ループバック既定と §19.4 の 4 のログで対応する。
+- 複数宛先への振り分け・ポート転送の動的な追加削除。1 プロセスは 1 宛先とする。
+- 接続数の上限、受信ウィンドウの広告（#56）。送信側の背圧は `drain` 再試行で対応する。
+
+### 19.8 配布と実 WebRTC の依存
+
+- 実 WebRTC の実装（`@roamhq/wrtc` / `node-datachannel`）は**同梱しない**。`NodeWebRTCChannel` は `createPeerConnection` 注入を基本とし、`createNodeNetwork()` は既定の順序（`@roamhq/wrtc`、次に `node-datachannel`）で**導入済みのもの**を解決する。どちらも無ければ `WebRTCProviderUnavailableError` を投げ、導入方法を示す (MUST)。
+- 既知の制約（#61）: `node-datachannel` は、非ループバックのインターフェースがリンクローカルのみのホストで、既定の自動バインドでは ICE 候補を 0 件にすることがある。その場合は `peerConnectionOptions.bindAddress`（CLI は `--rtc-bind`）を指定する。`@roamhq/wrtc` は同条件で DataChannel が開くことを確認している。
+- `webtcp-bridge` の `bin` 登録と npm 公開は #49 に従い後続とする。M8 では `examples/bridge.mjs` を正とし、`webtcp_jslib` の `exports` には含めない（ブラウザ安全な `index.ts` へは再エクスポートしない）。

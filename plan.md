@@ -2,11 +2,11 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.7.0 |
-| 対応仕様 | `specification.md` 0.7.0 |
-| 対応設計 | `design.md` 0.7.0 |
-| 最終更新 | 2026-11-16 |
-| 現在のマイルストーン | **M6 実装（アプリケーション層 HTTP トンネル / #50）** |
+| 文書バージョン | 0.8.0 |
+| 対応仕様 | `specification.md` 0.8.0 |
+| 対応設計 | `design.md` 0.8.0 |
+| 最終更新 | 2026-11-17 |
+| 現在のマイルストーン | **M8 実装（ブラウザ外の TCP クライアント向けブリッジ / #52）** |
 
 ---
 
@@ -189,6 +189,48 @@
 
 ---
 
+### 3.8 M8（本サイクル / #52）
+
+#### 3.8.1 スコープ判断
+
+- **対象**: ローカル TCP 待ち受け → `network.connect(nodeId, port)` の双方向中継（Half-Close・背圧あり）、`webtcp://<nodeId|name>:<port>` の宛先指定、`NodeWebRTCChannel` の既定プロバイダ解決と型付きエラー、`requireSignatures`（v2）必須・ループバック既定・アクセスログ・v1 宛先の転送拒否（仕様 §19.4）。
+- **パッケージ分割の判断（#49 との関係）**: `webtcp-bridge` の `bin` と別パッケージへの分割は**行わない**。npm 公開の方針（semver・`exports`）が #49 で未決のため、先に分割すると公開単位が二度動く。ブリッジは `webtcp_jslib/src/adapters/bridge` に置き、CLI は `examples/bridge.mjs` とする（設計 §3.29）。`bin` 登録は #49 の決定後に行う。
+- **Node の WebRTC は同梱しない**: `@roamhq/wrtc` / `node-datachannel` は任意導入の依存（`optionalDependencies` にも入れない）。導入済みのものを `createNodeNetwork()` が解決し、無ければ `WebRTCProviderUnavailableError` で導入方法を示す。README / ロードマップの「同梱しない」方針と一致させる。
+- **既存クライアントの入口**: 本ブリッジは「curl からトンネルへ入る」ことを証明するもので、§6.6 の線引き（「HTTP を話せる」と「既存の HTTP クライアントから使える」は別）の後者を解消する。
+
+#### 3.8.2 実装チェックリスト
+
+- [x] 仕様書 0.8.0（§19 を新設、§18 から #52 の非目標を除去）→ 設計書 0.8.0（§3.29）→ 計画書 0.8.0 の順に更新
+- [x] `WebTCPNetwork.signaturesRequired`（安全条件の検査に使う読み取り専用の公開値）
+- [x] `adapters/bridge/TcpBridge`: 安全条件（`assertBridgeSecurity`）、ループバック既定、v1 宛先の拒否（鍵ディレクトリで判定、5 秒待機）、`allowHalfOpen: true`、`drain` 待ちの再送、`onAccess` のログ（`open` / `refused` / `error` / `close`）
+- [x] `adapters/webrtc/nodeProvider`: `@roamhq/wrtc` → `node-datachannel` の順で解決、`WebRTCProviderUnavailableError`（`tried` 一覧）、`createNodeNetwork()`、`peerConnectionOptions` の上書き
+- [x] `examples/bridge.mjs`（CLI）: `--listen` / `--resolve-name` / `--key-file` / `--rtc-bind` / `--allow-non-loopback` / `--allow-unsigned-peers`。安全条件違反は**ネットワークへ参加する前**に拒否する
+- [x] `examples/bridge-service.mjs`（確認用サービス）: `/api/echo`、`/big?n=`（大きな応答の確認用）、NameServer への名前登録
+- [x] テスト: `bridge.test.mjs`（6 件: 安全条件・TCP 往復・Half-Close・アクセスログ・300 KiB の sha256・HTTP 素通し・v1 拒否・非ループバック opt-in）、`node-provider.test.mjs`（6 件）、`bridge-webrtc.test.mjs`（実 WebRTC E2E 1 件。実装が無ければ skip）
+- [x] `README.md` / `docs/layer.md` の同期（ブリッジの入口と CLI）
+- [ ] `webtcp_website` の同期（ガイドへの追記は本サイクルでは未実施。§3.8.4 に記録）
+- [x] Issue 起票: #61（ICE 候補 0 件）、#62（`allowHalfOpen` 既定）、#63（#40 テストの不安定さ）
+
+#### 3.8.3 検証状況（正直な記録）
+
+| 項目 | 結果 |
+| :--- | :--- |
+| `npm test`（`webtcp_jslib`） | 226 件中 225 件成功。失敗は #40 の既存テストの負荷依存の不安定さ（#63）。`main` の `8ab97c2` でも同じ。 |
+| 実 WebRTC E2E（テスト） | `bridge-webrtc.test.mjs` 成功（`node-datachannel`、`bindAddress: 127.0.0.1`） |
+| 実プロセスの E2E（シグナリング・Node サービス・ブリッジ・`curl`） | 成功。`curl /api/echo?x=1` のクエリ、`/`、`--resolve-name` による名前解決、512 KiB の応答（2 回・すべて 'x' を確認）を確認。アクセスログに `open` / `close` と転送バイト数が出ることを確認。 |
+| 安全条件（CLI） | `0.0.0.0` の待ち受けは `--allow-non-loopback` 無しで拒否。名前を `--resolve-name` 無しで渡すと拒否。いずれもネットワーク参加前に停止する。 |
+| `@roamhq/wrtc` | 導入して `RTCPeerConnection` の読み込みと、既定バインドでの DataChannel 開通を確認（単体の probe）。**ブリッジの E2E は未実施**（既定順序の先頭だが、テストは `node-datachannel` で行った）。 |
+| **ブラウザ上のサービスへの E2E（Chromium）** | **未検証**。サンドボックスで Playwright の Chromium 導入が失敗したため、ブラウザ側サービスへの curl 経由確認は行えなかった。Node 上のサービスで代替した。 |
+| 半クローズ後の応答 | テストと実プロセス（`curl`）の双方で確認。#62 の修正で解消。 |
+
+#### 3.8.4 M8 のスコープ外（記録）
+
+- `webtcp-bridge` の `bin` と npm 公開（#49 の決定に従う）。
+- ブラウザ上のサービスへの Chromium E2E（上記の理由）。
+- `webtcp_website` のガイド更新（未実施）。
+- ローカル側の認証、UDP、SOCKS、接続数上限、受信ウィンドウ（#56）。
+- ブリッジ経由のブラウザページからの CSRF 的要求（仕様 §19.4 の 5 の既知の制約。ループバック既定で緩和）。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は M7 以降）
@@ -248,7 +290,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | ギャップ | 現状 | Issue |
 | :--- | :--- | :--- |
 | ブラウザはサーバーとして生き残れない（M7 で緩和。凍結中の到達不能は残る） | 非可視タブのサスペンド、リロード時の待ち受け・名前登録・提供レコード・HTTP ハンドラの消失（鍵だけが永続する非対称）。Wake Lock / Service Worker / 状態復元はいずれも未実装 | **#51** |
-| 入口が WebRTC 話者に限定される | curl や既存アプリをトンネルへ入れるブリッジ（ローカル TCP リッスン → `connect()`）が無く、Node 側 WebRTC 実装も非同梱。**HTTP トンネルができても、入り口は依然 `HTTPClient` を呼べる相手だけ** | **#52** |
+| 入口が WebRTC 話者に限定される | M8 で解消（#52）: curl や既存アプリをトンネルへ入れるブリッジ（仕様 §19）を追加した。Node 側 WebRTC は引き続き非同梱で、導入済みのものを解決する。 | ~~#52~~（M8 で対応） |
 
 なお、これらは各マイルストーンの受け入れ条件（ブラウザにチェーンクライアントを載せず検証可能な所有権に絞る、HTTP はサブセットに留める）とは別軸の評価である。**「HTTP を話せるようにした」ことと「既存の HTTP クライアントから使える」ことは別**であり、#52 が無い限り後者は成立しない — この線引きは次サイクルでも守る。
 
@@ -322,7 +364,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #49 | enhancement | npm 公開・semver・`exports` サブパス | M7 以降 |
 | #50 | enhancement | アプリケーション層 HTTP トンネル（L7）未実装 — README 構想の後半 | ビジョン評価で起票 → **M6 で実装**（§6.6） |
 | #51 | enhancement | タブ停止・リロードに耐えるサービス継続（稼働維持と状態の永続化） | ビジョン評価で起票 → M7 で部分対応（仕様 §9） |
-| #52 | enhancement | ブラウザ外部の既存クライアントをトンネルへ入れるブリッジ | ビジョン評価で起票（M7 以降） |
+| #52 | enhancement | ブラウザ外部の既存クライアントをトンネルへ入れるブリッジ | ビジョン評価で起票 → **M8 で実装**（§3.8） |
 
 ### 6.6 M6（本サイクル）で対応・起票した Issue
 
@@ -334,3 +376,12 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #56 | enhancement | 受信ウィンドウ（フロー制御）の広告が無く、大きな HTTP 応答が受信側メモリに依存する | 起票して M7 以降（§4.4） |
 | #57 | enhancement | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従（HTTP 層のフル実装） | 起票して M7 以降（§4.4） |
 | #58 | enhancement | `HTTPClient` の接続プールが上限・LRU を持たず、多数の `(nodeId, port)` で `VirtualStream` を保持し続ける | 起票して M7 以降（§4.4） |
+
+### 6.7 M8（本サイクル）で対応・起票した Issue
+
+| # | 種別 | 内容 | 扱い |
+| :--- | :--- | :--- | :--- |
+| #52 | enhancement | ブラウザ外部の既存クライアントをトンネルへ入れるブリッジ | 本 PR で実装（§3.8）→ close |
+| #61 | bug | `node-datachannel` が、リンクローカルのみのホストで自動バインド時に ICE 候補を 0 件にする | 起票。回避は `peerConnectionOptions.bindAddress` / `--rtc-bind`。既定の扱いは未決 |
+| #62 | bug | Node の `net.createServer()` は既定で `allowHalfOpen: false`。半クローズ後の応答が届かない（ブリッジ実装中に発見） | 本 PR で修正（`allowHalfOpen: true`）。回帰テストあり → close |
+| #63 | bug | `domain-resolution` の経過時間アサーション（#40）が全体テストの負荷で不安定 | 起票。本 PR では触らない（既存の不安定さ） |

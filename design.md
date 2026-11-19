@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.7.0 |
-| 対応仕様 | `specification.md` 0.7.0 / プロトコル v2（v1 後方互換） |
-| 最終更新 | 2026-11-16 |
+| 文書バージョン | 0.8.0 |
+| 対応仕様 | `specification.md` 0.8.0 / プロトコル v2（v1 後方互換） |
+| 最終更新 | 2026-11-17 |
 
 本書は `specification.md` を満たすための**実装構造と技術判断**を記述する。
 
@@ -379,6 +379,19 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **再発行は `WebTCPNetwork` で行う**: `LinkManager` の隣接イベントを転送し、利用者（keep-alive の再接続、UI）が `LinkManager` の内部に触れずに済むようにする。
 - **keep-alive はアダプタ層に置く**: Wake Lock・AudioContext・`visibilitychange`・`pagehide` はブラウザ依存なので `core/` には入れない（§3.2 の依存方針）。ブラウザ API はすべて注入可能にし、Node のテストで検証する。
 - **離脱は `close()`（FIN）**: `pagehide` の処理では `destroy()` を使わない。`destroy()` は相手のストリームを `ESTABLISHED` のまま残すため（#54）、終了ハンドシェイクを優先する。
+
+### 3.29 ブリッジは TCP 中継に徹し、署名・ループバック・ログを起動条件にする（M8 / #52）
+
+- **中継は `network.connect()` だけに依存する**: `adapters/bridge/TcpBridge` は `node:net` と `VirtualStream` の橋渡しだけを行う。HTTP の解釈は持たない（§16 の `HTTPClient` とは独立に使える）。`core/` は変更しない。
+- **安全条件はコンストラクタで検査する**（`assertBridgeSecurity`）。`requireSignatures` が偽、または鍵管理が無いノードでは起動しない。非ループバックの待ち受けは `allowNonLoopbackBind` が無ければ拒否する。起動後に条件を緩める経路は設けない。仕様 §19.4 の 1・2 に対応する。
+- **v1 宛先の拒否は鍵ディレクトリで判定する**。宛先の公開鍵が既知であることを v2 の証拠とみなす。公開鍵は RT_UPDATE で届くため、未知なら一定時間（5 秒）待ってから拒否する。`allowUnsignedPeers` を明示した場合だけ転送する（§19.4 の 3）。
+- **`allowHalfOpen: true` で待ち受ける**（#62）。Node の既定の `false` は、クライアントの FIN で応答の書き込み側を閉じてしまい、半クローズ後の応答が届かない。双方向の FIN を仕様どおり写すため、`end()` を両方向で独立に呼ぶ。
+- **背圧は 2 方向で扱う**。上りは `VirtualStream.send()` の `Send buffer full` を `drain` 待ちの再送で吸収する（受信ウィンドウ #56 が無いため、送信側だけで止める）。下りはソケットの `write` が偽を返したら仮想側の読み取りを一時停止し、`drain` で再開する。
+- **ログは `onAccess` 関数に一本化する**。既定の出力先は `Logger`（`console` を直接使わない）。1 接続につき `open` と、`close` / `refused` / `error` のいずれか 1 件を記録する。`refused` の後に来る `close` は無視する（二重記録を防ぐ）。
+- **既定の RTC プロバイダ解決は `createNodeNetwork()` に置く**（`adapters/webrtc/nodeProvider.ts`）。順序は `@roamhq/wrtc`、`node-datachannel` の順で、`import()` の失敗は無視して次を試す。どれも無ければ `WebRTCProviderUnavailableError`（試した名前の一覧を含む）を投げる。`peerConnectionOptions` は RTC 設定へ浅くマージし、ICE の `bindAddress` などを利用者が上書きできるようにする（#61 の回避）。
+- **パッケージは分割しない（M8）**: `webtcp-bridge` の `bin` と `@sonneko/webtcp-bridge` の分割は、npm 公開の方針（#49）が決まるまで保留する。現時点でブリッジは `webtcp_jslib` 内の `adapters/bridge` に置き、CLI は `examples/bridge.mjs` とする。ブラウザ向けの `index.ts` からは再エクスポートせず、Node 専用の入口から使う（`dist/adapters/bridge/TcpBridge.js`）。
+
+---
 
 ## 4. クラス責務
 
