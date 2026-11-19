@@ -135,6 +135,7 @@ export class WebTCPNetwork extends EventEmitter {
     public readonly transportLayer: TransportLayer;
     public readonly logger: Logger;
     private readonly stateStorage: ServiceStateStorage | null;
+    private readonly signatureRequirement: boolean;
     /** Ed25519 鍵管理（未指定なら null）。 */
     public readonly keyManager: Ed25519KeyManager | null;
     /** 公開鍵ディレクトリ（鍵管理・検証器を使わない場合は null）。 */
@@ -175,6 +176,7 @@ export class WebTCPNetwork extends EventEmitter {
             baseLogger,
         );
         this.stateStorage = options.stateStorage ?? null;
+        this.signatureRequirement = this.requiresSignatures(options);
 
         // 隣接の入れ替わりを利用者へ再発行する（#51 / §10.4）。
         // RT_UPDATE による再広告は RoutingLayer が neighbor-connected で行う。
@@ -431,6 +433,14 @@ export class WebTCPNetwork extends EventEmitter {
         }
 
         return { connected, failed, attempts };
+    }
+
+    /**
+     * 受信パケットの署名が必須か（プロトコル v2、§11.2）。
+     * ブリッジ（§17）は認証なしでトンネルを開くため、この値が `true` であることを要求する。
+     */
+    public get signaturesRequired(): boolean {
+        return this.signatureRequirement;
     }
 
     /** 接続済みの隣接ノード一覧。 */

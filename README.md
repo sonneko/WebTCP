@@ -10,7 +10,7 @@ WebTCPは、ブラウザを単なるクライアントではなく、**自己完
 
 ブラウザの制限付きの`fetch`を使っているわけではないので、TCPレイヤーから自由に通信を操ることができます。
 
-> **現在のステータス**: **M7（生存期間: サービス役の状態の永続化・復元と稼働維持の補助）実装済み**。M6 で **M6（アプリケーション層 HTTP トンネル）実装済み**。M5 までの NameServer / `webtcp://` URL / 永続 NodeId / 所有者署名付きドメインレコード・Merkle 台帳に対応したうえで、**`serveHTTP()` / `fetchURL()` による HTTP/1.1 サブセット（リクエストライン・ヘッダ・本文・`keep-alive`・`chunked`）**を追加しました。`webtcp://` URL の `path` / `query` はリクエストターゲットとして実際に転送されます（`fragment` は送りません）。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43）。HTTP はサブセットです。稼働維持（#51）は M7 で部分的に対応しました（状態の永続化・復元と keep-alive 補助、仕様 §9）が、非可視タブの凍結中は到達できないままです。外部クライアントのブリッジ（#52）は未着手です。詳細は [plan.md](./plan.md)・[仕様 §14](./specification.md)・[仕様 §16](./specification.md) を参照してください。
+> **現在のステータス**: **M8（ブラウザ外の TCP クライアント向けブリッジ）実装済み**。M7（生存期間: サービス役の状態の永続化・復元と稼働維持の補助）実装済み。M6 で **M6（アプリケーション層 HTTP トンネル）実装済み**。M5 までの NameServer / `webtcp://` URL / 永続 NodeId / 所有者署名付きドメインレコード・Merkle 台帳に対応したうえで、**`serveHTTP()` / `fetchURL()` による HTTP/1.1 サブセット（リクエストライン・ヘッダ・本文・`keep-alive`・`chunked`）**を追加しました。`webtcp://` URL の `path` / `query` はリクエストターゲットとして実際に転送されます（`fragment` は送りません）。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43）。HTTP はサブセットです。稼働維持（#51）は M7 で部分的に対応しました（状態の永続化・復元と keep-alive 補助、仕様 §9）が、非可視タブの凍結中は到達できないままです。curl や既存アプリから入るブリッジ（M8 / #52、ループバック既定・署名必須・アクセスログ、仕様 §19）を追加しました。ブラウザ上のサービスへの Chromium E2E は未検証です。詳細は [plan.md](./plan.md)・[仕様 §14](./specification.md)・[仕様 §16](./specification.md) を参照してください。
 
 ## 主な機能
 
@@ -151,7 +151,7 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 **できていない部分（ビジョンに対して正直な穴）**
 
 1. **ブラウザは「サーバーとして生き残れない**（[#51](https://github.com/sonneko/WebTCP/issues/51)）。タブが非可視になればサスペンドされ、リロードすると待ち受け・名前登録・提供中の所有権レコード・HTTP ハンドラはすべて消えます（鍵だけが IndexedDB / PEM で永続する、という非対称）。 M6 までは Wake Lock も Service Worker も使っていませんでした。M7 は Wake Lock と無音オーディオを任意の補助として提供します（Service Worker は使いません）。
-2. **入口が WebRTC を話せる相手に限られる**（[#52](https://github.com/sonneko/WebTCP/issues/52)）。HTTP を話せるようになっても（M6）、入り口は `HTTPClient` / `fetchURL()` を呼べる相手だけです。curl や既存アプリがブラウザ上のサービスへ入るためのブリッジ（ローカル TCP リッスン → トンネル）が無く、Node 側の WebRTC 実装も非同梱です。
+2. **入口が WebRTC を話せる相手に限られる**（[#52](https://github.com/sonneko/WebTCP/issues/52) は M8 で対応）。ブリッジ（ローカル TCP → トンネル）で curl や既存アプリから入れるようになりました。ただし Node 側の WebRTC 実装は同梱していません（`@roamhq/wrtc` または `node-datachannel` を利用者が導入します）。
 3. **所有権は「検証可能」であって「分散的に正しい」とは限らない**。参照レジストリは単一プロセス・メモリ保持・合意なしで、ログ鍵の信頼分配（監視、CT 風の散発収集、複数鍵）は未設計です（#42 / #43）。
 4. **マルチホップは動く範囲が限定的**です。RPF 厳格化と距離ベクトルの収束強化は #46、SSE / WebSocket シグナリングは #45 で未着手。転送をともなう構成は実験扱いしてください。
 5. **配布が未整備**（[#49](https://github.com/sonneko/WebTCP/issues/49)）。`@sonneko/webtcp-tunneler` は npm に未公開で、リポジトリからビルドする必要があります。
@@ -395,6 +395,21 @@ const network = new WebTCPNetwork({
 await network.start();
 ```
 
+### ブリッジ: curl からブラウザのサービスへ（M8 / #52）
+
+ローカルで TCP を待ち受け、受け入れた接続を `webtcp://` の宛先へ中継します。既定はループバックのみで、署名必須（v2）の宛先にだけ転送します（仕様 §19）。
+
+```bash
+cd webtcp_jslib && npm install --no-save node-datachannel   # 実 WebRTC の導入（同梱しません）
+node examples/server.mjs                                   # シグナリングハブ（別ターミナル）
+node examples/bridge-service.mjs --name demo-service --port 8080 --rtc-bind 127.0.0.1
+node examples/bridge.mjs webtcp://demo-service:8080 --listen 127.0.0.1:18080 --resolve-name --rtc-bind 127.0.0.1
+curl 'http://127.0.0.1:18080/api/echo?x=1'
+```
+
+- `--rtc-bind` は、非ループバックのインターフェースがリンクローカルのみのホストで必要な場合があります（#61）。
+- 接続ごとに JSON のアクセスログが出ます（`open` / `close` / `refused`）。`0.0.0.0` での待ち受けには `--allow-non-loopback` が必要です。
+
 ### Ed25519 署名（Node.js / プロトコル v2）
 
 ```ts
@@ -425,7 +440,7 @@ const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' }); //
 
 | 文書 | 内容 |
 | :--- | :--- |
-| [specification.md](./specification.md) | プロトコル仕様 0.7.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §11、**名前解決 §13**、**`domain.global` と所有権証明 §14**、**HTTP トンネル §16**） |
+| [specification.md](./specification.md) | プロトコル仕様 0.8.0（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §11、**名前解決 §13**、**`domain.global` と所有権証明 §14**、**HTTP トンネル §16**、**ブリッジ §19**） |
 | [design.md](./design.md) | 実装構造と設計判断 |
 | [plan.md](./plan.md) | マイルストーン、将来課題、リスク |
 | [docs/layer.md](./docs/layer.md) | レイヤーと名前解決・所有権・HTTP の解説（M4〜M6 で実装済み部分と将来構想） |

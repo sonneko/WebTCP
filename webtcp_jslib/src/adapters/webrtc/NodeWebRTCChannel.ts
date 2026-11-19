@@ -31,7 +31,9 @@ export class NodeWebRTCChannel extends WebRTCChannel {
     constructor(signaling: ISignalingAdapter, options: NodeWebRTCChannelOptions) {
         super(signaling, options);
         if (typeof options.createPeerConnection !== 'function') {
-            throw new Error('NodeWebRTCChannel requires a createPeerConnection function');
+            throw new Error(
+                'NodeWebRTCChannel requires a createPeerConnection function (or use createNodeNetwork(), which resolves @roamhq/wrtc / node-datachannel)',
+            );
         }
         this.factory = options.createPeerConnection;
     }
