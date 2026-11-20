@@ -104,3 +104,53 @@ test('node-provider: createNodeNetwork without any provider fails with the typed
         WebRTCProviderUnavailableError,
     );
 });
+
+// #61: ICE 候補が 0 件のまま収集が完了したら警告する（既定の bind は変えない）
+import { watchIceGathering } from '../dist/adapters/webrtc/nodeProvider.js';
+
+class GatheringPC extends EventTarget {
+    constructor(candidateCount) {
+        super();
+        this.iceGatheringState = 'new';
+        this.candidateCount = candidateCount;
+        this.localDescription = null;
+    }
+    finishGathering() {
+        // 収集完了後の localDescription は候補を含む（非 trickle）。イベントは配送しない実装を想定する。
+        const lines = ['v=0'];
+        for (let i = 0; i < this.candidateCount; i += 1) lines.push(`a=candidate:${i} 1 UDP 1 127.0.0.1 9 typ host`);
+        this.localDescription = { type: 'offer', sdp: lines.join('\r\n') + '\r\n' };
+        this.iceGatheringState = 'complete';
+        this.dispatchEvent(new Event('icegatheringstatechange'));
+    }
+}
+
+function captureWarnings() {
+    const warnings = [];
+    return { warnings, logger: { ...noopLogger, warn: (message) => warnings.push(String(message)) } };
+}
+
+test('ICE gathering: warns when completion yields zero candidates (#61)', () => {
+    const pc = new GatheringPC(0);
+    const { warnings, logger } = captureWarnings();
+    assert.equal(watchIceGathering(pc, logger), pc);
+    pc.finishGathering();
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /bindAddress/);
+    assert.match(warnings[0], /issues\/61/);
+});
+
+test('ICE gathering: no warning when local candidates were gathered', () => {
+    const pc = new GatheringPC(2);
+    const { warnings, logger } = captureWarnings();
+    watchIceGathering(pc, logger);
+    pc.finishGathering();
+    assert.equal(warnings.length, 0);
+});
+
+test('ICE gathering: a peer connection without addEventListener is returned unchanged', () => {
+    const plain = { iceGatheringState: 'complete' };
+    const { warnings, logger } = captureWarnings();
+    assert.equal(watchIceGathering(plain, logger), plain);
+    assert.equal(warnings.length, 0);
+});

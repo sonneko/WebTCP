@@ -78,7 +78,7 @@ function collect(socket) {
     });
 }
 
-test('bridge: loopback host check and security gates (§17.3)', async () => {
+test('bridge: loopback host check and security gates (§19.4)', async () => {
     assert.equal(isLoopbackHost('127.0.0.1'), true);
     assert.equal(isLoopbackHost('::1'), true);
     assert.equal(isLoopbackHost('localhost'), true);
@@ -110,7 +110,7 @@ test('bridge: loopback host check and security gates (§17.3)', async () => {
     }
 });
 
-test('bridge: TCP round trip with half-close and access log (§17.4)', async () => {
+test('bridge: TCP round trip with half-close and access log (§19.2)', async () => {
     const { a, b } = await signedPair();
     echoService(b, 9001);
     const log = [];
@@ -145,7 +145,7 @@ test('bridge: TCP round trip with half-close and access log (§17.4)', async () 
     }
 });
 
-test('bridge: 300 KiB in both directions survives send-buffer backpressure (§17.4)', async () => {
+test('bridge: 300 KiB in both directions survives send-buffer backpressure (§19.2)', async () => {
     const { a, b } = await signedPair();
     echoService(b, 9002);
     const bridge = new TcpBridge({
@@ -201,7 +201,7 @@ test('bridge: a plain HTTP client (curl-like) reaches serveHTTP on the remote no
     }
 });
 
-test('bridge: refuses a target whose public key is unknown (v1 peer) by default (§17.3)', async () => {
+test('bridge: refuses a target whose public key is unknown (v1 peer) by default (§19.4)', async () => {
     const hub = new LoopbackNetwork();
     const keyed = node(hub, await NodeKeyManager.create());
     // 署名なし（v1）の相手

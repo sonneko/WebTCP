@@ -36,7 +36,11 @@ test(`bridge-webrtc: curl-like TCP client reaches a browser-style service over r
         iceServers: [],
         logger: noopLogger,
         connectTimeoutMs: 20_000,
-        peerConnectionOptions: { bindAddress: '127.0.0.1' },
+        // 既定は 127.0.0.1（#61: node-datachannel の自動バインドは候補 0 件になることがある）。
+        // WEBTCP_TEST_RTC_BIND= （空）で自動バインドのまま検証できる（@roamhq/wrtc など）。
+        peerConnectionOptions: process.env.WEBTCP_TEST_RTC_BIND === ''
+            ? {}
+            : { bindAddress: process.env.WEBTCP_TEST_RTC_BIND ?? '127.0.0.1' },
     };
     const make = async () => {
         const keys = await NodeKeyManager.create();

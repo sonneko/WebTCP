@@ -437,7 +437,7 @@ export class WebTCPNetwork extends EventEmitter {
 
     /**
      * 受信パケットの署名が必須か（プロトコル v2、§11.2）。
-     * ブリッジ（§17）は認証なしでトンネルを開くため、この値が `true` であることを要求する。
+     * ブリッジ（§19）は認証なしでトンネルを開くため、この値が `true` であることを要求する。
      */
     public get signaturesRequired(): boolean {
         return this.signatureRequirement;

@@ -106,5 +106,5 @@ try {
 ## 既知の制約
 
 - タブが非可視になると凍結され、その間は待ち受けに応答しません。リロード後は `restoreState()` で待ち受けポート・名前・所有権レコードを回復できますが、HTTP ハンドラは付け直す必要があります（[#51](https://github.com/sonneko/WebTCP/issues/51)、仕様 §9）。
-- 既存の TCP/HTTP クライアント（curl 等）をトンネルへ入れるブリッジはありません（[#52](https://github.com/sonneko/WebTCP/issues/52)）。HTTP を話せても、入り口は `HTTPClient` を呼べる相手だけです。
+- 既存の TCP/HTTP クライアント（curl 等）は、ブリッジ（M8 / [#52](https://github.com/sonneko/WebTCP/issues/52)）を通して呼べます。ブリッジの使い方は[ブリッジのガイド](/guides/bridge/)を参照してください。
 - パケット形式に受信ウィンドウが無いため、巨大な応答は受信側メモリに依存します（[#55](https://github.com/sonneko/WebTCP/issues/55)）。

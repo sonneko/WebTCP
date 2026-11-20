@@ -1,5 +1,5 @@
 /**
- * Node.js 向け WebRTC 実装の既定プロバイダ解決（#52 / specification.md §17.5）。
+ * Node.js 向け WebRTC 実装の既定プロバイダ解決（#52 / specification.md §19.8）。
  *
  * WebTCP 本体は WebRTC 実装を同梱しない。利用者が次のいずれかを `npm install` すれば、
  * 既定の解決順（`@roamhq/wrtc` → `node-datachannel/polyfill`）で自動的に使われる。
@@ -11,7 +11,7 @@ import { WebTCPNetwork as WebTCPNetworkClass } from '../../core/network/WebTCPNe
 import { KeyDirectory } from '../../core/routing/KeyDirectory.js';
 import { Ed25519PacketVerifier } from '../../core/routing/PacketVerifier.js';
 import type { Ed25519KeyManager } from '../../core/routing/keys.js';
-import { resolveLogger } from '../../core/util/Logger.js';
+import { resolveLogger, type Logger } from '../../core/util/Logger.js';
 import { NodeWebRTCChannel } from './NodeWebRTCChannel.js';
 import type { IceServersProvider } from './WebRTCChannel.js';
 
@@ -128,10 +128,12 @@ export interface CreateNodeNetworkOptions
  */
 export async function createNodeNetwork(options: CreateNodeNetworkOptions): Promise<WebTCPNetwork> {
     const logger = resolveLogger(options.logger, options.logLevel);
-    const createPeerConnection =
+    const factory =
         options.createPeerConnection ??
         (await resolveNodeRTCProvider({ ...(options.rtcPackages ? { packages: options.rtcPackages } : {}) }))
             .createPeerConnection;
+    const createPeerConnection = (config: RTCConfiguration): RTCPeerConnection =>
+        watchIceGathering(factory(config), logger);
 
     const extra = options.peerConnectionOptions ?? {};
     const keyDirectory =
@@ -160,4 +162,33 @@ export async function createNodeNetwork(options: CreateNodeNetworkOptions): Prom
         nodeId: options.nodeId ?? options.keyManager?.nodeId ?? options.signaling.getLocalNodeId(),
         ...(keyDirectory ? { keyDirectory } : {}),
     });
+}
+
+/**
+ * ICE 候補を 1 件も集めずに収集が完了したら警告する（#61）。
+ *
+ * `node-datachannel` は、バインド先が任意アドレス（既定）のとき、非ループバックのインターフェースが
+ * リンクローカル（169.254.x.x）のみのホストで候補を 0 件にすることがある。その場合 DataChannel は開かず、
+ * 接続は ICE のタイムアウトで失敗する。既定値は変えず（実ネットワークで候補が減るため）、原因を利用者に示す。
+ * 判定は収集状態の遷移だけに依存するため、どの実装にも同じ規則で適用できる。
+ */
+export function watchIceGathering(pc: RTCPeerConnection, logger: Logger): RTCPeerConnection {
+    let warned = false;
+    const target = pc as unknown as EventTarget;
+    if (typeof target.addEventListener !== 'function') return pc;
+    target.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState !== 'complete' || warned) return;
+        // 候補の数は SDP（収集完了後の localDescription）で数える。
+        // `icecandidate` イベントの配送は実装ごとに異なるため（node-datachannel/polyfill は届かない）、
+        // イベントには依存しない。
+        const sdp = pc.localDescription?.sdp ?? '';
+        if (/^a=candidate:/m.test(sdp)) return;
+        warned = true;
+        logger.warn(
+            '[webrtc] ICE gathering finished with 0 local candidates. ' +
+                'Set peerConnectionOptions.bindAddress (e.g. the host address of a non-link-local interface, or 127.0.0.1 for same-host tests). ' +
+                'See https://github.com/sonneko/WebTCP/issues/61',
+        );
+    });
+    return pc;
 }

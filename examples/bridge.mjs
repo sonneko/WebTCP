@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WebTCP ブリッジ（#52 / specification.md §17）: ローカル TCP → WebTCP トンネル。
+ * WebTCP ブリッジ（#52 / specification.md §19）: ローカル TCP → WebTCP トンネル。
  *
  * curl や既存アプリ（WebRTC を話さないクライアント）から、ブラウザ・Node 上の
  * WebTCP サービスへ入るための入口。ループバックでだけ待ち受け、署名付き（v2）の
@@ -21,8 +21,8 @@
  *   --signal URL                シグナリングハブ（既定 http://127.0.0.1:8787）
  *   --key-file PATH             Ed25519 鍵の保存先（既定 ~/.webtcp-bridge/identity.pem）
  *   --resolve-name              webtcp://<名前>:port の名前を NameServer で解決する
- *   --allow-non-loopback        ループバック以外での待ち受けを許可する（危険・§17.3）
- *   --allow-unsigned-peers      公開鍵が不明な（v1）宛先への転送を許可する（危険・§17.3）
+ *   --allow-non-loopback        ループバック以外での待ち受けを許可する（危険・§19.4）
+ *   --allow-unsigned-peers      公開鍵が不明な（v1）宛先への転送を許可する（危険・§19.4）
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -102,7 +102,7 @@ async function main() {
     if (target.port === undefined) throw new Error('the URL must include a port');
     if (!target.nodeId && !target.name) throw new Error('the URL host must be a NodeId or a name');
     const listen = parseListen(args.listen);
-    // 安全条件は接続より前に確認する（§17.3）。違反なら何もネットワークへ参加しない。
+    // 安全条件は接続より前に確認する（§19.4）。違反なら何もネットワークへ参加しない。
     if (!isLoopbackHost(listen.host) && !args.allowNonLoopback) {
         throw new Error(`refusing to listen on ${listen.host}: pass --allow-non-loopback to bind beyond loopback`);
     }

@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.8.0 |
+| 文書バージョン | 0.8.1 |
 | 対象実装 | `webtcp_jslib` (TypeScript) |
 | プロトコルバージョン | 2（v1 は受信のみ後方互換。M4 の名前解決・M5 のドメイン所有権証明・M6 の HTTP トンネルはいずれも v2 上のアプリケーション層） |
 | ステータス | 実験的（破壊的変更あり） |
@@ -340,8 +340,9 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 - `CLOSING` で自身の `FIN` に対する `ACK` を受けたら `TIME_WAIT` へ遷移する。
 - `LAST_ACK` で自身の `FIN` に対する `ACK` を受けたら即座に `CLOSED` へ遷移する。
 - `TIME_WAIT` 中に重複した `FIN` を受信した場合は `ACK` を再送する。`timeWaitMs` 経過後（0 の場合は即座に）`CLOSED` へ遷移する。
-- `RST` 受信、または再送上限超過で `CLOSED` へ遷移し `error` イベントおよび `close` イベントを発火する。
-- `destroy()` は `FIN` や `TIME_WAIT` を待たず即座に `CLOSED` へ遷移する。**ピアへ `RST` も `FIN` も送らない**（ローカルの即時破棄）。したがって、相手側に終了を伝えたい場合は `end()` を使わなければならない (MUST)。
+- `RST` 受信、または再送上限超過で `CLOSED` へ遷移し `close` イベントを発火する。`error` イベントは、リスナーがある場合にだけ発火する (MUST)。リスナーが無い場合に例外を投げてはならない（パケット受信経路を壊すため、#54）。
+- `destroy()` は中断（abort）である。**相手へ `RST` を送信**し、`FIN` や `TIME_WAIT` を待たず即座に `CLOSED` へ遷移する (MUST)（#54）。相手は `RST` を受けて `CLOSED` へ遷移する。正常な終了（送信データを相手に届けてから閉じる）には `end()` を使う。
+- `RST` を受信したとき、対応するセッションが無い場合でも `RST` を返信してはならない (MUST NOT)。両端が同時に `destroy()` しても、`RST` の往復が無限に続かないようにするため（#54）。
 
 `CLOSED` へ遷移したとき、`close` イベントを**一度だけ**発火しなければならない (MUST)。
 
@@ -522,8 +523,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 | 離脱処理 | `pagehide` で `onPageHide` を呼ぶ。`nameServer` 指定時は `persistState()` を行う | SHOULD |
 
 - 離脱時、利用者は有効な仮想ストリームを **`close()`（= `end()`、送信バッファを flush して FIN）** で閉じるべきである (SHOULD)。
-  `destroy()` は相手側に RST も FIN も送らないため、相手のストリームが `ESTABLISHED` のまま残る（#54）。
-  離脱の処理として `destroy()` を使ってはならない (SHOULD NOT)。
+  `destroy()` は相手側へ `RST` を送って中断するため、相手側の処理は `error` / `close` で終わる。離脱は送信データを届ける `close()` で行う。`destroy()` は中断（破棄）専用とする (SHOULD NOT)。
 - 本節の補助は「止まらないこと」を保証しない。ブラウザが凍結・破棄したタブは、
   再読み込み後に §9.3 の `restoreState()` で状態を回復する。
 
@@ -1467,7 +1467,7 @@ HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させな�
 4. サーバーは応答送信後に `Connection: close` を返した場合、`end()` する。クライアントは `end` を待たずに接続を破棄してよい。
 5. アイドル接続（リクエストの途中でない接続）は `idleTimeoutMs`（既定 30 000 ms）で閉じる (SHOULD)。途中のリクエストは L4 のセッションタイムアウト（§8.5、300 000 ms）に委ねる。
 6. 応答本文の受信中に接続が切れた場合、`HTTPClient` は `HTTPConnectionClosedError` を投げる。`Content-Length` が宣言されていて実際のバイト数が足りない場合も同様とする (MUST)。
-7. **接続の終了は必ず `FIN`（`VirtualStream.end()`）で行う (MUST)。** `VirtualStream.destroy()` は `RST` も `FIN` も送らないため（§8.2）、これで閉じると相手側のストリームは `ESTABLISHED` のまま残り、L4 のセッションタイムアウト（300 000 ms）まで宙に浮く（#54）。HTTP 層の都合で接続を捨てるときも `end()` を使う。
+7. **正常な接続の終了は `FIN`（`VirtualStream.end()`）で行う (MUST)。** `VirtualStream.destroy()` は `RST` で相手に中断を伝えるため（§8.2）、相手側の `HTTPClient` は `HTTPConnectionClosedError` で終わる。応答を完了させて閉じる場合は `end()` を使う。接続を捨てる（資源の即時解放）場合にだけ `destroy()` を使ってよい。
 8. `HTTPServer.close()` は待ち受けを解除し、保持している全接続に `FIN` を送る (MUST)。送信中の応答は打ち切ってよい（`Connection: close` を返した接続は 4 に従う）。
 9. 読み取り途中のリクエスト本文がある状態で接続を閉じる場合、`HTTPServer` は本文の読み取りを `HTTPConnectionClosedError` で失敗させる (SHOULD)。これがないと、アプリケーションの `for await` が永久に待つ。
 
@@ -1640,5 +1640,5 @@ curl http://127.0.0.1:18080/api/echo?x=1
 ### 19.8 配布と実 WebRTC の依存
 
 - 実 WebRTC の実装（`@roamhq/wrtc` / `node-datachannel`）は**同梱しない**。`NodeWebRTCChannel` は `createPeerConnection` 注入を基本とし、`createNodeNetwork()` は既定の順序（`@roamhq/wrtc`、次に `node-datachannel`）で**導入済みのもの**を解決する。どちらも無ければ `WebRTCProviderUnavailableError` を投げ、導入方法を示す (MUST)。
-- 既知の制約（#61）: `node-datachannel` は、非ループバックのインターフェースがリンクローカルのみのホストで、既定の自動バインドでは ICE 候補を 0 件にすることがある。その場合は `peerConnectionOptions.bindAddress`（CLI は `--rtc-bind`）を指定する。`@roamhq/wrtc` は同条件で DataChannel が開くことを確認している。
+- 既知の制約（#61）: `node-datachannel` は、非ループバックのインターフェースがリンクローカルのみのホストで、既定の自動バインドでは ICE 候補を 0 件にすることがある。その場合は `peerConnectionOptions.bindAddress`（CLI は `--rtc-bind`）を指定する。`@roamhq/wrtc` は同条件で DataChannel が開くことを確認している。 実装は、ICE 収集が候補 0 件で完了したときに警告を出す（候補の数は収集完了後の SDP で数える。設計 §3.31）。既定の bind は変えない。
 - `webtcp-bridge` の `bin` 登録と npm 公開は #49 に従い後続とする。M8 では `examples/bridge.mjs` を正とし、`webtcp_jslib` の `exports` には含めない（ブラウザ安全な `index.ts` へは再エクスポートしない）。

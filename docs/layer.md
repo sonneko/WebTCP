@@ -1,6 +1,6 @@
 # WebTCP のレイヤーと名前解決
 
-> この文書は [specification.md](../specification.md) 0.8.0 / [design.md](../design.md) 0.8.0 の補助解説です。
+> この文書は [specification.md](../specification.md) 0.8.1 / [design.md](../design.md) 0.8.1 の補助解説です。
 > M4 で `NameServer` と `webtcp://` URL が、M5 で `domain.global` の**所有権レコード検証**（#25）が、M6 で **HTTP トンネル**（#50）が実装済みです。
 > 実ブロックチェーンへの裏付け（#42）とレジストリの運用ガバナンス（#43）は将来課題として切り出しています。
 > マイルストーンは [plan.md](../plan.md) を参照してください。

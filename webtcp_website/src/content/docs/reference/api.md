@@ -72,7 +72,7 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 - `readExact(bytes: number): Promise<Uint8Array>` — 厳密に `bytes` バイトが揃うまで待機して返す。
 - `pause(): this` / `resume(): this` — フローイング配送の一時停止・再開。
 - `end(): void` / `close(): void` — 送信バッファをフラッシュ後に `FIN` を送信（Half-Close）。
-- `destroy(): void` — `FIN` / `TIME_WAIT` を待たず即座に終了。
+- `destroy(): void` — 相手へ `RST` を送って即座に中断（abort）。`FIN` / `TIME_WAIT` は待たない。正常終了は `end()`（#54）。
 - `getStats(): VirtualStreamStats` — `rtoMs`, `srttMs`, `cwndBytes`, `ssthreshBytes`, `inFlightBytes`, `retransmissions`, `fastRetransmits`, SACK 統計などを取得。
 - `readonly state: StreamState` / `readonly readableLength: number` / `readonly initialSendSeqNum: SequenceNumber`
 
@@ -236,6 +236,32 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 - `keyDirectory: KeyDirectory | null` — 公開鍵ディレクトリ
 - `verifier: IPacketVerifier` — 実際に使われている検証器
 - オプション `requireSignatures?: boolean` — 既定は鍵管理 / `Ed25519PacketVerifier` 指定時に `true`
+
+## ブリッジ API（M8 / #52）
+
+- `createNodeNetwork({ signaling, keyManager?, peerConnectionOptions?, rtcPackages?, createPeerConnection?, iceServers?, logger?, ... })`: 導入済みの Node.js WebRTC 実装（既定の順は `@roamhq/wrtc` → `node-datachannel`）で `WebTCPNetwork` を作る。`peerConnectionOptions` は RTC 設定へ浅くマージする（例: `{ bindAddress: '127.0.0.1' }`）。
+- `resolveNodeRTCProvider({ packages? })`: 実装の名前と `createPeerConnection` を返す。無ければ `WebRTCProviderUnavailableError`（`tried` に試したパッケージ名の一覧）。
+- `DEFAULT_NODE_RTC_PACKAGES`: 既定の解決順（`['@roamhq/wrtc', 'node-datachannel']`）。
+- `WebTCPNetwork.signaturesRequired`: 署名必須（v2）として動いているかを返す読み取り専用の値。
+
+ブリッジ本体（`TcpBridge`、`BridgeSecurityError`、`isLoopbackHost`、`assertBridgeSecurity`）は Node 専用で、ブラウザ向けの入口からは再エクスポートしていません。`webtcp_jslib/dist/adapters/bridge/TcpBridge.js` から直接読み込みます（公開パッケージの `exports` にはまだ含めていません）。
+
+```ts
+// リポジトリ内では webtcp_jslib/dist を指定する（パッケージ公開は #49 の後）
+import { TcpBridge } from './webtcp_jslib/dist/adapters/bridge/TcpBridge.js';
+
+const bridge = new TcpBridge({
+    network,                           // requireSignatures（v2）のノードのみ
+    target: { nodeId, port: 8080 },
+    host: '127.0.0.1',                 // 既定。ループバック以外は allowNonLoopbackBind が必要
+    port: 18080,
+    onAccess: (entry) => console.log(entry), // open / refused / error / close
+});
+const address = await bridge.start();
+```
+
+- `TcpBridgeOptions`: `allowNonLoopbackBind?`、`allowUnsignedPeers?`（既定 false。v1 宛先の転送を許可する）、`keyWaitMs?`（既定 5000）、`connectTimeoutMs?`（既定 10000）、`logger?`、`onAccess?`。
+- `BridgeSecurityError`（`code`: `signatures-required` / `non-loopback-bind`）は起動時の安全条件の違反で投げられる。
 
 ## アダプタとロガー
 

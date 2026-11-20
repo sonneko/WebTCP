@@ -2,11 +2,11 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.8.0 |
-| 対応仕様 | `specification.md` 0.8.0 |
-| 対応設計 | `design.md` 0.8.0 |
+| 文書バージョン | 0.8.1 |
+| 対応仕様 | `specification.md` 0.8.1 |
+| 対応設計 | `design.md` 0.8.1 |
 | 最終更新 | 2026-11-17 |
-| 現在のマイルストーン | **M8 実装（ブラウザ外の TCP クライアント向けブリッジ / #52）** |
+| 現在のマイルストーン | **0.8.1（M8 の未検証項目の検証と、既知バグの修正・土台固め）** |
 
 ---
 
@@ -208,26 +208,24 @@
 - [x] `examples/bridge-service.mjs`（確認用サービス）: `/api/echo`、`/big?n=`（大きな応答の確認用）、NameServer への名前登録
 - [x] テスト: `bridge.test.mjs`（6 件: 安全条件・TCP 往復・Half-Close・アクセスログ・300 KiB の sha256・HTTP 素通し・v1 拒否・非ループバック opt-in）、`node-provider.test.mjs`（6 件）、`bridge-webrtc.test.mjs`（実 WebRTC E2E 1 件。実装が無ければ skip）
 - [x] `README.md` / `docs/layer.md` の同期（ブリッジの入口と CLI）
-- [ ] `webtcp_website` の同期（ガイドへの追記は本サイクルでは未実施。§3.8.4 に記録）
+- [x] `webtcp_website` の同期（0.8.1 で `guides/bridge` を追加。M8 時点では未実施だった）
 - [x] Issue 起票: #61（ICE 候補 0 件）、#62（`allowHalfOpen` 既定）、#63（#40 テストの不安定さ）
 
 #### 3.8.3 検証状況（正直な記録）
 
 | 項目 | 結果 |
 | :--- | :--- |
-| `npm test`（`webtcp_jslib`） | 226 件中 225 件成功。失敗は #40 の既存テストの負荷依存の不安定さ（#63）。`main` の `8ab97c2` でも同じ。 |
+| `npm test`（`webtcp_jslib`） | 226 件中 225 件成功（M8 時点の記録）。失敗は #40 の既存テストの負荷依存の不安定さ（#63）。0.8.1 で #63 を修正し、233 件全通過。 |
 | 実 WebRTC E2E（テスト） | `bridge-webrtc.test.mjs` 成功（`node-datachannel`、`bindAddress: 127.0.0.1`） |
 | 実プロセスの E2E（シグナリング・Node サービス・ブリッジ・`curl`） | 成功。`curl /api/echo?x=1` のクエリ、`/`、`--resolve-name` による名前解決、512 KiB の応答（2 回・すべて 'x' を確認）を確認。アクセスログに `open` / `close` と転送バイト数が出ることを確認。 |
 | 安全条件（CLI） | `0.0.0.0` の待ち受けは `--allow-non-loopback` 無しで拒否。名前を `--resolve-name` 無しで渡すと拒否。いずれもネットワーク参加前に停止する。 |
-| `@roamhq/wrtc` | 導入して `RTCPeerConnection` の読み込みと、既定バインドでの DataChannel 開通を確認（単体の probe）。**ブリッジの E2E は未実施**（既定順序の先頭だが、テストは `node-datachannel` で行った）。 |
-| **ブラウザ上のサービスへの E2E（Chromium）** | **未検証**。サンドボックスで Playwright の Chromium 導入が失敗したため、ブラウザ側サービスへの curl 経由確認は行えなかった。Node 上のサービスで代替した。 |
+| `@roamhq/wrtc` | M8 時点は単体の probe のみ。**0.8.1 で検証済み**（§3.9.3）。 |
+| **ブラウザ上のサービスへの E2E（Chromium）** | M8 時点は未検証（Playwright のブラウザ取得が失敗）。**0.8.1 で検証済み**（§3.9.3）。 |
 | 半クローズ後の応答 | テストと実プロセス（`curl`）の双方で確認。#62 の修正で解消。 |
 
 #### 3.8.4 M8 のスコープ外（記録）
 
 - `webtcp-bridge` の `bin` と npm 公開（#49 の決定に従う）。
-- ブラウザ上のサービスへの Chromium E2E（上記の理由）。
-- `webtcp_website` のガイド更新（未実施）。
 - ローカル側の認証、UDP、SOCKS、接続数上限、受信ウィンドウ（#56）。
 - ブリッジ経由のブラウザページからの CSRF 的要求（仕様 §19.4 の 5 の既知の制約。ループバック既定で緩和）。
 
@@ -279,7 +277,7 @@ M3 の NodeId 鍵指紋化により**ノードの真正性**は検証できる�
 | HTTP のフロー制御 | 受信ウィンドウの広告が無く、大きな HTTP 応答は受信側メモリに依存する（`specification.md` §8.3.1）。 → #56 |
 | HTTP のフル実装 | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従 → #57 |
 | HTTP の性能 | ヘッダパースのゼロコピー化、接続プールの上限・LRU（#58）、`chunked` 書き込みのバッファリング。ベンチマーク未整備。 |
-| `VirtualStream.destroy()` の通知 | `destroy()` が RST も FIN も送らない。アプリケーションが接続を捨てると相手が `ESTABLISHED` のまま残る → #54 |
+| `VirtualStream.destroy()` の通知 | ~~`destroy()` が RST も FIN も送らない~~（0.8.1 で修正。`destroy()` は RST で中断する）→ #54 |
 | パフォーマンス | シリアライザのゼロコピー化、バッファプール、大量セッション時のベンチマーク。Ed25519 署名のバッチ検証。 |
 | 相互運用 | v1 のみのノードとの併存運用（`NullPacketVerifier` + `requireSignatures: false`）。 |
 
@@ -371,7 +369,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | # | 種別 | 内容 | 扱い |
 | :--- | :--- | :--- | :--- |
 | #50 | enhancement | アプリケーション層 HTTP トンネル（L7）が未実装 | 本 PR で実装 → close |
-| #54 | bug | `VirtualStream.destroy()` が RST も FIN も送らず、相手側ストリームが `ESTABLISHED` のまま残る（M6 実装中に発見。HTTP 層は `end()` のみで回避） | 起票して M7 以降。仕様 §16.5 の 7〜9 に回避規則を明記 |
+| #54 | bug | `VirtualStream.destroy()` が RST も FIN も送らず、相手側ストリームが `ESTABLISHED` のまま残る（M6 実装中に発見。HTTP 層は `end()` のみで回避） | 0.8.1 で修正（§3.9）→ close |
 | #55 | documentation | M6 開始時の網羅同期チェックで見つかった文書の陳腐化（`plan.md` の M5 ステータス、README の M4「実装済み」・テスト件数、`path` / `query` の記述、`DomainQueryTransport` の残存、全角混入） | 本 PR で修正 → close |
 | #56 | enhancement | 受信ウィンドウ（フロー制御）の広告が無く、大きな HTTP 応答が受信側メモリに依存する | 起票して M7 以降（§4.4） |
 | #57 | enhancement | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従（HTTP 層のフル実装） | 起票して M7 以降（§4.4） |
@@ -385,3 +383,54 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #61 | bug | `node-datachannel` が、リンクローカルのみのホストで自動バインド時に ICE 候補を 0 件にする | 起票。回避は `peerConnectionOptions.bindAddress` / `--rtc-bind`。既定の扱いは未決 |
 | #62 | bug | Node の `net.createServer()` は既定で `allowHalfOpen: false`。半クローズ後の応答が届かない（ブリッジ実装中に発見） | 本 PR で修正（`allowHalfOpen: true`）。回帰テストあり → close |
 | #63 | bug | `domain-resolution` の経過時間アサーション（#40）が全体テストの負荷で不安定 | 起票。本 PR では触らない（既存の不安定さ） |
+
+### 3.9 0.8.1（本サイクル / パッチ: M8 の未検証項目の検証と既知バグの修正）
+
+#### 3.9.1 スコープ判断
+
+- **対象**: M8 で未検証のまま残した 3 項目（Chromium のブラウザ E2E、`@roamhq/wrtc` 経由のブリッジ E2E、website ガイド）の検証と記録。既知の不具合 #54（`destroy()`）、#63（フレーキーなテスト）、#61（ICE 候補 0 件）の修正・切り分け。ドキュメントとソースのズレ（§17 → §19、#55 の残り）。
+- **バージョン**: 0.8.1（パッチ）。仕様・設計・計画・README・docs の版表記を揃えた。npm パッケージの版（`package.json` 0.1.0）は #49 まで変えない。
+- **プロトコルは変えない**: 仕様 §8.2 の `destroy()` の意味づけを変えたが、ワイヤー形式（パケット）は変えていない。RST は既存のフラグ。
+
+#### 3.9.2 実装チェックリスト
+
+- [x] **#54**: `destroy()` が相手へ `RST` を送ってから `finalize()`。`TransportLayer` は対応セッションの無い `RST` に返信しない（ping-pong 防止）。受信 `RST` の `error` はリスナーがある場合だけ発火（例外防止）。仕様 §8.2 / §16.5 の 7 / §10、設計 §3.30、HTTP サーバーの注釈、website の API ページを同期。
+- [x] **#63**: `domain-resolution` の経過時間の上限を、デッドライン（500 ms）ではなく停止接続の待ち（8000 ms）に対して判定する（不変条件に合わせた）。
+- [x] **#61**: 既定のバインドは変えない。収集完了で候補 0 件なら `bindAddress` を指示する警告（`watchIceGathering`）。候補数は SDP で数える（設計 §3.31）。原因の切り分けは Issue に記録（ネイティブ側は未確認）。
+- [x] **§17 → §19 の参照修正**（`TcpBridge.ts` / `nodeProvider.ts` / `WebTCPNetwork.ts` / テスト / CLI）。
+- [x] **#55 の残り**: `crypto.ts` の簡体字（`前缀`）を接頭辞に直した。他の項目（M5 のステータス、README の M4/M5、#43〜#49 の目標、`queryTimeoutMs`、`id.ts` のコメント）は既に修正済みと確認。
+- [x] テスト: `destroy-abort.test.mjs`（4 件）、`node-provider.test.mjs`（ICE 警告 3 件を追加）、`bridge-webrtc.test.mjs`（`WEBTCP_TEST_RTC_BIND` で bind を選べるように）。
+- [x] 実ブラウザ E2E: `examples/verify-bridge-browser.mjs`（新規）、`examples/bridge/browser-service.{html,js}`（新規）。
+- [x] website: `guides/bridge`（新規）、サイドバー、`guides/http-tunnel` の注記、roadmap、protocol の版、API リファレンス（ブリッジ・プロバイダ解決・`destroy()`）。`npm run build` 成功（13 ページ）。
+
+#### 3.9.3 検証結果（0.8.1）
+
+| 項目 | 結果 |
+| :--- | :--- |
+| `npm test`（`webtcp_jslib`） | **233 件全通過**（M8 の 226 件 / 失敗 1 件から、#63 の修正と新規テスト 7 件） |
+| `destroy()` の回帰（ミューテーション） | 旧 `destroy()` に戻すとテスト 1・2 が失敗（peer が CLOSED にならない）。RST の返信抑止を外すとテスト 3 が失敗（ping-pong を検出）。いずれも修正後に全通過へ戻したことを確認 |
+| ICE 警告（実 `node-datachannel`） | 自動バインドで警告が出る。`127.0.0.1` では出ない（候補数は SDP で確認）。 |
+| `@roamhq/wrtc` 経由の bridge E2E | `bridge-webrtc.test.mjs` が **自動バインド**（`WEBTCP_TEST_RTC_BIND=`）と `127.0.0.1` の両方で通過。`node-datachannel` が自動バインドで失敗する条件でも通ることが、#61 の回避策として重要。 |
+| **Chromium のブラウザ E2E** | `examples/verify-bridge-browser.mjs` **9/9 通過**。Chromium 153（headless、署名付き v2 ノード）が 8080 で HTTP を公開し、ブリッジ経由で **実 curl** の `/api/echo?x=1`（runtime=browser）と `/big?n=524288`（sha256 一致）を往復。アクセスログの open / close、ページエラー無し。 |
+| website ビルド | `npm run build` 成功（13 ページ、`guides/bridge` を含む） |
+
+Chromium は次の手順で動かした（環境の記録。repo には含めない）。Playwright のブラウザ取得先は使えないため、npm レジストリの `@sparticuz/chromium` パッケージに含まれる Chromium バイナリを使った。このパッケージは共有ライブラリ（NSS 等）を同梱しているので、それを展開して `LD_LIBRARY_PATH` に指定した。`WEBTCP_CHROMIUM_PATH` と `LD_LIBRARY_PATH` を指定すれば、既存のブラウザでも同じスクリプトで検証できる。
+
+#### 3.9.4 0.8.1 のスコープ外（記録）
+
+- `node-datachannel` の既定バインドの扱い（#61 の残り）。原因がネイティブ側の仕様なら上流へ報告する。
+- `webtcp-bridge` の `bin` と npm 公開（#49）。
+- `VirtualStream` の受信ウィンドウ（#56）、HTTP 層のフル実装（#57）、接続プール（#58）。
+- ブラウザ E2E の CI 組み込み。CI（GitHub Actions）の `browser-e2e` ジョブの構成は本サイクルでは変えていない。
+
+### 6.8 0.8.1（本サイクル）で対応・起票した Issue
+
+| # | 種別 | 内容 | 扱い |
+| :--- | :--- | :--- | :--- |
+| #54 | bug | `destroy()` が RST を送らず、相手が `ESTABLISHED` のまま残る（M6 から持ち越し） | 本 PR で修正（`destroy()` は RST で中断。§3.9）→ close |
+| #63 | bug | `domain-resolution` の経過時間アサーション（#40）が全体テストの負荷で不安定 | 本 PR で修正（不変条件に合わせて判定を変更）→ close |
+| #61 | bug | `node-datachannel` が自動バインドで ICE 候補を 0 件にする | 調査の記録を Issue に残し、候補 0 件の警告を入れた（既定は変えない）。原因の切り分けは未確定のため open のまま |
+| #55 | documentation | M6 開始時の網羅同期チェックの残り（簡体字の `前缀`、§17 → §19） | 本 PR で修正。他の項目は既に修正済みと確認 |
+| #65 | bug | 対応セッションの無い RST に RST を返し、両端 `destroy()` で往復し続ける可能性（#54 修正中に発見） | 本 PR で修正（RST への返信を抑止）。仕様 §8.2 に MUST NOT |
+| #66 | bug | 受信 RST で `error` リスナーが無いと例外になる（#54 修正中に発見） | 本 PR で修正（リスナーがある場合のみ発火）。仕様 §8.2 に明記 |
+| #67 | bug | `node-datachannel/polyfill` が `icecandidate` を `addEventListener` のリスナーへ配送しない（#61 の調査中に発見） | 起票。本 PR では SDP で候補を数えて回避。上流の挙動は未確認 |
