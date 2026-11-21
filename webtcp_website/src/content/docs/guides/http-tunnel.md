@@ -86,8 +86,8 @@ try {
 | `HEAD`（本文抑止）、`Expect: 100-continue`（既定は無効、`send100Continue` で有効化） | パイプライン |
 | エラー応答: `400` / `404` / `413` / `414` / `417` / `431` / `500` / `501` / `503` / `505` | 圧縮（`gzip` 等）、Cookie ジャー、認証、リダイレクト追従 |
 | CRLF 厳格・行長 / ヘッダ数 / ヘッダ合計の上限（§16.2.1） | TLS 終端（`webtcp://` の外側で行う） |
-| ヘッダ**インジェクション拒否**（値の CR/LF/NUL、名前の token 検証）とスマグリング拒否（`Content-Length` と `Transfer-Encoding` の併用） | 受信ウィンドウ（フロー制御、[#55](https://github.com/sonneko/WebTCP/issues/55)） |
-| `HTTPRouter`（`/users/:id` 記法） | 接続プールの上限 / LRU（[#57](https://github.com/sonneko/WebTCP/issues/57)） |
+| ヘッダ**インジェクション拒否**（値の CR/LF/NUL、名前の token 検証）とスマグリング拒否（`Content-Length` と `Transfer-Encoding` の併用） | 受信ウィンドウ（フロー制御、[#56](https://github.com/sonneko/WebTCP/issues/56)） |
+| `HTTPRouter`（`/users/:id` 記法） | 接続プールの上限 / LRU（[#58](https://github.com/sonneko/WebTCP/issues/57)） |
 
 ## セキュリティ境界
 
@@ -107,4 +107,4 @@ try {
 
 - タブが非可視になると凍結され、その間は待ち受けに応答しません。リロード後は `restoreState()` で待ち受けポート・名前・所有権レコードを回復できますが、HTTP ハンドラは付け直す必要があります（[#51](https://github.com/sonneko/WebTCP/issues/51)、仕様 §9）。
 - 既存の TCP/HTTP クライアント（curl 等）は、ブリッジ（M8 / [#52](https://github.com/sonneko/WebTCP/issues/52)）を通して呼べます。ブリッジの使い方は[ブリッジのガイド](/guides/bridge/)を参照してください。
-- パケット形式に受信ウィンドウが無いため、巨大な応答は受信側メモリに依存します（[#55](https://github.com/sonneko/WebTCP/issues/55)）。
+- パケット形式に受信ウィンドウが無いため、巨大な応答は受信側メモリに依存します（[#56](https://github.com/sonneko/WebTCP/issues/56)）。

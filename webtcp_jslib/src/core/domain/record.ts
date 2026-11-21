@@ -7,6 +7,7 @@
  * 後から検証できるようにするための別オブジェクトである。
  */
 
+import { rejectUnknownKeys } from './internal.js';
 import {
     ED25519_PUBLIC_KEY_BYTES,
     Ed25519KeyManager,
@@ -151,18 +152,6 @@ export function domainRecordToJSON(record: DomainOwnershipRecord): Record<string
 /** レコード全体を UTF-8 JSON バイト列へ変換する。 */
 export function serializeDomainRecord(record: DomainOwnershipRecord): Uint8Array {
     return encoder.encode(JSON.stringify(domainRecordToJSON(record)));
-}
-
-function rejectUnknownKeys(
-    value: Record<string, unknown>,
-    allowed: readonly string[],
-    where: string,
-): void {
-    for (const key of Object.keys(value)) {
-        if (!allowed.includes(key)) {
-            throw new DomainRecordError(`unknown field "${key}" in ${where}`, `${where}.${key}`);
-        }
-    }
 }
 
 function asRecord(value: unknown, where: string): Record<string, unknown> {

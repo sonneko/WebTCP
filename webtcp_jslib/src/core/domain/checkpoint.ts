@@ -13,6 +13,7 @@
  * を確認する。これにより「台帳が過去を書換えた」ことを PIN 以降で検出できる。
  */
 
+import { rejectUnknownKeys } from './internal.js';
 import {
     bytesToHex,
     decodeBase64Url,
@@ -92,18 +93,6 @@ export async function domainCheckpointHash(
     hashFn: DomainHashFn = defaultDomainHash,
 ): Promise<string> {
     return bytesToHex(await hashFn(canonicalDomainCheckpointBytes(checkpoint)));
-}
-
-function rejectUnknownKeys(
-    value: Record<string, unknown>,
-    allowed: readonly string[],
-    where: string,
-): void {
-    for (const key of Object.keys(value)) {
-        if (!allowed.includes(key)) {
-            throw new DomainRecordError(`unknown field "${key}" in ${where}`, `${where}.${key}`);
-        }
-    }
 }
 
 function assertIntegerRange(

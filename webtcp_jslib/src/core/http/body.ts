@@ -8,6 +8,7 @@
  * で受信を止める。これにより大きな応答でも一定メモリで扱える（design.md §3.24）。
  */
 
+import { concatBytes } from '../util/internal.js';
 import { HTTPBodyConsumedError, HTTPConnectionClosedError, HTTPResponseTooLargeError } from './errors.js';
 import type { HTTPBodyReader } from './message.js';
 import { HTTPChunkedDecoder } from './parser.js';
@@ -332,15 +333,8 @@ export class HTTPBodyStream implements HTTPBodyReader {
     }
 }
 
+/** 単一部分は参照をそのまま返す（コピーしない）。それ以外は `concatBytes` で連結する。 */
 function concat(parts: readonly Uint8Array[]): Uint8Array {
     if (parts.length === 1) return parts[0]!;
-    let total = 0;
-    for (const part of parts) total += part.byteLength;
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const part of parts) {
-        out.set(part, offset);
-        offset += part.byteLength;
-    }
-    return out;
+    return concatBytes(parts);
 }

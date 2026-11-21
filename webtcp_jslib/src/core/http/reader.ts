@@ -6,6 +6,7 @@
  * ストリームの分割位置に依存しない（1 バイトずつでも動く）。
  */
 
+import { concatBytes } from '../util/internal.js';
 import { HTTPParseError } from './errors.js';
 import {
     HTTPHeadParser,
@@ -60,7 +61,7 @@ export class HTTPMessageReader {
             for (const listener of [...this.bodyListeners]) listener(chunk);
             return;
         }
-        this.buffer = this.buffer.byteLength === 0 ? new Uint8Array(chunk) : concat(this.buffer, chunk);
+        this.buffer = this.buffer.byteLength === 0 ? new Uint8Array(chunk) : concatBytes([this.buffer, chunk]);
         this.wake();
     };
 
@@ -195,9 +196,3 @@ export class HTTPMessageReader {
     }
 }
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-    const out = new Uint8Array(a.byteLength + b.byteLength);
-    out.set(a, 0);
-    out.set(b, a.byteLength);
-    return out;
-}

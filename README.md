@@ -10,7 +10,7 @@ WebTCPは、ブラウザを単なるクライアントではなく、**自己完
 
 ブラウザの制限付きの`fetch`を使っているわけではないので、TCPレイヤーから自由に通信を操ることができます。
 
-> **現在のステータス**: **0.8.1 実装済み**（M8 の未検証項目を実ブラウザ・`@roamhq/wrtc` で検証し、既知バグ #54・#63 を修正）。**M8（ブラウザ外の TCP クライアント向けブリッジ）実装済み**。M7（生存期間: サービス役の状態の永続化・復元と稼働維持の補助）実装済み。M6 で **M6（アプリケーション層 HTTP トンネル）実装済み**。M5 までの NameServer / `webtcp://` URL / 永続 NodeId / 所有者署名付きドメインレコード・Merkle 台帳に対応したうえで、**`serveHTTP()` / `fetchURL()` による HTTP/1.1 サブセット（リクエストライン・ヘッダ・本文・`keep-alive`・`chunked`）**を追加しました。`webtcp://` URL の `path` / `query` はリクエストターゲットとして実際に転送されます（`fragment` は送りません）。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43）。HTTP はサブセットです。稼働維持（#51）は M7 で部分的に対応しました（状態の永続化・復元と keep-alive 補助、仕様 §9）が、非可視タブの凍結中は到達できないままです。curl や既存アプリから入るブリッジ（M8 / #52、ループバック既定・署名必須・アクセスログ、仕様 §19）を追加しました。ブラウザ上のサービスへの Chromium E2E は未検証です。詳細は [plan.md](./plan.md)・[仕様 §14](./specification.md)・[仕様 §16](./specification.md) を参照してください。
+> **現在のステータス**: **0.8.1**。M0〜M8 の実装が main に反映済みです。M8 はブラウザ外の TCP クライアント向けブリッジ（#52、仕様 §19）。0.8.1 では M8 の未検証項目（ブラウザ上のサービスへの Chromium E2E、`@roamhq/wrtc` 経由のブリッジ）を検証し、既知バグ #54・#63 を修正しました。M7 は生存期間（状態の永続化・復元と稼働維持の補助、仕様 §9）、M6 は HTTP/1.1 サブセットのトンネル（仕様 §16）、M5 は `domain.global` の検証可能な所有権証明（仕様 §14）、M4 は NameServer と `webtcp://` URL（仕様 §13）です。ブラウザにブロックチェーンクライアントは組み込みません（実チェーンへの裏付けは #42、レジストリ運用ガバナンスは #43）。詳細は [plan.md](./plan.md) と [仕様書](./specification.md) を参照してください。
 
 ## 主な機能
 
@@ -127,7 +127,7 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 - **永続化と衝突検出**: ブラウザ復元時は署名チャレンジで秘密鍵と公開鍵の対応を検証。Node.js は `NodeKeyManager.open({ keyFile })`。同一 NodeId に異なる鍵が対応する場合は `NodeIdCollisionError`。
 - `keyManager` を渡さない場合は後方互換のため v1（署名なし）で動作します。
 
-### 現状の制約（M6）
+### 現状の制約
 
 - 鍵のローテーション（同一 NodeId のままの鍵更新）、アプリケーションデータの E2E 暗号化、明示的なリプレイ検知の強化は未実装です（[specification.md](./specification.md) §11.7）。
 - Web Crypto の Ed25519 は Chrome 137+ / Firefox 129+ / Safari 17+ / Node.js 22+ です。非対応環境では v1 にフォールバックします。
@@ -145,17 +145,17 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 
 - ブラウザ同士で、中継サーバー無しに TCP 相当の双方向通信ができます（仮想ポート多重化、3 ウェイハンドシェイク、Half-Close、自動分割、動的 RTO / 輻輳制御 / SACK）。
 - ノードは身元（Ed25519 鍵と指紋から導出した NodeId）を自己証明でき、パケットは改ざん検知されます。中継ノードを信頼せずに公開鍵を学習できます。
-- 名前を NodeId へ解決でき（M4）、M5 以降は `.domain.global` に限って「その名前をその NodeId に束縛する権利を持つ鍵」まで検証できます。サーバー役のブラウザは `listen()` するだけで、インフラはシグナリング用の HTTP ハブのみです。
+- 名前を NodeId へ解決でき（M4）、M5 では `.domain.global` に限って「その名前をその NodeId に束縛する権利を持つ鍵」まで検証できます。サーバー役のブラウザは `listen()` するだけで、インフラはシグナリング用の HTTP ハブのみです。
 - **HTTP をそのまま話せます（M6 / #50）**。サーバー側は `network.serveHTTP(8080, handler)` で仮想ポートに HTTP サービスを公開し、クライアント側は `network.fetchURL('webtcp://name:8080/api?x=1', { nameServer })` で `path` / `query` を転送してリクエスト/レスポンスをやり取りできます。`HTTPRouter`、`keep-alive`、`chunked`、`HEAD`、`AbortSignal`、サイズ上限つきのストリーミング本文を含みます（HTTP/2・WebSocket・`CONNECT`・圧縮・認証・リダイレクト追従は対象外）。
 
 **できていない部分（ビジョンに対して正直な穴）**
 
 1. **ブラウザは「サーバーとして生き残れない**（[#51](https://github.com/sonneko/WebTCP/issues/51)）。タブが非可視になればサスペンドされ、リロードすると待ち受け・名前登録・提供中の所有権レコード・HTTP ハンドラはすべて消えます（鍵だけが IndexedDB / PEM で永続する、という非対称）。 M6 までは Wake Lock も Service Worker も使っていませんでした。M7 は Wake Lock と無音オーディオを任意の補助として提供します（Service Worker は使いません）。
-2. **入口が WebRTC を話せる相手に限られる**（[#52](https://github.com/sonneko/WebTCP/issues/52) は M8 で対応）。ブリッジ（ローカル TCP → トンネル）で curl や既存アプリから入れるようになりました。ただし Node 側の WebRTC 実装は同梱していません（`@roamhq/wrtc` または `node-datachannel` を利用者が導入します）。
+2. **入口は WebRTC を話せる相手と、ブリッジ経由の TCP クライアントに限られる**。ブリッジ（M8 / [#52](https://github.com/sonneko/WebTCP/issues/52)）で curl や既存アプリからローカル TCP 経由で入れますが、UDP・SOCKS・ローカル側の認証は未実装です。Node 側の WebRTC 実装は同梱していません（`@roamhq/wrtc` または `node-datachannel` を利用者が導入します）。
 3. **所有権は「検証可能」であって「分散的に正しい」とは限らない**。参照レジストリは単一プロセス・メモリ保持・合意なしで、ログ鍵の信頼分配（監視、CT 風の散発収集、複数鍵）は未設計です（#42 / #43）。
 4. **マルチホップは動く範囲が限定的**です。RPF 厳格化と距離ベクトルの収束強化は #46、SSE / WebSocket シグナリングは #45 で未着手。転送をともなう構成は実験扱いしてください。
 5. **配布が未整備**（[#49](https://github.com/sonneko/WebTCP/issues/49)）。`@sonneko/webtcp-tunneler` は npm に未公開で、リポジトリからビルドする必要があります。
-6. **HTTP はサブセット**（#56 / #57 / #58）。HTTP/2・HTTP/3、`Upgrade` / WebSocket ハンドシェイク、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従、TLS 終端は実装していません。受信ウィンドウの広告が無いため、大きな応答は受信側メモリに依存します（#56）。
+6. **HTTP はサブセット**。未実装の範囲と既知の穴は上記「現状の制約」を参照してください（#56 / #57 / #58）。
 
 要するに「ブラウザを自己完結型のサーバー実行環境に」という主張に対して、**プロトコル層（TCP 相当・身元・名前・所有権の検証・HTTP）は揃い、運用層（稼働時間・既存クライアントとの接続・信頼の分配・配布）がまだ無い**という状態です。1 と 2 が最大のギャップだと考えています。
 
@@ -444,8 +444,7 @@ const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' }); //
 | [specification.md](./specification.md) | プロトコル仕様 0.8.1（パケット形式、TCP セマンティクス、状態機械、シグナリング・ICE 契約、セキュリティ §11、**名前解決 §13**、**`domain.global` と所有権証明 §14**、**HTTP トンネル §16**、**ブリッジ §19**） |
 | [design.md](./design.md) | 実装構造と設計判断 |
 | [plan.md](./plan.md) | マイルストーン、将来課題、リスク |
-| [docs/layer.md](./docs/layer.md) | レイヤーと名前解決・所有権・HTTP の解説（M4〜M6 で実装済み部分と将来構想） |
-| [webtcp_website/](./webtcp_website/) | Astro + Starlight 公式ドキュメントサイト |
+| [webtcp_website/](./webtcp_website/) | Astro + Starlight 公式ドキュメントサイト。利用者向けの解説（レイヤー構成、名前解決、所有権、HTTP トンネル、ブリッジ）の正本 |
 
 ## ディレクトリ構成
 
@@ -453,12 +452,15 @@ const keys = await NodeKeyManager.open({ keyFile: './webtcp-identity.pem' }); //
 webtcp_jslib/      ライブラリ本体（TypeScript）
   src/core/        ブラウザ・Node 非依存のプロトコル実装（routing/keys, KeyDirectory, naming, domain, http を含む）
   src/adapters/    WebRTC / シグナリング / エントランス探索 / 鍵管理（keys） / HTTP レジストリクライアント
-  tests/           node:test によるテスト（205 件）
+  tests/           node:test によるテスト（233 件。WebRTC 実装が未導入の環境では 1 件がスキップされる）
   dist/            npm run build の生成物（Git 管理外）
 examples/
   server.mjs       静的配信 + シグナリングハブ + エントランス探索 + 参照ドメイン台帳（`/domain/*`）
   domain-registry.mjs  追記専用 Merkle 台帳の参照実装（実験用・メモリ保持）
   verify-browser.mjs Playwright 2 タブ実ブラウザ検証スクリプト
+  bridge.mjs / bridge-service.mjs  ブリッジ（M8）: ローカル TCP → webtcp:// の中継と、その対向のサービス役
+  verify-bridge-browser.mjs  ブリッジの Chromium E2E（Playwright が必要）
+  bridge/          上記 E2E がブラウザで動かすサービス（HTML / JS）
   demo/            2 タブデモ + STUN 設定例 + 内蔵自己チェック（`domain.global` / HTTP トンネル含む）
 webtcp_website/    公式ドキュメントサイト（Astro + Starlight）
 ```
@@ -484,8 +486,10 @@ npm run build
 - **M3（完了 / #28）**: Ed25519 署名（プロトコル v2）、NodeId の鍵指紋化、`BrowserKeyManager` / `NodeKeyManager`、公開鍵の自動配布
 - **M4（完了 / #25）**: NameServer（A/CNAME）、`webtcp://` URL、永続 NodeId と衝突検出、RT_UPDATE の受信元検証と鍵伝播
 - **M5（完了 / #25）**: `domain.global` の所有権レコード（Ed25519 署名 + canonical commitment）、追記専用 Merkle 台帳とチェックポイント、fail-closed 検証器と `DomainAuthority`、`NameServer` 統合、参照 HTTP レジストリ、デモと E2E 検証
+- **M6（完了 / #50）**: アプリケーション層 HTTP トンネル。`core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient` / `HTTPRouter`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。**切り出した将来課題**: 実チェーンへの裏付け #42、レジストリ運用ガバナンス #43、RPF 厳格化 #46、SSE/WebSocket シグナリング #45、HTTP のフル実装 #57、接続プールの上限 #58、受信フロー制御 #56
 - **M7（完了 / #51）**: 生存期間。`network.persistState()` / `restoreState()`（IndexedDB、待ち受けポート・A/CNAME・所有権レコードを保存し、復元時に所有権を再検証）、`neighbor-connected` / `neighbor-disconnected` の再発行、`startBrowserKeepAlive()`（Wake Lock・無音オーディオ・前面復帰の再接続・pagehide の終了処理）。仕様 §9。
-- **M6（完了 / #50）**: アプリケーション層 HTTP トンネル。`core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient` / `HTTPRouter`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。**切り出した将来課題**: 実チェーンへの裏付け #42、レジストリ運用ガバナンス #43、RPF 厳格化 #46、SSE/WebSocket シグナリング #45、稼働維持 #51、外部ブリッジ #52、HTTP のフル実装 #57、接続プールの上限 #58、受信フロー制御 #56
+- **M8（完了 / #52）**: ブラウザ外の TCP クライアント向けブリッジ。`examples/bridge.mjs` / `bridge-service.mjs`、ループバック既定・署名必須（v2）・アクセスログ（仕様 §19）。**切り出した将来課題**: UDP・SOCKS・ローカル側の認証、npm パッケージ化（#49）
+- **0.8.1（パッチ / #54・#63・#65・#66）**: M8 の未検証項目（Chromium E2E、`@roamhq/wrtc` 経由のブリッジ）を検証し、`destroy()` の RST 送信と RST 応答ループなどを修正
 
 詳細は [plan.md](./plan.md) を参照してください。
 

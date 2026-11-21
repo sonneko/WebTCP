@@ -8,6 +8,7 @@
  * SHA-256 のみを使うため、ブラウザでも Node でも依存ゼロで検証できる。
  */
 
+import { bytesEqual } from '../util/internal.js';
 import { decodeBase64Url, encodeBase64Url } from '../routing/keys.js';
 import { concatBytes, defaultDomainHash, prefixByte, type DomainHashFn } from './crypto.js';
 import { domainCommitmentBytes } from './record.js';
@@ -195,8 +196,3 @@ export async function verifyDomainMerkleProof(
     return bytesEqual(bound, expectedRoot);
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.byteLength !== b.byteLength) return false;
-    for (let i = 0; i < a.byteLength; i += 1) if (a[i] !== b[i]) return false;
-    return true;
-}

@@ -6,6 +6,7 @@
  * ここでは検証パスを通すための最小実装（HTTP レジストリのモックも兼ねる）に留める。
  */
 
+import { positiveInt } from '../util/internal.js';
 import {
     Ed25519KeyManager,
     NodeId,
@@ -82,10 +83,6 @@ interface LedgerEntry {
 /** 台帳の葉数の既定上限（specification.md §14.7）。 */
 export const MAX_DOMAIN_LEDGER_LEAVES = 65_536;
 
-function positiveInt(value: number, name: string): number {
-    if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
-    return value;
-}
 
 /** チェックポイント本文のハッシュ（次チェックポイントの `prevHash`）。 */
 export async function domainCheckpointHex(
