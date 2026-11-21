@@ -311,7 +311,7 @@ test('http-server: server.close() sends FIN so the client stream is not left dan
         );
         await waitFor(() => stream.state === 'ESTABLISHED');
         server.close();
-        // `destroy()` だけで閉じると相手は ESTABLISHED のまま残る（既知の落とし穴）
+        // `close()` は FIN で閉じるため、相手は CLOSE_WAIT / CLOSED へ遷移する（#54 の修正後も destroy は RST で中断する）
         await waitFor(() => stream.state === 'CLOSE_WAIT' || stream.state === 'CLOSED', {
             timeoutMs: 4000,
         });

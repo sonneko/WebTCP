@@ -366,10 +366,13 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
     }
 
     /**
-     * パケットや `TIME_WAIT` を待たず即座に破棄する。
-     * ネットワーク自体を停止するときに使う。
+     * 接続を異常終了（abort）する（#54）。
+     * 相手へ `RST` を送ってから即座に `CLOSED` へ遷移する。`FIN` の交換や `TIME_WAIT` は待たない。
+     * 相手側のストリームは `RST` を受けて `CLOSED` になり、`error` を発火する（リスナーがある場合）。
+     * 正常終了には `end()` を使う。`destroy()` 後の送信は失敗する。
      */
     public destroy(): void {
+        if (this.state !== 'CLOSED') void this.sendRst();
         this.finalize();
     }
 
@@ -642,7 +645,9 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
     private handleRst(): void {
         const error = new Error('Connection reset by remote peer (RST)');
         this.rejectPendingOperations(error);
-        this.emit('error', error);
+        // `error` にリスナーが無いと EventEmitter は例外を投げ、パケット受信経路を壊す。
+        // リスナーが無い場合は状態だけを閉じる（相手が destroy() した正当な結果のため）。
+        if (this.listenerCount('error') > 0) this.emit('error', error);
         this.finalize();
     }
 

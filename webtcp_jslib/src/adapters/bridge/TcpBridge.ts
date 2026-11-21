@@ -1,10 +1,10 @@
 /**
- * ローカル TCP → WebTCP トンネルのブリッジ（#52 / specification.md §17）。
+ * ローカル TCP → WebTCP トンネルのブリッジ（#52 / specification.md §19）。
  *
  * ローカルの TCP ソケット（curl・既存アプリ・ブラウザ）を、仮想ポート経由で
  * リモートノードのサービスへ双方向に中継する。WebRTC を話せない外部クライアントの入口になる。
  *
- * ## 安全上の前提（§17.3、MUST）
+ * ## 安全上の前提（§19.4、MUST）
  * - ブリッジは**認証なし**でトンネルを開く。したがって次を強制する。
  *   1. `network.signaturesRequired` と鍵管理が必要（プロトコル v2）。満たさなければ起動しない。
  *   2. 既定はループバック（`127.0.0.1` / `::1`）のみ待ち受ける。他のアドレスは明示的な許可が必要。
@@ -12,7 +12,7 @@
  *   4. すべての接続（開始・拒否・終了）を `onAccess` へ記録する。
  * - 本クラスは Node.js 専用（`node:net` を使う）。ブラウザ向けの `index` からは再公開しない。
  *
- * ## 転送（§17.4）
+ * ## 転送（§19.2）
  * - 上り: ソケット → `VirtualStream.send()`。送信バッファ満杯（`Send buffer full`）は `drain` を待って再試行する。
  * - 下り: `VirtualStream` の `data` → `socket.write()`。書き込みが詰まったら `resume` を止める。
  * - Half-Close: クライアントの FIN は `stream.end()`、リモートの FIN は `socket.end()` へ伝える。
@@ -69,9 +69,9 @@ export interface TcpBridgeOptions {
     host?: string;
     /** 待ち受けポート。既定 0（OS 割り当て）。 */
     port?: number;
-    /** ループバック以外のホストで待ち受けることを許可する（既定 false、§17.3）。 */
+    /** ループバック以外のホストで待ち受けることを許可する（既定 false、§19.4）。 */
     allowNonLoopbackBind?: boolean;
-    /** 公開鍵が不明な（v1 の）宛先への転送を許可する（既定 false、§17.3）。 */
+    /** 公開鍵が不明な（v1 の）宛先への転送を許可する（既定 false、§19.4）。 */
     allowUnsignedPeers?: boolean;
     /** 宛先の公開鍵を待つ時間（ms）。既定 {@link BRIDGE_KEY_WAIT_MS}。 */
     keyWaitMs?: number;
@@ -127,7 +127,7 @@ export function isLoopbackHost(host: string): boolean {
     return h === 'localhost' || h === '127.0.0.1' || h === '::1' || /^127\.\d+\.\d+\.\d+$/.test(h);
 }
 
-/** 起動前の安全条件を検査する（§17.3）。違反なら {@link BridgeSecurityError}。 */
+/** 起動前の安全条件を検査する（§19.4）。違反なら {@link BridgeSecurityError}。 */
 export function assertBridgeSecurity(
     network: WebTCPNetwork,
     options: { host: string; allowNonLoopbackBind?: boolean },
@@ -193,7 +193,7 @@ export class TcpBridge {
         if (this.closed) throw new Error('TcpBridge is closed');
         if (this.server) throw new Error('TcpBridge is already started');
         const net = await loadNodeNet();
-        // allowHalfOpen: クライアントの FIN 後もリモートからの応答を書き込むため（§17.4 Half-Close）。
+        // allowHalfOpen: クライアントの FIN 後もリモートからの応答を書き込むため（§19.2 Half-Close）。
         // 既定の false だと、読み取り側の終了で書き込み側も自動的に閉じられてしまう。
         const server = net.createServer({ allowHalfOpen: true }, (socket) => this.handleSocket(socket));
         await new Promise<void>((resolve, reject) => {

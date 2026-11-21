@@ -234,6 +234,12 @@ export class TransportLayer extends EventEmitter implements TransportContext {
             return;
         }
 
+        // RST への RST は返さない。両端が同時に destroy() すると、互いの RST を無いセッションへの
+        // 応答として返し続けて終わらなくなるため（#54）。
+        if (packet.flags === 'RST') {
+            this.logger.debug(`RST for unknown session ${packet.senderId}:${remotePort} -> ${localPort}; ignored.`);
+            return;
+        }
         this.logger.warn(
             `No session for ${packet.senderId}:${remotePort} -> ${localPort} (flags=${packet.flags}). Sending RST.`,
         );

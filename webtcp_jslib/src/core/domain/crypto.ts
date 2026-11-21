@@ -70,7 +70,7 @@ export async function verifyDomainEd25519(
     }
 }
 
-/** バイト列の連結（ハッシュ前缀付け用）。 */
+/** バイト列の連結（ハッシュの接頭辞付け用）。 */
 export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
     let length = 0;
     for (const part of parts) length += part.byteLength;

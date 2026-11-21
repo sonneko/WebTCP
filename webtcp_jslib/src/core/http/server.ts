@@ -311,9 +311,8 @@ export class HTTPServer {
     /**
      * 1 接続を閉じる（冪等）。
      *
-     * **常に `end()`（FIN）で閉じる。** `VirtualStream.destroy()` は RST も FIN も送らないため、
-     * 使うと相手側のストリームが `ESTABLISHED` のまま残る（Half-Close の非対称）。
-     * `force` のときだけ、ローカル資源を即座に解放するために `destroy()` する。
+     * **通常は `end()`（FIN）で閉じる。** `destroy()` は `RST` で相手に中断を伝えるため（#54）、
+     * 応答を完了させずに相手を失敗させる。`force` のときだけ、ローカル資源を即座に解放するために `destroy()` する。
      */
     private closeConnection(connection: Connection, force = false): void {
         if (connection.streamShutdown && !this.connections.has(connection)) return;

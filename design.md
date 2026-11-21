@@ -2,8 +2,8 @@
 
 | 項目 | 内容 |
 | :--- | :--- |
-| 文書バージョン | 0.8.0 |
-| 対応仕様 | `specification.md` 0.8.0 / プロトコル v2（v1 後方互換） |
+| 文書バージョン | 0.8.1 |
+| 対応仕様 | `specification.md` 0.8.1 / プロトコル v2（v1 後方互換） |
 | 最終更新 | 2026-11-17 |
 
 本書は `specification.md` を満たすための**実装構造と技術判断**を記述する。
@@ -378,7 +378,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **再広告は pull のまま**: 名前を隣接へ push すると「応答は自分のローカル登録だけ」（§13.2）の不変条件が崩れるうえ、所有権の主張を未要求で配ることになる。経路は既存の RT_UPDATE（`neighbor-connected` 時）が再広告するので、新しい制御パケットは導入しない。
 - **再発行は `WebTCPNetwork` で行う**: `LinkManager` の隣接イベントを転送し、利用者（keep-alive の再接続、UI）が `LinkManager` の内部に触れずに済むようにする。
 - **keep-alive はアダプタ層に置く**: Wake Lock・AudioContext・`visibilitychange`・`pagehide` はブラウザ依存なので `core/` には入れない（§3.2 の依存方針）。ブラウザ API はすべて注入可能にし、Node のテストで検証する。
-- **離脱は `close()`（FIN）**: `pagehide` の処理では `destroy()` を使わない。`destroy()` は相手のストリームを `ESTABLISHED` のまま残すため（#54）、終了ハンドシェイクを優先する。
+- **離脱は `close()`（FIN）**: `pagehide` の処理では `destroy()` を使わない。`destroy()` は中断（RST）であり、送信中のデータを相手に届けずに相手側を失敗させるため、終了ハンドシェイクを優先する。
 
 ### 3.29 ブリッジは TCP 中継に徹し、署名・ループバック・ログを起動条件にする（M8 / #52）
 
@@ -390,6 +390,21 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **ログは `onAccess` 関数に一本化する**。既定の出力先は `Logger`（`console` を直接使わない）。1 接続につき `open` と、`close` / `refused` / `error` のいずれか 1 件を記録する。`refused` の後に来る `close` は無視する（二重記録を防ぐ）。
 - **既定の RTC プロバイダ解決は `createNodeNetwork()` に置く**（`adapters/webrtc/nodeProvider.ts`）。順序は `@roamhq/wrtc`、`node-datachannel` の順で、`import()` の失敗は無視して次を試す。どれも無ければ `WebRTCProviderUnavailableError`（試した名前の一覧を含む）を投げる。`peerConnectionOptions` は RTC 設定へ浅くマージし、ICE の `bindAddress` などを利用者が上書きできるようにする（#61 の回避）。
 - **パッケージは分割しない（M8）**: `webtcp-bridge` の `bin` と `@sonneko/webtcp-bridge` の分割は、npm 公開の方針（#49）が決まるまで保留する。現時点でブリッジは `webtcp_jslib` 内の `adapters/bridge` に置き、CLI は `examples/bridge.mjs` とする。ブラウザ向けの `index.ts` からは再エクスポートせず、Node 専用の入口から使う（`dist/adapters/bridge/TcpBridge.js`）。
+
+### 3.30 `destroy()` は RST で相手に中断を伝える（#54 / 0.8.1）
+
+- **根拠**: 旧実装は `destroy()` が `finalize()` だけを呼び、相手のストリームが `ESTABLISHED` のまま残った（L4 のセッションタイムアウトまで資源を保持）。HTTP 層は `end()` だけで回避していた。
+- **決定**: `destroy()` は相手へ `RST` を送ってから `finalize()` する（RFC 793 の abort 相当）。名前は `abort()` を増やさず `destroy()` に意味を与えた。既存の呼び出し元（NameServer のタイムアウト、SessionManager の停止、`AbortSignal` の中断）は、いずれも中断の意図であり、相手に知らせる方が正しい。
+- **安全性の 2 つの前提**:
+  1. 受信した `RST` で `error` を発火するのは、リスナーがあるときだけ。EventEmitter は `error` にリスナーが無いと例外を投げ、受信経路を壊すため。
+  2. `TransportLayer` は、対応するセッションが無い `RST` へ `RST` を返さない。両端が同時に `destroy()` すると、無いセッションへの応答として `RST` を往復させ続けてしまうため（`destroy-abort.test.mjs` の「ping-pong」で検証）。
+- **正常終了との分離**: 正常終了は引き続き `end()`（FIN）。`close()` は `end()` の別名。
+
+### 3.31 ICE 候補 0 件は収集完了後の SDP で検出する（#61 / 0.8.1）
+
+- `node-datachannel` は、既定の自動バインドでリンクローカルのみのホストに ICE 候補を 0 件にすることがある（#61）。既定値は変えず、`createNodeNetwork()` が `icegatheringstatechange` で収集完了を検出し、候補 0 件なら警告ログを出す。
+- **候補の数はイベントではなく SDP（`localDescription.sdp` の `a=candidate:` 行）で数える。** `icecandidate` の配送は実装ごとに異なり（`node-datachannel/polyfill` では `addEventListener` のリスナーに届かなかった）、イベントに頼ると正常な接続まで誤って警告するため。
+- 検証: 自動バインドでは警告、`127.0.0.1` では警告なし（実 `node-datachannel` で確認）。
 
 ---
 
@@ -546,7 +561,7 @@ HTTPClient                                   HTTPServer
 - **HTTP 層（M6 / #50）**: パーサの分割耐性（1 バイトずつ／`\r` と `\n` の分離／ヘッダ途中の MSS 境界）、CRLF 厳格性、`Content-Length` / `chunked` の往復、上限（行長・ヘッダ数・本文）、ヘッダインジェクション拒否、`HTTPReader` の EOF 処理。
   LoopbackChannel 上の `HTTPServer` × `HTTPClient` による E2E（`keep-alive` での複数リクエスト再利用、`Connection: close` での FIN 後応答、`HEAD`、404/500、`413`、同時接続、`HTTPRouter`）。
   `HTTPClient` のタイムアウト・`AbortSignal`・`maxResponseBytes`・`text()` の二重読み取り拒否、サーバー idle timeout 後のプール再利用。
-  `HTTPServer.close()` が `FIN` を送ること（`destroy()` だけで閉じると相手が `ESTABLISHED` のまま残る回帰、#54）。
+  `HTTPServer.close()` が `FIN` を送ること（`destroy()` は `RST` で中断するため、正常な終了には使わない。#54）。
   実ブラウザ自己チェック（`?selftest=1`）に `serveHTTP` + `fetchURL` の 1 往復を追加（`examples/verify-browser.mjs` も検証）。
 - **実ブラウザ検証**:
   - ブラウザ内蔵の自己チェックモード（`/examples/demo/?selftest=1` および `?role=server/client&autostart=1`）。
