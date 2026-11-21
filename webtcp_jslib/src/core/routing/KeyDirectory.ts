@@ -1,3 +1,4 @@
+import { bytesEqual } from '../util/internal.js';
 import { NodeId } from '../types/protocol.js';
 import { IPublicKeyResolver } from './PacketVerifier.js';
 import {
@@ -199,10 +200,3 @@ export class KeyDirectory implements IPublicKeyResolver {
     }
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.byteLength !== b.byteLength) return false;
-    for (let i = 0; i < a.byteLength; i += 1) {
-        if (a[i] !== b[i]) return false;
-    }
-    return true;
-}

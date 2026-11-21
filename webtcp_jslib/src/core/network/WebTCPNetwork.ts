@@ -1,3 +1,4 @@
+import { bytesEqual } from '../util/internal.js';
 import { NodeId, VirtualPort } from '../types/protocol.js';
 import { IPacketSerializer } from '../types/serializer.js';
 import { EventEmitter } from '../util/EventEmitter.js';
@@ -631,8 +632,3 @@ export class WebTCPNetwork extends EventEmitter {
     }
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-    if (a.byteLength !== b.byteLength) return false;
-    for (let i = 0; i < a.byteLength; i += 1) if (a[i] !== b[i]) return false;
-    return true;
-}

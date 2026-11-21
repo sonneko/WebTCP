@@ -29,9 +29,10 @@
 | M3 | セキュリティ | ✅ 完了（#34 マージ済み） | Ed25519 署名（プロトコル v2）・NodeId の鍵指紋化・`KeyManager`（IndexedDB / node:crypto）・公開鍵の配布（#28） |
 | **M4** | **NameServer と webtcp:// URL** | ✅ 完了（#39 マージ済み） | NameServer（A/CNAME・ローカル登録・既知ノード問い合わせ）、`webtcp://`、永続 NodeId と衝突検出、デモ/サイト（#25） |
 | M5 | `domain.global` と検証可能なドメイン所有権証明 | ✅ 完了（PR #53 マージ済み） | 署名付き所有権レコード、追記型台帳の Merkle / チェックポイント検証、プラガブルな検証インターフェース、`NameServer` 統合、参照レジストリ（HTTP）、デモ（#25 / #40 / #41）。RPF 厳格化・SSE/WebSocket・鍵ライフサイクル等は #42〜#49 へ切り出し |
-| **M6** | **アプリケーション層 HTTP トンネル（L7）** | **実装済み（#50 / 本サイクル）** | `core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。将来課題は #51 / #52 と §4 に継続 |
-| **M7** | **生存期間（サービス役の稼働維持）** | **実装済み（#51 / 本サイクル）** | `persistState` / `restoreState`（IndexedDB）、`neighbor-*` の再発行、`startBrowserKeepAlive`（Wake Lock・無音オーディオ・前面復帰・pagehide）。仕様 §9 |
-| M8 | （未定） | 未着手 | 実チェーン検証（#42）、ガバナンス（#43）、RPF 厳格化（#46）、SSE/WebSocket（#45）、鍵ライフサイクル（#47）、リプレイ強化（#48）、パッケージ公開（#49）、ブリッジ（#52） |
+| **M6** | **アプリケーション層 HTTP トンネル（L7）** | **完了（#50）** | `core/http`（HTTP/1.1 サブセット）、`HTTPServer` / `HTTPClient`、`network.serveHTTP()` / `fetchURL()`、`webtcp://` の `path` / `query` 転送、デモと実ブラウザ検証。将来課題は #51 / #52 と §4 に継続 |
+| **M7** | **生存期間（サービス役の稼働維持）** | **完了（#51）** | `persistState` / `restoreState`（IndexedDB）、`neighbor-*` の再発行、`startBrowserKeepAlive`（Wake Lock・無音オーディオ・前面復帰・pagehide）。仕様 §9 |
+| **M8** | **ブラウザ外 TCP クライアント向けブリッジ** | **完了（#52）** | `examples/bridge.mjs` / `bridge-service.mjs`、ループバック既定・署名必須・アクセスログ（仕様 §19）。UDP・SOCKS・ローカル認証は未実装 |
+| 0.8.1 | M8 の未検証項目の検証と既知バグの修正 | 完了（#54・#63 ほか） | §3.9 |
 
 ## 3. 完了済みマイルストーンのスコープ
 
@@ -127,7 +128,7 @@
 - [x] PR #53 としてレビュー・マージ済み（`main`）。#25 は close 済み
 
 
-### 3.6 M6（実装済み / #50・本サイクル）
+### 3.6 M6（完了 / #50）
 
 着手前に main（`80488fd` = PR #53 マージ後）で**ドキュメントと実装の網羅同期チェック**をやり直し、下記の不整合を PR 内で修正した（新規 Issue は §6.6）。
 
@@ -165,7 +166,7 @@
 
 **M6 のスコープ外**: 稼働維持（#51）、ブリッジ（#52）、HTTP/2 以降（§16.9）、受信フロー制御（`specification.md` §8.3.1 に注記、Issue 化は §6.6）。
 
-### 3.7 M7（実装済み / #51・本サイクル）
+### 3.7 M7（完了 / #51）
 
 #### 3.7.1 スコープ判断
 
@@ -189,7 +190,7 @@
 
 ---
 
-### 3.8 M8（本サイクル / #52）
+### 3.8 M8（完了 / #52）
 
 #### 3.8.1 スコープ判断
 
@@ -229,9 +230,48 @@
 - ローカル側の認証、UDP、SOCKS、接続数上限、受信ウィンドウ（#56）。
 - ブリッジ経由のブラウザページからの CSRF 的要求（仕様 §19.4 の 5 の既知の制約。ループバック既定で緩和）。
 
+### 3.9 0.8.1（完了 / パッチ: M8 の未検証項目の検証と既知バグの修正）
+
+#### 3.9.1 スコープ判断
+
+- **対象**: M8 で未検証のまま残した 3 項目（Chromium のブラウザ E2E、`@roamhq/wrtc` 経由のブリッジ E2E、website ガイド）の検証と記録。既知の不具合 #54（`destroy()`）、#63（フレーキーなテスト）、#61（ICE 候補 0 件）の修正・切り分け。ドキュメントとソースのズレ（§17 → §19、#55 の残り）。
+- **バージョン**: 0.8.1（パッチ）。仕様・設計・計画・README・docs の版表記を揃えた。npm パッケージの版（`package.json` 0.1.0）は #49 まで変えない。
+- **プロトコルは変えない**: 仕様 §8.2 の `destroy()` の意味づけを変えたが、ワイヤー形式（パケット）は変えていない。RST は既存のフラグ。
+
+#### 3.9.2 実装チェックリスト
+
+- [x] **#54**: `destroy()` が相手へ `RST` を送ってから `finalize()`。`TransportLayer` は対応セッションの無い `RST` に返信しない（ping-pong 防止）。受信 `RST` の `error` はリスナーがある場合だけ発火（例外防止）。仕様 §8.2 / §16.5 の 7 / §10、設計 §3.30、HTTP サーバーの注釈、website の API ページを同期。
+- [x] **#63**: `domain-resolution` の経過時間の上限を、デッドライン（500 ms）ではなく停止接続の待ち（8000 ms）に対して判定する（不変条件に合わせた）。
+- [x] **#61**: 既定のバインドは変えない。収集完了で候補 0 件なら `bindAddress` を指示する警告（`watchIceGathering`）。候補数は SDP で数える（設計 §3.31）。原因の切り分けは Issue に記録（ネイティブ側は未確認）。
+- [x] **§17 → §19 の参照修正**（`TcpBridge.ts` / `nodeProvider.ts` / `WebTCPNetwork.ts` / テスト / CLI）。
+- [x] **#55 の残り**: `crypto.ts` の簡体字（`前缀`）を接頭辞に直した。他の項目（M5 のステータス、README の M4/M5、#43〜#49 の目標、`queryTimeoutMs`、`id.ts` のコメント）は既に修正済みと確認。
+- [x] テスト: `destroy-abort.test.mjs`（4 件）、`node-provider.test.mjs`（ICE 警告 3 件を追加）、`bridge-webrtc.test.mjs`（`WEBTCP_TEST_RTC_BIND` で bind を選べるように）。
+- [x] 実ブラウザ E2E: `examples/verify-bridge-browser.mjs`（新規）、`examples/bridge/browser-service.{html,js}`（新規）。
+- [x] website: `guides/bridge`（新規）、サイドバー、`guides/http-tunnel` の注記、roadmap、protocol の版、API リファレンス（ブリッジ・プロバイダ解決・`destroy()`）。`npm run build` 成功（13 ページ）。
+
+#### 3.9.3 検証結果（0.8.1）
+
+| 項目 | 結果 |
+| :--- | :--- |
+| `npm test`（`webtcp_jslib`） | **233 件全通過**（M8 の 226 件 / 失敗 1 件から、#63 の修正と新規テスト 7 件） |
+| `destroy()` の回帰（ミューテーション） | 旧 `destroy()` に戻すとテスト 1・2 が失敗（peer が CLOSED にならない）。RST の返信抑止を外すとテスト 3 が失敗（ping-pong を検出）。いずれも修正後に全通過へ戻したことを確認 |
+| ICE 警告（実 `node-datachannel`） | 自動バインドで警告が出る。`127.0.0.1` では出ない（候補数は SDP で確認）。 |
+| `@roamhq/wrtc` 経由の bridge E2E | `bridge-webrtc.test.mjs` が **自動バインド**（`WEBTCP_TEST_RTC_BIND=`）と `127.0.0.1` の両方で通過。`node-datachannel` が自動バインドで失敗する条件でも通ることが、#61 の回避策として重要。 |
+| **Chromium のブラウザ E2E** | `examples/verify-bridge-browser.mjs` **9/9 通過**。Chromium 153（headless、署名付き v2 ノード）が 8080 で HTTP を公開し、ブリッジ経由で **実 curl** の `/api/echo?x=1`（runtime=browser）と `/big?n=524288`（sha256 一致）を往復。アクセスログの open / close、ページエラー無し。 |
+| website ビルド | `npm run build` 成功（13 ページ、`guides/bridge` を含む） |
+
+Chromium は次の手順で動かした（環境の記録。repo には含めない）。Playwright のブラウザ取得先は使えないため、npm レジストリの `@sparticuz/chromium` パッケージに含まれる Chromium バイナリを使った。このパッケージは共有ライブラリ（NSS 等）を同梱しているので、それを展開して `LD_LIBRARY_PATH` に指定した。`WEBTCP_CHROMIUM_PATH` と `LD_LIBRARY_PATH` を指定すれば、既存のブラウザでも同じスクリプトで検証できる。
+
+#### 3.9.4 0.8.1 のスコープ外（記録）
+
+- `node-datachannel` の既定バインドの扱い（#61 の残り）。原因がネイティブ側の仕様なら上流へ報告する。
+- `webtcp-bridge` の `bin` と npm 公開（#49）。
+- `VirtualStream` の受信ウィンドウ（#56）、HTTP 層のフル実装（#57）、接続プール（#58）。
+- ブラウザ E2E の CI 組み込み。CI（GitHub Actions）の `browser-e2e` ジョブの構成は 0.8.1 では変えていない。
+
 ## 4. 将来課題
 
-### 4.1 セキュリティ（M3 完了、残課題は M7 以降）
+### 4.1 セキュリティ（M3 完了、残課題は未定）
 
 | 課題 | 内容 | 状態 |
 | :--- | :--- | :--- |
@@ -243,7 +283,7 @@
 | 鍵のローテーション | NodeId が鍵指紋であるため、鍵更新 = ノード ID 変更。証明書チェーン的な移行手段は未実装 | #47 |
 | 鍵の分散ストレージ | `IPublicKeyResolver` を実装した IPFS 等のバックエンド | #47 |
 
-### 4.2 ネットワーク強化（M7 以降）
+### 4.2 ネットワーク強化（未定）
 
 | 課題 | 内容 | 目標 |
 | :--- | :--- | :--- |
@@ -252,7 +292,7 @@
 | 鍵学習の最適化 | 未知公開鍵の待機（既定 5 秒）を、オンデマンドな鍵照会リクエストに置き換える。 | #47 |
 | API の中断伝播 | `connect()` / `connectToPeer()` / `TransportLayer.connect()` への `AbortSignal` 伝播（#40 の恒久対策）。 | #44 |
 
-### 4.3 名前解決と分散ドメイン（M4 / M5 で実装・残課題は M7 以降）
+### 4.3 名前解決と分散ドメイン（M4 / M5 で実装・残課題は未定）
 
 M3 の NodeId 鍵指紋化により**ノードの真正性**は検証できるが、**名前のグローバル所有権**は別問題である。M5 ではこれを「フルクライアントを載せない代わりに、検証可能にする」方針で解いた（specification.md §14、design.md §3.21）。チェーンへの実際の書き込み・実データとの照合は範囲外として切り出した。
 
@@ -352,30 +392,30 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #25 | enhancement | NameServer / `webtcp://` / `domain.global` / ブロックチェーン連携 | M5 で完遂 → PR #53 で close |
 | #40 | bug | `NameServer.resolve()` が `resolveTimeoutMs` / `AbortSignal` を `connect()` 宙吊り中に無視する | 本 PR で修正 |
 | #41 | bug | `Ed25519PacketVerifier` が注入シリアライザを無視し、`serializeForSigning` 欠落時に v1 署名対象へ黙ってフォールバック | 本 PR で修正 |
-| #42 | enhancement | 実チェーン（Namecoin / L1 / SPV / EVM 証明）によるアンカー検証 | M7 以降 |
-| #43 | enhancement | `domain.global` のガバナンス（紛争裁定・失効回収・複数ログ合意・IDNA） | M7 以降 |
-| #44 | enhancement | `connect()` 系への `AbortSignal` 伝播 | M7 以降 |
-| #45 | enhancement | SSE / WebSocket ベースの `ISignalingAdapter` | M7 以降 |
-| #46 | enhancement | RPF 厳格化と距離ベクトル収束強化 | M7 以降 |
-| #47 | enhancement | 鍵ライフサイクル（オンデマンド照会・ローテーション・分散ストレージ） | M7 以降 |
-| #48 | enhancement | セッション Nonce / タイムスタンプによるリプレイ検知 | M7 以降 |
-| #49 | enhancement | npm 公開・semver・`exports` サブパス | M7 以降 |
+| #42 | enhancement | 実チェーン（Namecoin / L1 / SPV / EVM 証明）によるアンカー検証 | 未定 |
+| #43 | enhancement | `domain.global` のガバナンス（紛争裁定・失効回収・複数ログ合意・IDNA） | 未定 |
+| #44 | enhancement | `connect()` 系への `AbortSignal` 伝播 | 未定 |
+| #45 | enhancement | SSE / WebSocket ベースの `ISignalingAdapter` | 未定 |
+| #46 | enhancement | RPF 厳格化と距離ベクトル収束強化 | 未定 |
+| #47 | enhancement | 鍵ライフサイクル（オンデマンド照会・ローテーション・分散ストレージ） | 未定 |
+| #48 | enhancement | セッション Nonce / タイムスタンプによるリプレイ検知 | 未定 |
+| #49 | enhancement | npm 公開・semver・`exports` サブパス | 未定 |
 | #50 | enhancement | アプリケーション層 HTTP トンネル（L7）未実装 — README 構想の後半 | ビジョン評価で起票 → **M6 で実装**（§6.6） |
 | #51 | enhancement | タブ停止・リロードに耐えるサービス継続（稼働維持と状態の永続化） | ビジョン評価で起票 → M7 で部分対応（仕様 §9） |
 | #52 | enhancement | ブラウザ外部の既存クライアントをトンネルへ入れるブリッジ | ビジョン評価で起票 → **M8 で実装**（§3.8） |
 
-### 6.6 M6（本サイクル）で対応・起票した Issue
+### 6.6 M6 で対応・起票した Issue
 
 | # | 種別 | 内容 | 扱い |
 | :--- | :--- | :--- | :--- |
 | #50 | enhancement | アプリケーション層 HTTP トンネル（L7）が未実装 | 本 PR で実装 → close |
 | #54 | bug | `VirtualStream.destroy()` が RST も FIN も送らず、相手側ストリームが `ESTABLISHED` のまま残る（M6 実装中に発見。HTTP 層は `end()` のみで回避） | 0.8.1 で修正（§3.9）→ close |
 | #55 | documentation | M6 開始時の網羅同期チェックで見つかった文書の陳腐化（`plan.md` の M5 ステータス、README の M4「実装済み」・テスト件数、`path` / `query` の記述、`DomainQueryTransport` の残存、全角混入） | 本 PR で修正 → close |
-| #56 | enhancement | 受信ウィンドウ（フロー制御）の広告が無く、大きな HTTP 応答が受信側メモリに依存する | 起票して M7 以降（§4.4） |
-| #57 | enhancement | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従（HTTP 層のフル実装） | 起票して M7 以降（§4.4） |
-| #58 | enhancement | `HTTPClient` の接続プールが上限・LRU を持たず、多数の `(nodeId, port)` で `VirtualStream` を保持し続ける | 起票して M7 以降（§4.4） |
+| #56 | enhancement | 受信ウィンドウ（フロー制御）の広告が無く、大きな HTTP 応答が受信側メモリに依存する | 起票して 未定（§4.4） |
+| #57 | enhancement | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従（HTTP 層のフル実装） | 起票して 未定（§4.4） |
+| #58 | enhancement | `HTTPClient` の接続プールが上限・LRU を持たず、多数の `(nodeId, port)` で `VirtualStream` を保持し続ける | 起票して 未定（§4.4） |
 
-### 6.7 M8（本サイクル）で対応・起票した Issue
+### 6.7 M8 で対応・起票した Issue
 
 | # | 種別 | 内容 | 扱い |
 | :--- | :--- | :--- | :--- |
@@ -384,46 +424,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #62 | bug | Node の `net.createServer()` は既定で `allowHalfOpen: false`。半クローズ後の応答が届かない（ブリッジ実装中に発見） | 本 PR で修正（`allowHalfOpen: true`）。回帰テストあり → close |
 | #63 | bug | `domain-resolution` の経過時間アサーション（#40）が全体テストの負荷で不安定 | 起票。本 PR では触らない（既存の不安定さ） |
 
-### 3.9 0.8.1（本サイクル / パッチ: M8 の未検証項目の検証と既知バグの修正）
-
-#### 3.9.1 スコープ判断
-
-- **対象**: M8 で未検証のまま残した 3 項目（Chromium のブラウザ E2E、`@roamhq/wrtc` 経由のブリッジ E2E、website ガイド）の検証と記録。既知の不具合 #54（`destroy()`）、#63（フレーキーなテスト）、#61（ICE 候補 0 件）の修正・切り分け。ドキュメントとソースのズレ（§17 → §19、#55 の残り）。
-- **バージョン**: 0.8.1（パッチ）。仕様・設計・計画・README・docs の版表記を揃えた。npm パッケージの版（`package.json` 0.1.0）は #49 まで変えない。
-- **プロトコルは変えない**: 仕様 §8.2 の `destroy()` の意味づけを変えたが、ワイヤー形式（パケット）は変えていない。RST は既存のフラグ。
-
-#### 3.9.2 実装チェックリスト
-
-- [x] **#54**: `destroy()` が相手へ `RST` を送ってから `finalize()`。`TransportLayer` は対応セッションの無い `RST` に返信しない（ping-pong 防止）。受信 `RST` の `error` はリスナーがある場合だけ発火（例外防止）。仕様 §8.2 / §16.5 の 7 / §10、設計 §3.30、HTTP サーバーの注釈、website の API ページを同期。
-- [x] **#63**: `domain-resolution` の経過時間の上限を、デッドライン（500 ms）ではなく停止接続の待ち（8000 ms）に対して判定する（不変条件に合わせた）。
-- [x] **#61**: 既定のバインドは変えない。収集完了で候補 0 件なら `bindAddress` を指示する警告（`watchIceGathering`）。候補数は SDP で数える（設計 §3.31）。原因の切り分けは Issue に記録（ネイティブ側は未確認）。
-- [x] **§17 → §19 の参照修正**（`TcpBridge.ts` / `nodeProvider.ts` / `WebTCPNetwork.ts` / テスト / CLI）。
-- [x] **#55 の残り**: `crypto.ts` の簡体字（`前缀`）を接頭辞に直した。他の項目（M5 のステータス、README の M4/M5、#43〜#49 の目標、`queryTimeoutMs`、`id.ts` のコメント）は既に修正済みと確認。
-- [x] テスト: `destroy-abort.test.mjs`（4 件）、`node-provider.test.mjs`（ICE 警告 3 件を追加）、`bridge-webrtc.test.mjs`（`WEBTCP_TEST_RTC_BIND` で bind を選べるように）。
-- [x] 実ブラウザ E2E: `examples/verify-bridge-browser.mjs`（新規）、`examples/bridge/browser-service.{html,js}`（新規）。
-- [x] website: `guides/bridge`（新規）、サイドバー、`guides/http-tunnel` の注記、roadmap、protocol の版、API リファレンス（ブリッジ・プロバイダ解決・`destroy()`）。`npm run build` 成功（13 ページ）。
-
-#### 3.9.3 検証結果（0.8.1）
-
-| 項目 | 結果 |
-| :--- | :--- |
-| `npm test`（`webtcp_jslib`） | **233 件全通過**（M8 の 226 件 / 失敗 1 件から、#63 の修正と新規テスト 7 件） |
-| `destroy()` の回帰（ミューテーション） | 旧 `destroy()` に戻すとテスト 1・2 が失敗（peer が CLOSED にならない）。RST の返信抑止を外すとテスト 3 が失敗（ping-pong を検出）。いずれも修正後に全通過へ戻したことを確認 |
-| ICE 警告（実 `node-datachannel`） | 自動バインドで警告が出る。`127.0.0.1` では出ない（候補数は SDP で確認）。 |
-| `@roamhq/wrtc` 経由の bridge E2E | `bridge-webrtc.test.mjs` が **自動バインド**（`WEBTCP_TEST_RTC_BIND=`）と `127.0.0.1` の両方で通過。`node-datachannel` が自動バインドで失敗する条件でも通ることが、#61 の回避策として重要。 |
-| **Chromium のブラウザ E2E** | `examples/verify-bridge-browser.mjs` **9/9 通過**。Chromium 153（headless、署名付き v2 ノード）が 8080 で HTTP を公開し、ブリッジ経由で **実 curl** の `/api/echo?x=1`（runtime=browser）と `/big?n=524288`（sha256 一致）を往復。アクセスログの open / close、ページエラー無し。 |
-| website ビルド | `npm run build` 成功（13 ページ、`guides/bridge` を含む） |
-
-Chromium は次の手順で動かした（環境の記録。repo には含めない）。Playwright のブラウザ取得先は使えないため、npm レジストリの `@sparticuz/chromium` パッケージに含まれる Chromium バイナリを使った。このパッケージは共有ライブラリ（NSS 等）を同梱しているので、それを展開して `LD_LIBRARY_PATH` に指定した。`WEBTCP_CHROMIUM_PATH` と `LD_LIBRARY_PATH` を指定すれば、既存のブラウザでも同じスクリプトで検証できる。
-
-#### 3.9.4 0.8.1 のスコープ外（記録）
-
-- `node-datachannel` の既定バインドの扱い（#61 の残り）。原因がネイティブ側の仕様なら上流へ報告する。
-- `webtcp-bridge` の `bin` と npm 公開（#49）。
-- `VirtualStream` の受信ウィンドウ（#56）、HTTP 層のフル実装（#57）、接続プール（#58）。
-- ブラウザ E2E の CI 組み込み。CI（GitHub Actions）の `browser-e2e` ジョブの構成は本サイクルでは変えていない。
-
-### 6.8 0.8.1（本サイクル）で対応・起票した Issue
+### 6.8 0.8.1 で対応・起票した Issue
 
 | # | 種別 | 内容 | 扱い |
 | :--- | :--- | :--- | :--- |

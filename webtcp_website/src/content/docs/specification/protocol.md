@@ -1,6 +1,6 @@
 ---
 title: プロトコル仕様サマリー
-description: specification.md（0.7.0 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、HTTP トンネル、シグナリング契約の要約。
+description: specification.md（0.8.1 / プロトコル v2）のパケット形式、TCP セマンティクス、ルーティング、Ed25519 署名、名前解決、domain.global 所有権、HTTP トンネル、シグナリング契約の要約。
 ---
 
 このページはリポジトリの `specification.md`（バージョン 0.8.1 / プロトコル v2、v1 は受信のみ後方互換）の要約です。規範的な定義（RFC 2119 キーワードを含む全文）はリポジトリルートの `specification.md` を参照してください。
@@ -109,3 +109,13 @@ HTTP/1.1 のサブセットを `VirtualStream` のバイト列として運びま
 - **ワイヤー拡張**: 名前問い合わせ JSON に `wantOwnership`（要求）と `ownership`（応答）を追加した後方互換拡張です。L3/L4 フラグは増やしません。
 - **HTTP レジストリ（オプショナル）**: `POST /domain/record`、`GET /domain/record?name=|?nodeId=`、`GET /domain/checkpoint`、`GET /domain/checkpoints?after=&to=`、`GET /domain/log`。改ざんは `400`、`serial` 衝突は `409`、0 件は `404`。
 - **未実装**: 実ブロックチェーンへの裏付け（#42）、レジストリ運用ガバナンス（#43）。
+
+## 生存期間（M7 / #51・仕様 §9）
+
+- サービス役の待ち受け・名前登録・所有権レコードは `network.persistState()` で IndexedDB に保存し、`restoreState()` で復元します。復元時に所有権は再検証されます。
+- 非可視タブが凍結されている間は応答しません。詳細は仕様 §9 を参照してください。
+
+## ブリッジ（M8 / #52・仕様 §19）
+
+- ローカル TCP の接続を `webtcp://` の宛先へ中継します。既定はループバックのみ、署名必須（v2）の宛先にだけ転送し、接続ごとにアクセスログを記録します。
+- 使い方は[ブリッジガイド](/guides/bridge/)を参照してください。
