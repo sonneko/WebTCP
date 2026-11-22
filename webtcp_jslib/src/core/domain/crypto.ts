@@ -1,3 +1,4 @@
+import { concatBytes } from '../util/internal.js';
 import { ED25519_PUBLIC_KEY_BYTES } from '../routing/keys.js';
 
 /**
@@ -70,19 +71,6 @@ export async function verifyDomainEd25519(
     }
 }
 
-/** バイト列の連結（ハッシュの接頭辞付け用）。 */
-export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
-    let length = 0;
-    for (const part of parts) length += part.byteLength;
-    const out = new Uint8Array(length);
-    let offset = 0;
-    for (const part of parts) {
-        out.set(part, offset);
-        offset += part.byteLength;
-    }
-    return out;
-}
-
 /** 先頭に 1 バイトのプレフィックスを付ける。 */
 export function prefixByte(prefix: number, data: Uint8Array): Uint8Array {
     const out = new Uint8Array(data.byteLength + 1);
@@ -90,3 +78,5 @@ export function prefixByte(prefix: number, data: Uint8Array): Uint8Array {
     out.set(data, 1);
     return out;
 }
+
+export { concatBytes };

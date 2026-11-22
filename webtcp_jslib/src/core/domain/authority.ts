@@ -13,6 +13,7 @@
  * {@link NameServer} 側の仕事である（§13.2 / §14.5）。
  */
 
+import { positive, positiveInt } from '../util/internal.js';
 import type { NodeId } from '../routing/keys.js';
 import { decodePublicKey, deriveNodeId, isValidNodeId } from '../routing/keys.js';
 
@@ -781,12 +782,4 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
     });
 }
 
-function positive(value: number, name: string): number {
-    if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`);
-    return value;
-}
 
-function positiveInt(value: number, name: string): number {
-    if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
-    return value;
-}

@@ -1,3 +1,4 @@
+import { positive, positiveInt } from '../util/internal.js';
 import type { WebTCPNetwork } from '../network/WebTCPNetwork.js';
 import { isValidNodeId } from '../routing/keys.js';
 import { NodeId, VirtualPort } from '../types/protocol.js';
@@ -853,14 +854,6 @@ function randomId(): string {
 }
 function validTtl(value: number): number {
     if (!Number.isInteger(value) || value < 0 || value > MAX_NAME_TTL_MS) throw new Error(`ttlMs must be an integer in 0..${MAX_NAME_TTL_MS}`);
-    return value;
-}
-function positive(value: number, name: string): number {
-    if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be positive`);
-    return value;
-}
-function positiveInt(value: number, name: string): number {
-    if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
     return value;
 }
 function assertPort(port: number): void {

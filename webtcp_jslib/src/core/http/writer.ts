@@ -5,6 +5,7 @@
  * アプリケーションがユーザー入力をそのままヘッダへ流してもスマグリングが成立しない。
  */
 
+import { concatBytes } from '../util/internal.js';
 import { HTTPError } from './errors.js';
 import { HTTPHeaders, normalizeHeaderName, normalizeHeaderValue, statusTextFor } from './message.js';
 
@@ -67,9 +68,9 @@ export function serializeHTTPRequest(options: HTTPRequestWriteOptions): Uint8Arr
 
     if (framing === 'chunked') {
         const terminator = options.chunkedTerminator === false ? new Uint8Array(0) : encodeChunkedEnd();
-        return concatBytes(UTF8.encode(head), encodeChunk(body), terminator);
+        return concatBytes([UTF8.encode(head), encodeChunk(body), terminator]);
     }
-    return concatBytes(UTF8.encode(head), body);
+    return concatBytes([UTF8.encode(head), body]);
 }
 
 /** 応答をバイト列にする。 */
@@ -92,16 +93,16 @@ export function serializeHTTPResponse(options: HTTPResponseWriteOptions): Uint8A
 
     if (bodyForbidden) return UTF8.encode(head);
     if (framing === 'chunked') {
-        return concatBytes(UTF8.encode(head), encodeChunk(body), UTF8.encode('0\r\n\r\n'));
+        return concatBytes([UTF8.encode(head), encodeChunk(body), UTF8.encode('0\r\n\r\n')]);
     }
-    return concatBytes(UTF8.encode(head), body);
+    return concatBytes([UTF8.encode(head), body]);
 }
 
 /** 1 つの chunked フレームを作る。 */
 export function encodeChunk(chunk: Uint8Array): Uint8Array {
     if (chunk.byteLength === 0) return new Uint8Array(0);
     const size = UTF8.encode(`${chunk.byteLength.toString(16)}\r\n`);
-    return concatBytes(size, chunk, UTF8.encode(CRLF));
+    return concatBytes([size, chunk, UTF8.encode(CRLF)]);
 }
 
 /** chunked の終端（`0\r\n\r\n`）。 */
@@ -159,16 +160,3 @@ function toHeaders(
     return headers;
 }
 
-function concatBytes(...parts: Uint8Array[]): Uint8Array {
-    let total = 0;
-    for (const part of parts) total += part.byteLength;
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const part of parts) {
-        out.set(part, offset);
-        offset += part.byteLength;
-    }
-    return out;
-}
-
-export { concatBytes };
