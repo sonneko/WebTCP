@@ -82,7 +82,12 @@ async function waitForEntrance(origin, expectedNodeId, timeoutMs = 5000) {
     throw new Error(`Timed out waiting for ${expectedNodeId} to appear in /entrances`);
 }
 
-const browser = await playwright.chromium.launch({ headless: true });
+// 既存の Chromium を使う場合は WEBTCP_CHROMIUM_PATH を指定できる（verify-bridge-browser.mjs と同じ）
+const browser = await playwright.chromium.launch({
+    headless: true,
+    args: ['--no-sandbox'],
+    ...(process.env.WEBTCP_CHROMIUM_PATH ? { executablePath: process.env.WEBTCP_CHROMIUM_PATH } : {}),
+});
 
 try {
     // ------------------------------------------------------------------

@@ -7,12 +7,16 @@ hero:
   image:
     file: ../../assets/webtcp-hero.svg
     alt: WebTCP のレイヤー構成図（L4 VirtualStream / L3 RoutingLayer（Ed25519 署名） / L1-L2 WebRTC DataChannel）
+  # hero の link は frontmatter のため base（/WebTCP）の自動付与が効かない。astro.config.mjs の BASE と合わせる
   actions:
     - text: クイックスタート
-      link: /guides/quickstart/
+      link: /WebTCP/guides/quickstart/
       icon: right-arrow
+    - text: 公開デモを開く（ブラウザだけで動く範囲）
+      link: /WebTCP/examples/demo/
+      variant: secondary
     - text: プロトコル仕様を読む
-      link: /specification/protocol/
+      link: /WebTCP/specification/protocol/
       variant: secondary
     - text: GitHub
       link: https://github.com/sonneko/WebTCP

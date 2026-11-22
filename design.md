@@ -408,6 +408,18 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 
 ---
 
+### 3.32 公開デモは静的ホスティングで動く範囲だけを提供し、サーバー依存部はローカルに残す（サイクル11 / GitHub Pages）
+
+- **公開先**: `https://sonneko.github.io/WebTCP/`（GitHub Pages のプロジェクトサイト）。Astro の `site` は `https://sonneko.github.io`、`base` は `/WebTCP`。リンクは `/WebTCP` を前置する rehype プラグイン（`webtcp_website/src/plugins/base-links.mjs`）で補う。
+- **デプロイ**: `.github/workflows/deploy-pages.yml` が `main` への push と手動実行で、`webtcp_jslib` と `webtcp_website` をビルドして `actions/upload-pages-artifact` + `actions/deploy-pages` で配信する。Pages の Source は `build_type: workflow`（確認済み）。PR の検証は既存の `build-website` ジョブが担い、デプロイ用ワークフローは `main` のみ。
+- **デモの配置**: サイトの `public/` に `examples/demo/*`（HTML と JS）と `webtcp_jslib/dist/` をローカルサーバーと同じ相対配置（`/examples/demo/`、`/webtcp_jslib/dist/`）で複製する（`webtcp_website/scripts/sync-demo.mjs`、生成物は Git 管理外）。デモの `import` パスと `examples/server.mjs` の静的配信は変更しない。
+- **モード判定**: 起動時に `/domain/log` を取得し、応答すればローカルサーバーモード（従来どおり `SignalingAdapterHub` と `EntranceSearcherAdapterHub`、`/domain/*` の検査）。応答しなければ静的モード。`?static=1` で静的モードを強制できる（検証用）。
+- **静的モードのシグナリング**: (a) 自己チェック（`?selftest=1`）は同一ページ内の `ISignalingAdapter` の対（メモリ内バス、`examples/demo/local-signaling.js`）で 2 つの実 `RTCPeerConnection` を直接つなぐ。他タブへは漏れない。(b) 2 タブデモは `BroadcastChannel`（同一ブラウザ内）で SDP / ICE / public-key を交換し、探索は `discover` / `here` メッセージで行う。別ブラウザ・別デバイスの接続は静的版では成立しない（交換経路がない）。これは受け入れた制約。
+- **省略する検査**: 静的モードでは `/domain/*` に依存する自己チェック項目（1d: domain.global の台帳アンカーと偽造拒否）を「スキップ」として表示し、失敗にしない（`SkipError`）。ドメインパネルの登録・解決は「ローカルサーバーが必要」と表示して止める。
+- **シグナリングを増やさない理由**: シグナリングサーバーを置くと運用対象が増え、静的ホスティングの範囲を超える。クロスデバイスのデモが必要になった時点で、シグナリングだけの小さなエンドポイントを別途検討する（今回はスコープ外）。
+- **検証**: `examples/verify-static-demo.mjs` が Playwright で、(1) サイト表示、(2) デモ読み込み（静的モード表示）、(3) `?selftest=1` の全項目（スキップ以外）PASS を確認する。CI の `browser-e2e` ジョブに組み込み、ビルド済み `webtcp_website/dist` を一時 HTTP サーバーで配信して検査する。
+- **既存の CI の役割**: `build-website` は PR の検証として残す。`build-website` は `webtcp_jslib` のビルド成果物を必要とするため、ジョブ内で先に `npm ci && npm run build`（jslib）を実行する。
+
 ## 4. クラス責務
 
 | クラス | 責務 | 依存 |

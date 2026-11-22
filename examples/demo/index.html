@@ -88,10 +88,21 @@
         .badge.pass { background: #1b4721; color: var(--ok); }
         .badge.fail { background: #490202; color: var(--err); }
         .badge.run { background: #3b2e00; color: var(--warn); }
+        .badge.skip { background: #21262d; color: var(--muted); }
     </style>
 </head>
 <body>
     <h1>WebTCP — end-to-end デモ（M4 / NameServer・webtcp:// URL）</h1>
+    <p id="mode-banner" class="status warn">動作モードを確認中...</p>
+    <p class="status">
+        このページは WebRTC をブラウザ内で直接つなぎます。<strong>自己チェック（4）はこのページだけで完結</strong>し、
+        シグナリングサーバーは不要です。同じブラウザの 2 つのタブ同士は <code>BroadcastChannel</code> で探索・接続できます
+        （<code>?role=server&amp;autostart=1</code> と <code>?role=client&amp;autostart=1</code>）。
+        別のブラウザ・別のデバイスとは、この公開版では接続できません。
+        シグナリングハブ・<code>domain.global</code> の台帳・ピア探索はローカルサーバーで動きます
+        （<code>node examples/server.mjs</code> → <code>http://localhost:8787/examples/demo/</code>）。
+        ソース・ドキュメント: <a href="https://github.com/sonneko/WebTCP">github.com/sonneko/WebTCP</a>
+    </p>
     <p class="lead">
         このページを 2 つのタブ（または 2 つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
         下部の「自己チェック」では 1 タブ内で 2 つの実 <code>RTCPeerConnection</code> を使い、自動ブートストラップ・大容量自動分割・Half-Close・HTTP トンネル（<code>serveHTTP</code> + <code>fetchURL</code>）を一括検証できます。
