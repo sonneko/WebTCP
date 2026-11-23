@@ -3,7 +3,8 @@ import { WebTCPPacket } from '../types/packet.js';
 import { NodeId } from '../types/protocol.js';
 import { EventEmitter } from '../util/EventEmitter.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
-import { IChannel } from './IChannel.js';
+import { ChannelConnectOptions, IChannel } from './IChannel.js';
+import { throwIfAborted } from '../util/abort.js';
 
 /**
  * リンク層のメインコントローラー。
@@ -87,7 +88,7 @@ export class LinkManager extends EventEmitter {
      * 隣接ノードへのリンク確立を要求する。
      * すでに接続済みの場合は何もしない。
      */
-    public async connectToNeighbor(peerId: NodeId): Promise<void> {
+    public async connectToNeighbor(peerId: NodeId, options: ChannelConnectOptions = {}): Promise<void> {
         if (this.closed) {
             throw new Error('LinkManager is closed');
         }
@@ -95,8 +96,9 @@ export class LinkManager extends EventEmitter {
             throw new Error('Cannot connect to self');
         }
         if (this.isNeighbor(peerId)) return;
+        throwIfAborted(options.signal, `Connection to neighbor ${peerId} aborted`);
         this.logger.debug(`Connecting to neighbor ${peerId}`);
-        await this.channel.connect(peerId);
+        await this.channel.connect(peerId, options);
     }
 
     /**

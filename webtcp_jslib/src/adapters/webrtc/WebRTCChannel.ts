@@ -1,4 +1,5 @@
-import { IChannel } from '../../core/link/IChannel.js';
+import { ChannelConnectOptions, IChannel } from '../../core/link/IChannel.js';
+import { createAbortError, raceAbort, throwIfAborted } from '../../core/util/abort.js';
 import {
     ISignalingAdapter,
     isPublicKeyPayload,
@@ -136,23 +137,26 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         });
     }
 
-    public async connect(peerId: NodeId): Promise<void> {
+    public async connect(peerId: NodeId, options: ChannelConnectOptions = {}): Promise<void> {
         if (this.closed) throw new Error('WebRTCChannel is closed');
         if (!this.started) throw new Error('WebRTCChannel.start() must be called before connect()');
         if (peerId === this.localNodeId) throw new Error('Cannot connect to self');
         if (this.connectedPeers.get(peerId) === true) return;
+        const signal = options.signal;
+        throwIfAborted(signal, `WebRTC connection to ${peerId} aborted`);
 
         // 既にネゴシエーション中のピアがあれば、その確立完了を共有待機する
         const existing = this.peers.get(peerId);
         if (existing) {
             if (existing.opened) return;
-            return new Promise<void>((resolve, reject) => {
-                existing.openResolvers.push(resolve);
-                existing.openRejecters.push(reject);
-            });
+            return this.awaitPeerOpen(peerId, existing, signal);
         }
 
-        const iceServers = await this.resolveIceServers();
+        const iceServers = await raceAbort(
+            this.resolveIceServers(),
+            signal,
+            `WebRTC connection to ${peerId} aborted`,
+        );
         if (this.closed) throw new Error('WebRTCChannel is closed');
         if (this.connectedPeers.get(peerId) === true) return;
 
@@ -160,38 +164,100 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         const raced = this.peers.get(peerId);
         if (raced) {
             if (raced.opened) return;
-            return new Promise<void>((resolve, reject) => {
-                raced.openResolvers.push(resolve);
-                raced.openRejecters.push(reject);
-            });
+            return this.awaitPeerOpen(peerId, raced, signal);
         }
 
         const state = this.createPeer(peerId, true, iceServers);
-        const opened = new Promise<void>((resolve, reject) => {
-            state.openResolvers.push(resolve);
-            state.openRejecters.push(reject);
-        });
+        const opened = this.awaitPeerOpen(peerId, state, signal);
+        // 中断などで `await opened` に到達しない経路でも、未処理の拒否にしない
+        opened.catch(() => undefined);
 
         try {
-            const dataChannel = state.connection.createDataChannel(
-                this.options.dataChannelLabel ?? 'webtcp',
-                { ordered: true },
-            );
-            this.attachDataChannel(peerId, state, dataChannel);
-
-            state.awaitingAnswer = true;
-            const offer = await state.connection.createOffer();
-            await state.connection.setLocalDescription(offer);
-            await this.sendSignal(peerId, 'offer', state.connection.localDescription ?? offer);
+            await raceAbort(this.startOffer(peerId, state), signal, `WebRTC connection to ${peerId} aborted`);
         } catch (error) {
-            // 同時接続 glare で polite 側が既に新ピアへ差し替えていた場合は破棄しない
-            if (this.peers.get(peerId) === state) {
+            // 中断時のネゴシエーション破棄は awaitPeerOpen 側が待機者の有無を見て行う
+            // （他の待機者が残っていれば共有を保つ）。それ以外の失敗はここで破棄する。
+            if (!signal?.aborted && this.peers.get(peerId) === state) {
                 this.destroyPeer(peerId, state, false);
             }
             throw error instanceof Error ? error : new Error(String(error));
         }
 
         await opened;
+    }
+
+    /** 発信側の offer を作って送る（`connect()` から中断付きで呼ぶ）。 */
+    private async startOffer(peerId: NodeId, state: PeerState): Promise<void> {
+        const dataChannel = state.connection.createDataChannel(
+            this.options.dataChannelLabel ?? 'webtcp',
+            { ordered: true },
+        );
+        this.attachDataChannel(peerId, state, dataChannel);
+
+        state.awaitingAnswer = true;
+        const offer = await state.connection.createOffer();
+        await state.connection.setLocalDescription(offer);
+        await this.sendSignal(peerId, 'offer', state.connection.localDescription ?? offer);
+    }
+
+    /**
+     * ピアの確立を待つ（待機者を 1 件追加する）。
+     *
+     * `signal` が中断されたら、この待機者だけを外して `AbortError` で reject する。
+     * 待機者が 0 件になり、かつこの接続を発信したピアが未確立なら、ネゴシエーションを破棄する
+     * （タイマー・ICE・データチャネルを解放する）。受信側から始まったネゴシエーションは残す。
+     */
+    private awaitPeerOpen(peerId: NodeId, state: PeerState, signal?: AbortSignal): Promise<void> {
+        if (!signal) {
+            return new Promise<void>((resolve, reject) => {
+                state.openResolvers.push(resolve);
+                state.openRejecters.push(reject);
+            });
+        }
+        if (signal.aborted) {
+            return Promise.reject(createAbortError(`WebRTC connection to ${peerId} aborted`));
+        }
+
+        return new Promise<void>((resolve, reject) => {
+            const onResolve = (): void => {
+                signal.removeEventListener('abort', onAbort);
+                resolve();
+            };
+            const onReject = (error: Error): void => {
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+            };
+            const onAbort = (): void => {
+                this.removeWaiter(state, onResolve, onReject);
+                this.logger.debug(`WebRTC connection to ${peerId} aborted by the caller`);
+                reject(createAbortError(`WebRTC connection to ${peerId} aborted`));
+                if (
+                    !state.opened &&
+                    state.isInitiator &&
+                    state.openResolvers.length === 0 &&
+                    this.peers.get(peerId) === state
+                ) {
+                    this.logger.debug(`Closing the pending negotiation with ${peerId} (no waiters left)`);
+                    this.destroyPeer(peerId, state, false);
+                }
+            };
+
+            state.openResolvers.push(onResolve);
+            state.openRejecters.push(onReject);
+            signal.addEventListener('abort', onAbort, { once: true });
+        });
+    }
+
+    /** 待機者を取り除く（resolve / reject の両配列から、同一の関数参照を外す）。 */
+    private removeWaiter(
+        state: PeerState,
+        resolve: () => void,
+        reject: (error: Error) => void,
+    ): void {
+        const resolveIndex = state.openResolvers.indexOf(resolve);
+        if (resolveIndex !== -1) state.openResolvers.splice(resolveIndex, 1);
+        const rejectIndex = state.openRejecters.indexOf(reject);
+        if (rejectIndex !== -1) state.openRejecters.splice(rejectIndex, 1);
     }
 
     /**

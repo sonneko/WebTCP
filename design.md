@@ -439,6 +439,20 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **検証**: CI の `browser-e2e` で、同じ 2 タブの自動検証を 3 つのトランスポートで実行し、結果（成功・ステップ名・接続）が一致することを確認する。加えて Node.js の検証で、同じメッセージ列が 3 つで同順・同内容に届くことと、遅延の差を測る。
 - **対象外**: 双方向の認証（トークン）、ハブの水平分散、TURN の変更。
 
+### 3.35 API の中断は「待機者単位」で外し、RST と資源解放を契約にする（M9 / #44 / サイクル15）
+
+- **問題**: `connect()` は中断を受け取れず、リンク確立（WebRTC 既定 15 秒）や仮想接続（10 秒）をアプリから打ち切れなかった。UI のキャンセルやタイムアウト設計ができない（#40 の恒久対策）。
+- **決定**: `connect()` 系 API に `AbortSignal` を伝播する。中断は `name === 'AbortError'` の `Error` で表す（DOM 互換。`HTTPAbortError` と同じ名前）。共通ヘルパーは `core/util/abort.ts`（`raceAbort` / `throwIfAborted` / `createAbortError` / `isAbortError`）。
+- **仮想接続は RST で取り消す**: `TransportLayer.connect()` の中断は `VirtualStream.destroy()`（§8.2、#54）を使い、既に送った SYN を `RST` で取り消す。相手側に半開きのセッションを残さない。（`close()` でも SYN_SENT では RST が送られるため振る舞いは同じだが、中断の意図を明示するため `destroy()` を選んだ。）
+- **共有ネゴシエーションの待機者を個別に外す**: `WebRTCChannel` は同じピアの待機者（`openResolvers` / `openRejecters`）を共有する。中断は、その呼び出しの resolve / reject の組だけを配列から取り除く（同一参照で探す）。
+- **破棄は「発信側かつ待機者ゼロ」のときだけ**: 他の待機者が残っていれば接続を継続する。受信側から始まったネゴシエーション（`isInitiator === false`）は、待機者を外しても破棄しない。相手からの接続を壊さないため。
+- **中断済みのネゴシエーションの後始末**: 発信処理（`createDataChannel` / `createOffer` / `sendSignal`）は `raceAbort` で競争させる。中断後に残った非同期結果は捨てる（未処理の拒否にしない）。
+- **非中断の失敗は従来どおり破棄する**: 中断でない失敗では、これまでどおりネゴシエーションを破棄して元のエラーを投げる。
+- **`bootstrap()` は中断を失敗扱いにしない**: 候補ごとの失敗（warn）と区別し、中断は `debug` だけで伝播させる。
+- **NameServer / HTTPClient も signal を渡す**: `NameServer` の問い合わせは `controller.signal` を `connect()` へ渡すようになった（#40 の回帰テストは変わらず通る。宙吊りの打ち切りは念のため残した）。`HTTPClient` は `signal` を `network.connect()` へ渡す。
+- **制限**: 送信済みの offer / SYN は取り消せない（相手側は自身のタイムアウトで破棄する）。`ISignalingAdapter.sendMessage()` は `signal` を受け取らないため、シグナリング HTTP の送信そのものは打ち切らない。将来 `ISignalingAdapter` の契約へ `signal` を足す余地はあるが、本サイクルの範囲外とした。
+- **検証**: `tests/abort-propagation.test.mjs`（9 件）は、接続試行中（SYN 送信済み・RTCPeerConnection 生成済み）に中断し、タイマー・リスナー・セッション・RTCPeerConnection が残らないこと、後続接続が成功することを確かめる。変異（WebRTC の破棄を外す）で失敗することも確認した。`examples/verify-abort-browser.mjs` は実 Chromium の RTCPeerConnection で同じ検証を行い、CI の `browser-e2e` で実行する。
+
 ## 4. クラス責務
 
 | クラス | 責務 | 依存 |

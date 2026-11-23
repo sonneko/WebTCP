@@ -320,6 +320,21 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - [x] 修正（開発中に検出）: WebSocket の FIN だけの切断で購読が残り、サーバーの `close()` が完了しない。`ws-server.mjs` で `end` でも後始末
 - **未確認**: 実際の中継（プロキシ・CDN）越しの挙動。GitHub Pages は静的配信のため、このトランスポートは使えない（サーバーが必要）。
 
+### 3.13 サイクル15: API の中断伝播（`AbortSignal`、#44）
+
+- **依頼**: sonneko（2026-11-23）。`plan.md` §4.2 の継続課題（#40 の恒久対策）。
+- **スコープ判断**: Issue #44 が挙げる仕様の節（§9.1 IChannel 契約、§13.1 公開 API）は、現在の仕様書では別の内容を指している。IChannel 契約は §10.1、公開 API は §15.1、トランスポート層のタイムアウトは §8.5 にあるため、契約は新設の §8.6 にまとめ、§10.1 と §15.1 を更新した。既定の動作は変えない。版番号は 0.8.1 のまま。
+- **変更**:
+  - [x] 仕様 §8.6（中断の契約）、§10.1（`IChannel.connect` の行）、§15.1（公開 API の署名と説明）
+  - [x] 設計 §3.35
+  - [x] `core/util/abort.ts`（共通ヘルパー）、`TransportLayer.connect()` の中断（RST・タイマー・リスナーの解放）
+  - [x] `IChannel.connect(targetId, options?)` / `LinkManager.connectToNeighbor()` / `WebRTCChannel.connect()`（待機者単位の中断、発信側かつ待機者ゼロのときだけ破棄）
+  - [x] `WebTCPNetwork.connect()` / `connectToPeer()` / `connectURL()` / `bootstrap()`、`NameServer` と `HTTPClient` からの伝播
+  - [x] 単体テスト `tests/abort-propagation.test.mjs`（9 件。変異で失敗することを確認）
+  - [x] 実ブラウザ検証 `examples/verify-abort-browser.mjs`（実 RTCPeerConnection で接続試行中に中断し、閉じること・タイマーが残らないこと・warn が出ないこと・後続接続が成功すること。3 回実行して安定を確認。変異で失敗することを確認）。CI の `browser-e2e` で実行
+- **既存の検証**: `npm test`、`verify-browser.mjs`、`verify-signaling-browser.mjs`、`verify-signaling-transports.mjs`、`verify-static-demo.mjs`（21 件）で回帰がないことを確認。
+- **未確認 / 制限**: 送信済みの offer / SYN は取り消せない。`ISignalingAdapter.sendMessage()` は中断を受け取らない（HTTP 送信そのものは打ち切らない）。実ネットワーク（TURN 経由・NAT 越え）での中断は未検証。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
@@ -341,7 +356,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 | マルチホップ厳格化 | RPF の厳格化、ループ検出・スプリットホライズンの強化。 | #46 |
 | シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装を追加（サイクル14 / §3.12、既定はポーリングのまま）。 | #45 |
 | 鍵学習の最適化 | 未知公開鍵の待機（既定 5 秒）を、オンデマンドな鍵照会リクエストに置き換える。 | #47 |
-| API の中断伝播 | `connect()` / `connectToPeer()` / `TransportLayer.connect()` への `AbortSignal` 伝播（#40 の恒久対策）。 | #44 |
+| API の中断伝播 | `connect()` / `connectToPeer()` / `TransportLayer.connect()` への `AbortSignal` 伝播（#40 の恒久対策）。サイクル15 / §3.13 で対応（仕様 §8.6、設計 §3.35）。 | #44 |
 
 ### 4.3 名前解決と分散ドメイン（M4 / M5 で実装・残課題は未定）
 
@@ -445,7 +460,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #41 | bug | `Ed25519PacketVerifier` が注入シリアライザを無視し、`serializeForSigning` 欠落時に v1 署名対象へ黙ってフォールバック | 本 PR で修正 |
 | #42 | enhancement | 実チェーン（Namecoin / L1 / SPV / EVM 証明）によるアンカー検証 | 未定 |
 | #43 | enhancement | `domain.global` のガバナンス（紛争裁定・失効回収・複数ログ合意・IDNA） | 未定 |
-| #44 | enhancement | `connect()` 系への `AbortSignal` 伝播 | 未定 |
+| #44 | enhancement | `connect()` 系への `AbortSignal` 伝播 | 本 PR で対応（サイクル15 / §3.13） |
 | #45 | enhancement | SSE / WebSocket ベースの `ISignalingAdapter` | 未定 |
 | #46 | enhancement | RPF 厳格化と距離ベクトル収束強化 | 未定 |
 | #47 | enhancement | 鍵ライフサイクル（オンデマンド照会・ローテーション・分散ストレージ） | 未定 |

@@ -4,6 +4,8 @@ import { IPacketSerializer } from '../types/serializer.js';
 import { EventEmitter } from '../util/EventEmitter.js';
 import { LogLevel, Logger, createScopedLogger, resolveLogger } from '../util/Logger.js';
 import { generateNodeId } from '../util/id.js';
+import { createAbortError, throwIfAborted } from '../util/abort.js';
+import type { ChannelConnectOptions } from '../link/IChannel.js';
 import { IChannel } from '../link/IChannel.js';
 import { IEntranceSearcher } from '../link/IEntranceSearcher.js';
 import { ISignalingAdapter } from '../link/ISignalingAdapter.js';
@@ -80,6 +82,15 @@ export interface ConnectURLOptions {
     /** 名前指定の解決に使う NameServer。NodeId 指定では不要。 */
     nameServer?: NameServer;
     localPort?: VirtualPort;
+    signal?: AbortSignal;
+}
+
+/** `connect()` / `connectToPeer()` のオプション（#44）。 */
+export interface NetworkConnectOptions {
+    /**
+     * 中断用シグナル。リンク確立（シグナリング待ち・ICE）と仮想接続の確立を中断できる。
+     * 中断時は `AbortError` で reject し、途中のネゴシエーション・タイマー・リスナーを残さない。
+     */
     signal?: AbortSignal;
 }
 
@@ -237,26 +248,31 @@ export class WebTCPNetwork extends EventEmitter {
 
     /**
      * リモートノードへの仮想接続を確立する。
-     * 必要なら先に P2P リンクを確立する。
+     * 必要なら先に P2P リンクを確立する。`options.signal` で中断できる（#44）。
      */
     public async connect(
         remoteId: NodeId,
         remotePort: VirtualPort,
         localPort?: VirtualPort,
+        options: NetworkConnectOptions = {},
     ): Promise<VirtualStream> {
         if (this.closed) throw new Error('WebTCPNetwork is closed');
         if (remoteId === this.localNodeId) {
             throw new Error('Cannot connect to self');
         }
+        const signal = options.signal;
+        throwIfAborted(signal, `Connection to ${remoteId}:${remotePort} aborted`);
 
         // 直接のリンクが無く、経路も未学習の場合のみリンク確立を試みる。
         // マルチホップの経路が既に分かっている場合は、中継ノードに任せる。
         const route = this.getRoutingTable().getEntry(remoteId);
         if (!route || route.cost === 0) {
-            await this.connectToPeer(remoteId);
+            await this.connectToPeer(remoteId, { ...(signal ? { signal } : {}) });
         }
 
-        return this.transportLayer.connect(remoteId, remotePort, localPort);
+        return this.transportLayer.connect(remoteId, remotePort, localPort, {
+            ...(signal ? { signal } : {}),
+        });
     }
 
     /**
@@ -271,7 +287,7 @@ export class WebTCPNetwork extends EventEmitter {
     ): Promise<VirtualStream> {
         if (this.closed) throw new Error('WebTCPNetwork is closed');
         const parsed = typeof url === 'string' ? parseWebTCPUrl(url) : parseWebTCPUrl(formatWebTCPUrl(url));
-        if (options.signal?.aborted) throw new Error('WebTCP URL connection aborted');
+        if (options.signal?.aborted) throw createAbortError('WebTCP URL connection aborted');
         let nodeId = parsed.nodeId;
         if (!nodeId) {
             if (!options.nameServer) throw new Error(`NameServer is required to resolve ${parsed.host}`);
@@ -280,8 +296,10 @@ export class WebTCPNetwork extends EventEmitter {
             });
             nodeId = resolution.nodeId;
         }
-        if (options.signal?.aborted) throw new Error('WebTCP URL connection aborted');
-        return this.connect(nodeId, parsed.port, options.localPort);
+        if (options.signal?.aborted) throw createAbortError('WebTCP URL connection aborted');
+        return this.connect(nodeId, parsed.port, options.localPort, {
+            ...(options.signal ? { signal: options.signal } : {}),
+        });
     }
 
     /**
@@ -341,14 +359,15 @@ export class WebTCPNetwork extends EventEmitter {
     }
 
     /**
-     * リンク層の接続のみを確立する。
+     * リンク層の接続のみを確立する。`options.signal` で中断できる（#44）。
      */
-    public async connectToPeer(remoteId: NodeId): Promise<void> {
+    public async connectToPeer(remoteId: NodeId, options: NetworkConnectOptions = {}): Promise<void> {
         if (this.closed) throw new Error('WebTCPNetwork is closed');
         if (remoteId === this.localNodeId) {
             throw new Error('Cannot connect to self');
         }
-        await this.linkManager.connectToNeighbor(remoteId);
+        const channelOptions: ChannelConnectOptions = options.signal ? { signal: options.signal } : {};
+        await this.linkManager.connectToNeighbor(remoteId, channelOptions);
     }
 
     /**
@@ -404,10 +423,15 @@ export class WebTCPNetwork extends EventEmitter {
                 if (connected.length >= targetConnections) break;
 
                 try {
-                    await this.connectToPeer(candidate);
+                    await this.connectToPeer(candidate, { ...(options.signal ? { signal: options.signal } : {}) });
                     connected.push(candidate);
                     this.scopedLogger.info(`Bootstrapped peer connection: ${candidate}`);
                 } catch (error) {
+                    // 中断は失敗扱いにせず、そのまま伝播する（warn を出さない）
+                    if (options.signal?.aborted) {
+                        this.scopedLogger.debug(`Bootstrap aborted while connecting to ${candidate}`);
+                        throw createAbortError('Bootstrap aborted');
+                    }
                     const err = error instanceof Error ? error : new Error(String(error));
                     failed.push({ nodeId: candidate, error: err });
                     this.scopedLogger.warn(

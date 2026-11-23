@@ -32,11 +32,11 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 
 - `start(): Promise<void>` — 全層を起動（冪等）。完了時に `'ready'` イベントを発火。
 - `listen(port: VirtualPort, handler: (stream: VirtualStream) => void): void` — 指定ポートで待ち受け。ハンドラは `ESTABLISHED` 到達時に呼ばれます。
-- `connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort): Promise<VirtualStream>` — 必要ならリンク確立を行ったうえで仮想 TCP 接続を確立。
+- `connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort, options?: { signal?: AbortSignal }): Promise<VirtualStream>` — 必要ならリンク確立を行ったうえで仮想 TCP 接続を確立。`signal` で途中の接続試行を中断できます（中断時は `AbortError` で reject し、途中の資源を解放します。仕様 §8.6、#44）。
 - `connectURL(url: string | WebTCPUrl, options?: ConnectURLOptions): Promise<VirtualStream>` — `webtcp://` URL へ接続（M4 / #25）。名前指定には `options.nameServer` が必要。NodeId リテラルなら不要。返るのは**生のバイトストリーム**で、`path` / `query` は送りません。
 - `serveHTTP(port: VirtualPort, handler: HTTPHandler, options?: HTTPServerOptions): HTTPServer` — 仮想ポートで HTTP/1.1 を待ち受ける（M6 / #50）。`server.close()` で解除。
 - `fetchURL(url: string | WebTCPUrl, options?: FetchURLOptions): Promise<HTTPResponse>` — `webtcp://` URL へ HTTP リクエストを送る（M6 / #50）。`path` / `query` をリクエストターゲットとして転送し、`fragment` は送りません。1 リクエストごとに接続を閉じます。
-- `connectToPeer(remoteId: NodeId): Promise<void>` — リンク層の隣接接続のみを確立。
+- `connectToPeer(remoteId: NodeId, options?: { signal?: AbortSignal }): Promise<void>` — リンク層の隣接接続のみを確立。`signal` で中断できます（#44）。
 - `bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<BootstrapResult>` — エントランス候補へ順に接続を試行（失敗時は指数バックオフでリトライ）。
 - `getNeighbors(): NodeId[]` — 直接接続中の隣接ノード ID 一覧。
 - `getRoutingTable(): RoutingTable` — 現在のルーティングテーブル。
