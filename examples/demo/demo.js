@@ -16,6 +16,11 @@
  * - `?selftest=1`: 起動時に同一タブ内の実 WebRTC 2 ピア自己チェックを自動実行
  * - `?role=server&autostart=1`: サーバーとしてポート 8080 で自動待ち受け
  * - `?role=client&autostart=1`: クライアントとして自動探索・接続・検証を実行
+ * - `?static=1`: デモサーバーが無い環境（GitHub Pages など）の動作を強制する（検証用）
+ *
+ * デモサーバー（`examples/server.mjs`）が無ければ静的モードで動く。静的モードでは
+ * シグナリングを同一ページ内のメモリ（自己チェック）か BroadcastChannel（タブ間）で行い、
+ * `/domain/*` に依存する検査は省略する。詳細は `design.md` §3.32。
  */
 import {
     EXAMPLE_STUN_ICE_SERVERS,
@@ -34,6 +39,18 @@ import {
     parseWebTCPUrl,
     IndexedDBServiceStateStorage,
 } from '../../webtcp_jslib/dist/index.js';
+import {
+    createBroadcastEntranceSearcher,
+    createBroadcastSignaling,
+    createMemorySignalingBus,
+    randomNodeId,
+} from './local-signaling.js';
+
+/** 静的モードで 2 タブが使う BroadcastChannel の名前。 */
+const TWO_TAB_CHANNEL = 'webtcp-demo-2tab';
+
+/** 自己チェックのうち、デモサーバーが必要で省略された項目（失敗ではない）。 */
+class SkipError extends Error {}
 
 const SERVER_PORT = 8080;
 /** M6 の HTTP サービスポート（`serveHTTP`）。生 TCP の 8080 とは別ポートにしている。 */
@@ -102,6 +119,8 @@ let identity = null;
 let identityLoadPromise = null;
 
 const SIGNED = params.get('insecure') !== '1';
+/** デモサーバーが応答するか（`main()` で判定）。false なら静的モード。 */
+let serverMode = true;
 
 /**
  * Ed25519 鍵管理を読み込む（IndexedDB から復元、無ければ生成）。
@@ -132,6 +151,61 @@ function loadIdentity() {
     return identityLoadPromise;
 }
 
+/** 同一オリジンのデモサーバーの有無を調べる。無ければ静的モード（GitHub Pages など）。 */
+async function probeDemoServer() {
+    if (params.get('static') === '1') return false;
+    try {
+        const response = await fetch(`${location.origin}/domain/log`, { cache: 'no-store' });
+        if (!response.ok) return false;
+        const info = await response.json();
+        return typeof info?.logId === 'string';
+    } catch {
+        return false;
+    }
+}
+
+/** 静的モードの表示（ヘッダーのバナー）。 */
+function renderModeBanner() {
+    const banner = document.getElementById('mode-banner');
+    if (!banner) return;
+    banner.textContent = serverMode
+        ? 'ローカルデモサーバーに接続中：シグナリング・台帳・すべての自己チェックが使えます。'
+        : '公開版（静的）：サーバー不要の機能だけが動きます。シグナリングサーバーと台帳はローカル（node examples/server.mjs）で使えます。';
+    banner.className = `status ${serverMode ? 'ok' : 'warn'}`;
+}
+
+/** シグナリングアダプタ。サーバーモードは HTTP ハブ、静的モードは BroadcastChannel。 */
+function createSignaling({ keys, logger, pollIntervalMs = 250 }) {
+    if (serverMode) {
+        return new SignalingAdapterHub({
+            url: location.origin,
+            pollIntervalMs,
+            logger,
+            ...(keys ? { nodeId: keys.nodeId } : {}),
+        });
+    }
+    return createBroadcastSignaling({
+        nodeId: keys?.nodeId ?? randomNodeId(),
+        channelName: TWO_TAB_CHANNEL,
+        logger,
+    });
+}
+
+/** ピア探索。サーバーモードは `/entrances`、静的モードは BroadcastChannel の問い合わせ。 */
+function createEntranceSearcher(exclude) {
+    if (serverMode) {
+        return new EntranceSearcherAdapterHub({ url: location.origin, exclude });
+    }
+    return createBroadcastEntranceSearcher({ channelName: TWO_TAB_CHANNEL, exclude });
+}
+
+/** 静的モードでデモサーバーが必要な操作を止め、理由を表示する。 */
+function requireDemoServer(element) {
+    if (serverMode) return true;
+    setStatus(element, 'ローカルデモサーバーが必要です（node examples/server.mjs）', 'warn');
+    return false;
+}
+
 function describeIdentity(keys) {
     if (!keys) {
         return 'Ed25519: 無効（v1 署名なしモード）';
@@ -158,6 +232,12 @@ function demoDomainName(nodeId, label) {
  * アンカー検証なしの権威にする（その場合でも所有者署名と有効期間は必ず検証される）。
  */
 async function createDomainRegistryAuthority(logger) {
+    if (!serverMode) {
+        // 静的モード: 台帳は無いので、所有者署名の検証だけで解決する（ネットワークへ問い合わせない）
+        domainRegistryClient = null;
+        domainRegistryPinned = false;
+        return createDomainAuthority({ sources: [], verifierOptions: { requireAnchor: false, logger }, logger });
+    }
     const client = createHttpDomainRegistryClient({ baseUrl: location.origin, logger, timeoutMs: 6000 });
     const options = { sources: [client], logger };
     try {
@@ -198,6 +278,7 @@ function requestedDomain(nodeId) {
 }
 
 async function onDomainRegister() {
+    if (!requireDemoServer(els.domainStatus)) return;
     if (!network || !nameServer) {
         setStatus(els.domainStatus, '先にネットワークを起動してください', 'err');
         return;
@@ -247,6 +328,7 @@ async function onDomainRegister() {
 }
 
 async function onDomainResolve() {
+    if (!requireDemoServer(els.domainStatus)) return;
     if (!network || !nameServer) {
         setStatus(els.domainStatus, '先にネットワークを起動してください', 'err');
         return;
@@ -343,12 +425,7 @@ async function initNetwork() {
     try {
         const keys = await loadIdentity();
 
-        signaling = new SignalingAdapterHub({
-            url: location.origin,
-            pollIntervalMs: 250,
-            logger: currentLogger,
-            ...(keys ? { nodeId: keys.nodeId } : {}),
-        });
+        signaling = createSignaling({ keys, logger: currentLogger });
 
         network = createBrowserNetwork({
             signaling,
@@ -495,10 +572,7 @@ async function onDiscover() {
     if (!network) return [];
     setStatus(els.clientStatus, '接続先を検索中...');
     try {
-        const searcher = new EntranceSearcherAdapterHub({
-            url: location.origin,
-            exclude: network.localNodeId,
-        });
+        const searcher = createEntranceSearcher(network.localNodeId);
         const nodes = await searcher.search();
 
         els.peerSelect.innerHTML = '';
@@ -530,10 +604,7 @@ async function onBootstrap() {
     if (!network) return;
     setStatus(els.clientStatus, 'bootstrap() で自動探索・接続中...');
     try {
-        const searcher = new EntranceSearcherAdapterHub({
-            url: location.origin,
-            exclude: network.localNodeId,
-        });
+        const searcher = createEntranceSearcher(network.localNodeId);
         const result = await network.bootstrap(searcher, {
             targetConnections: 1,
             maxRetries: 4,
@@ -819,18 +890,19 @@ async function runSelfTest() {
         return createBrowserNetwork(options);
     };
 
-    const sigServer = new SignalingAdapterHub({
-        url: location.origin,
-        pollIntervalMs: 120,
-        logger,
-        ...(keysServer ? { nodeId: keysServer.nodeId } : {}),
-    });
-    const sigClient = new SignalingAdapterHub({
-        url: location.origin,
-        pollIntervalMs: 120,
-        logger,
-        ...(keysClient ? { nodeId: keysClient.nodeId } : {}),
-    });
+    // 静的モードは同一ページ内のメモリ上のバスで交換する（他タブへ漏れない / サーバー不要）
+    const selftestBus = serverMode ? null : createMemorySignalingBus();
+    const makeSignaling = (keys) =>
+        selftestBus
+            ? selftestBus.adapter(keys?.nodeId ?? randomNodeId())
+            : new SignalingAdapterHub({
+                  url: location.origin,
+                  pollIntervalMs: 120,
+                  logger,
+                  ...(keys ? { nodeId: keys.nodeId } : {}),
+              });
+    const sigServer = makeSignaling(keysServer);
+    const sigClient = makeSignaling(keysClient);
     // サービス役の状態は一時的な IndexedDB ストアへ保存する（#51 / 1f）
     const serviceStateStorage = new IndexedDBServiceStateStorage({
         databaseName: `webtcp-service-selftest-${Math.random().toString(16).slice(2)}`,
@@ -847,6 +919,11 @@ async function runSelfTest() {
             updateSelfTestRow(li, name, 'pass', `${detail}${detail ? ' ' : ''}(${ms}ms)`);
             steps.push({ name, ok: true, detail, ms });
         } catch (error) {
+            if (error instanceof SkipError) {
+                updateSelfTestRow(li, name, 'skip', error.message);
+                steps.push({ name, ok: true, skipped: true, detail: error.message });
+                return;
+            }
             const ms = Date.now() - t0;
             updateSelfTestRow(li, name, 'fail', `${error.message} (${ms}ms)`);
             steps.push({ name, ok: false, error: error.message, ms });
@@ -856,6 +933,9 @@ async function runSelfTest() {
 
     // `finally` からも参照するため、`try` の外で宣言する（ブロックスコープ）
     const httpServers = [];
+    // 後始末（finally）から参照するため try の外で宣言する（#70）
+    let nsServer = null;
+    let nsClient = null;
 
     try {
         await netServer.start();
@@ -866,30 +946,36 @@ async function runSelfTest() {
         // M5: 参照レジストリ（`/domain/*`）へ接続した `domain.global` 権威を作る。
         // サーバー側 NameServer は自分の所有権レコードをこの権威で検証してから登録し、
         // ピアからの wantOwnership 問い合わせに同じ検証付きで答える (§14.5)。
-        const domainRegistry = createHttpDomainRegistryClient({ baseUrl: location.origin, logger });
+        const domainRegistry = serverMode ? createHttpDomainRegistryClient({ baseUrl: location.origin, logger }) : null;
         let domainLogInfo = null;
         let domainVerifierOptions = { requireAnchor: false, logger };
-        try {
-            const response = await fetch(`${location.origin}/domain/log`);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const info = await response.json();
-            if (typeof info?.logId !== 'string' || typeof info.publicKey !== 'string') {
-                throw new Error('the registry did not publish a log key');
+        if (serverMode) {
+            try {
+                const response = await fetch(`${location.origin}/domain/log`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const info = await response.json();
+                if (typeof info?.logId !== 'string' || typeof info.publicKey !== 'string') {
+                    throw new Error('the registry did not publish a log key');
+                }
+                domainLogInfo = info;
+                domainVerifierOptions = { requireAnchor: true, logKeys: { [info.logId]: info.publicKey }, logger };
+            } catch (error) {
+                logger.warn('domain registry unavailable; the self-test will run without ledger anchors:', error);
             }
-            domainLogInfo = info;
-            domainVerifierOptions = { requireAnchor: true, logKeys: { [info.logId]: info.publicKey }, logger };
-        } catch (error) {
-            logger.warn('domain registry unavailable; the self-test will run without ledger anchors:', error);
         }
-        const nsServer = new NameServer(netServer, {
+        nsServer = new NameServer(netServer, {
             logger,
-            domains: createDomainAuthority({
-                sources: [domainRegistry],
-                verifierOptions: domainVerifierOptions,
-                logger,
-            }),
+            ...(serverMode
+                ? {
+                      domains: createDomainAuthority({
+                          sources: [domainRegistry],
+                          verifierOptions: domainVerifierOptions,
+                          logger,
+                      }),
+                  }
+                : {}),
         });
-        const nsClient = new NameServer(netClient, { logger, queryTimeoutMs: 1500, resolveTimeoutMs: 4000 });
+        nsClient = new NameServer(netClient, { logger, queryTimeoutMs: 1500, resolveTimeoutMs: 4000 });
         nsServer.registerA(DEMO_SERVICE_NAME, netServer.localNodeId);
         nsServer.registerCNAME(DEMO_ALIAS_NAME, DEMO_SERVICE_NAME);
         nsServer.listen();
@@ -951,6 +1037,9 @@ async function runSelfTest() {
 
         // 1d. domain.global 所有権レコード + 台帳アンカー検証（M5 / #25）
         await runStep('1d. domain.global 所有権レコードと台帳アンカー検証 (M5)', async () => {
+            if (!serverMode) {
+                throw new SkipError('ローカルデモサーバーが必要（台帳アンカーと偽造拒否は省略）');
+            }
             if (!keysServer) {
                 return 'Ed25519 非対応のためスキップ（所有権レコードは署名必須）';
             }
@@ -1161,7 +1250,13 @@ async function runSelfTest() {
         });
 
         const totalMs = Date.now() - startedAt;
-        setStatus(els.selftestStatus, `全 ${steps.length} 項目 PASS (${totalMs} ms)`, 'ok');
+        const skipped = steps.filter((step) => step.skipped).length;
+        const passed = steps.length - skipped;
+        setStatus(
+            els.selftestStatus,
+            `${passed} 項目 PASS${skipped ? `・${skipped} 項目は省略（デモサーバーが必要）` : ''} (${totalMs} ms)`,
+            'ok',
+        );
         document.documentElement.dataset.selftest = 'pass';
         window.__WEBTCP_SELFTEST__ = { ok: true, steps, durationMs: totalMs };
     } catch (error) {
@@ -1171,8 +1266,8 @@ async function runSelfTest() {
         window.__WEBTCP_SELFTEST__ = { ok: false, error: error.message, steps, durationMs: totalMs };
     } finally {
         for (const httpServer of httpServers) httpServer.close();
-        nsClient.close();
-        nsServer.close();
+        nsClient?.close();
+        nsServer?.close();
         netClient.close();
         netServer.close();
         sigClient.close();
@@ -1193,10 +1288,7 @@ async function runAutoTwoTabClient() {
         const targetParam = params.get('target');
         const searcher = targetParam
             ? { search: async () => [targetParam] }
-            : new EntranceSearcherAdapterHub({
-                  url: location.origin,
-                  exclude: network.localNodeId,
-              });
+            : createEntranceSearcher(network.localNodeId);
         const boot = await network.bootstrap(searcher, {
             targetConnections: 1,
             maxRetries: 15,
@@ -1293,6 +1385,9 @@ async function main() {
     els.messageInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') void onSend();
     });
+
+    serverMode = await probeDemoServer();
+    renderModeBanner();
 
     const ok = await initNetwork();
     if (!ok) return;

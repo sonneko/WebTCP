@@ -43,6 +43,13 @@ jobs:
           cache: npm
           cache-dependency-path: webtcp_website/package-lock.json
 
+      # 公開デモ（scripts/sync-demo.mjs）が webtcp_jslib/dist を複製するため、先にライブラリをビルドする
+      - name: Build library (demo assets)
+        working-directory: webtcp_jslib
+        run: |
+          npm ci
+          npm run build
+
       - name: Install
         run: npm ci
 
@@ -74,3 +81,12 @@ jobs:
 
       - name: Verify 2-tab browser demo (real WebRTC)
         run: node examples/verify-browser.mjs
+
+      - name: Build website (static Pages output)
+        working-directory: webtcp_website
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify static Pages demo (no server)
+        run: node examples/verify-static-demo.mjs

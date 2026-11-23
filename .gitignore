@@ -7,6 +7,9 @@ dist/
 
 # サイト
 .astro/
+# 公開デモの複製（scripts/sync-demo.mjs が生成）
+webtcp_website/public/examples/
+webtcp_website/public/webtcp_jslib/
 
 # テスト・エディタ
 coverage/

@@ -1,9 +1,21 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import rehypeBaseLinks from './src/plugins/base-links.mjs';
+
+// GitHub Pages のプロジェクトサイト（https://sonneko.github.io/WebTCP/）。
+// `base` を変えるときは次も合わせる: src/content/docs/index.mdx の hero リンク（frontmatter のため自動では付かない）、
+// examples/verify-static-demo.mjs の BASE、.github/workflows/deploy-pages.yml の配信先。
+const SITE = 'https://sonneko.github.io';
+const BASE = '/WebTCP';
 
 // https://astro.build/config
 export default defineConfig({
+	site: SITE,
+	base: BASE,
+	markdown: {
+		rehypePlugins: [[rehypeBaseLinks, { base: BASE }]],
+	},
 	integrations: [
 		starlight({
 			title: 'WebTCP',

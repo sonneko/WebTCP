@@ -171,6 +171,14 @@ npm ci
 npm run build     # dist/ に ESM + 型定義を生成
 ```
 
+## 公開デモとドキュメント（GitHub Pages）
+
+- **公開 URL**: <https://sonneko.github.io/WebTCP/>（ドキュメントサイト）
+- **公開デモ**: <https://sonneko.github.io/WebTCP/examples/demo/>。サーバーを使わず、ブラウザだけで動きます。
+  - 動くもの: 1 タブの自己チェック（`?selftest=1`、`domain.global` の台帳検査 1d だけは「省略」と表示）と、同じブラウザの 2 タブ接続（BroadcastChannel）。
+  - 動かないもの: 別のブラウザ・別のデバイスとの接続、`domain.global` の登録と解決、シグナリングハブ。これらはローカルの `node examples/server.mjs` で動きます（下記）。
+- **デプロイ**: `main` への push で `.github/workflows/deploy-pages.yml` が `webtcp_website` をビルドし、GitHub Pages（Source: GitHub Actions）へ配信します。デモは `scripts/sync-demo.mjs` が `examples/demo` と `webtcp_jslib/dist` を複製して同梱します（生成物は Git 管理外）。設計の詳細は [design.md](./design.md) §3.32。
+
 ## デモ（実ブラウザでの 2 タブ検証 & 自己チェック）
 
 ```bash
@@ -191,6 +199,7 @@ node examples/server.mjs
   npm install --no-save playwright && npx playwright install chromium
   node examples/verify-browser.mjs
   ```
+- **公開版と同じ静的配信の検証**（サーバー無し）: `webtcp_website` をビルドしてから `node examples/verify-static-demo.mjs`。ビルド成果物 `webtcp_website/dist` を配信し、静的モードの自己チェックと 2 タブ接続を確認します。
 
 ## 利用方法
 
@@ -460,9 +469,10 @@ examples/
   verify-browser.mjs Playwright 2 タブ実ブラウザ検証スクリプト
   bridge.mjs / bridge-service.mjs  ブリッジ（M8）: ローカル TCP → webtcp:// の中継と、その対向のサービス役
   verify-bridge-browser.mjs  ブリッジの Chromium E2E（Playwright が必要）
+  verify-static-demo.mjs  公開版と同じ静的配信での検証（サーバー無し、Playwright が必要）
   bridge/          上記 E2E がブラウザで動かすサービス（HTML / JS）
-  demo/            2 タブデモ + STUN 設定例 + 内蔵自己チェック（`domain.global` / HTTP トンネル含む）
-webtcp_website/    公式ドキュメントサイト（Astro + Starlight）
+  demo/            2 タブデモ + STUN 設定例 + 内蔵自己チェック（`domain.global` / HTTP トンネル含む）。`local-signaling.js` は静的モード（公開版）用のシグナリング
+webtcp_website/    公式ドキュメントサイト（Astro + Starlight）。`scripts/sync-demo.mjs` が公開デモを複製する
 ```
 
 ## 開発とテスト

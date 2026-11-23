@@ -6,7 +6,7 @@
 | 対応仕様 | `specification.md` 0.8.1 |
 | 対応設計 | `design.md` 0.8.1 |
 | 最終更新 | 2026-11-17 |
-| 現在のマイルストーン | **0.8.1（M8 の未検証項目の検証と、既知バグの修正・土台固め）** |
+| 現在のマイルストーン | **0.8.1（サイクル11: GitHub Pages への公開デモ。版は据え置き）** |
 
 ---
 
@@ -268,6 +268,27 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 - `webtcp-bridge` の `bin` と npm 公開（#49）。
 - `VirtualStream` の受信ウィンドウ（#56）、HTTP 層のフル実装（#57）、接続プール（#58）。
 - ブラウザ E2E の CI 組み込み。CI（GitHub Actions）の `browser-e2e` ジョブの構成は 0.8.1 では変えていない。
+
+### 3.10 サイクル11: GitHub Pages への自動デプロイと公開デモ（0.8.1 のまま）
+
+- **依頼**: sonneko（2026-11-21 20:20 JST）。`https://sonneko.github.io/WebTCP/` で目に見える成果（ドキュメントとデモ）を公開する。
+- **スコープ判断**: プロトコル・API・版番号は変えない（文書バージョン 0.8.1 のまま。版上げは別指示）。設計判断は `design.md` §3.32。
+- **変更**:
+  - [x] `.github/workflows/deploy-pages.yml`（`main` push と手動実行、`pages: write` / `id-token: write` / `contents: read`）
+  - [x] `webtcp_website/astro.config.mjs`（`site` / `base`）、`src/plugins/base-links.mjs`（内部リンクの base 前置）
+  - [x] `webtcp_website/scripts/sync-demo.mjs`（デモとライブラリを `public/` へ複製、生成物は Git 管理外）
+  - [x] `examples/demo/`：静的モード（`local-signaling.js`、モード判定、スキップ表示、ドメイン操作のガード）
+  - [x] `examples/verify-static-demo.mjs`（Playwright による公開相当の検証）と CI の `browser-e2e` への組み込み
+  - [x] `ci.yml` の `build-website` に jslib ビルドを追加
+  - [x] README の公開 URL・デモ導線・デプロイ説明、website のデモガイドの更新
+- **Pages 設定の確認**: `gh api repos/sonneko/WebTCP/pages` で `build_type` は `workflow`（Actions 方式）。ブランチ指定ではないため、ワークフローの配信がそのまま反映される。
+- **未確認の項目**: 公開 URL の実アクセス（サンドボックスは `sonneko.github.io` へ出られない）。ローカルの `astro build` 出力を `verify-static-demo.mjs` で検証した結果で代替し、要約に明記する。
+- **検証結果（サイクル11 の作業時点）**:
+  - `webtcp_website` の `npm run build`: 13 ページ、リンクは `/WebTCP` 配下（`base-links` の効果を `dist` の href で確認）。`astro dev` / `astro preview` も `/WebTCP/` で応答。
+  - `verify-static-demo.mjs`（静的配信、デモサーバー無し、Chromium 153）: 全項目 PASS。自己チェックは 10 項目 PASS と 1d（台帳）の省略。2 タブ（BroadcastChannel）の往復（テキスト・80 KiB）PASS。`/domain/*` への POST は 0 件。
+  - `verify-browser.mjs`（サーバー有り、回帰確認）: 3 テスト PASS（自己チェックは台帳検査を含む 10 項目）。
+  - 見つかったバグ: #70（自己チェックの後始末の ReferenceError）。同じ PR で修正し、回帰の検出は `verify-static-demo.mjs` の「ページエラーが無い」検査で行う。
+  - `astro dev` の既知の差: `/WebTCP/examples/demo/`（末尾スラッシュ）は dev で 404。`/WebTCP/examples/demo/index.html` と本番ビルド（preview・Pages）では 200。
 
 ## 4. 将来課題
 
