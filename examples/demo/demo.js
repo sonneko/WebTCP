@@ -26,6 +26,8 @@ import {
     EXAMPLE_STUN_ICE_SERVERS,
     EntranceSearcherAdapterHub,
     SignalingAdapterHub,
+    SseSignalingAdapter,
+    WebSocketSignalingAdapter,
     BrowserKeyManager,
     KeyDirectory,
     createBrowserNetwork,
@@ -171,18 +173,35 @@ function renderModeBanner() {
     banner.textContent = serverMode
         ? 'ローカルデモサーバーに接続中：シグナリング・台帳・すべての自己チェックが使えます。'
         : '公開版（静的）：サーバー不要の機能だけが動きます。シグナリングサーバーと台帳はローカル（node examples/server.mjs）で使えます。';
+    if (serverMode) {
+        banner.textContent += `（シグナリング: ${SIGNALING_TRANSPORT}）`;
+    }
     banner.className = `status ${serverMode ? 'ok' : 'warn'}`;
 }
 
 /** シグナリングアダプタ。サーバーモードは HTTP ハブ、静的モードは BroadcastChannel。 */
+/**
+ * デモサーバーのシグナリング経路（`?signaling=poll|sse|ws`、既定 poll）。
+ * 既定はポーリング（`SignalingAdapterHub`）。SSE / WebSocket は仕様 §10.4.1 の押し込み型。
+ */
+const SIGNALING_TRANSPORT = ['poll', 'sse', 'ws'].includes(params.get('signaling') ?? '')
+    ? params.get('signaling')
+    : 'poll';
+
+function createHubSignaling({ keys, logger, pollIntervalMs }) {
+    const nodeOptions = keys ? { nodeId: keys.nodeId } : {};
+    if (SIGNALING_TRANSPORT === 'sse') {
+        return new SseSignalingAdapter({ url: location.origin, logger, ...nodeOptions });
+    }
+    if (SIGNALING_TRANSPORT === 'ws') {
+        return new WebSocketSignalingAdapter({ url: location.origin, logger, ...nodeOptions });
+    }
+    return new SignalingAdapterHub({ url: location.origin, pollIntervalMs, logger, ...nodeOptions });
+}
+
 function createSignaling({ keys, logger, pollIntervalMs = 250 }) {
     if (serverMode) {
-        return new SignalingAdapterHub({
-            url: location.origin,
-            pollIntervalMs,
-            logger,
-            ...(keys ? { nodeId: keys.nodeId } : {}),
-        });
+        return createHubSignaling({ keys, logger, pollIntervalMs });
     }
     return createBroadcastSignaling({
         nodeId: keys?.nodeId ?? randomNodeId(),
@@ -948,12 +967,7 @@ async function runSelfTest() {
     const makeSignaling = (keys) =>
         selftestBus
             ? selftestBus.adapter(keys?.nodeId ?? randomNodeId())
-            : new SignalingAdapterHub({
-                  url: location.origin,
-                  pollIntervalMs: 120,
-                  logger,
-                  ...(keys ? { nodeId: keys.nodeId } : {}),
-              });
+            : createHubSignaling({ keys, logger, pollIntervalMs: 120 });
     const sigServer = makeSignaling(keysServer);
     const sigClient = makeSignaling(keysClient);
     // サービス役の状態は一時的な IndexedDB ストアへ保存する（#51 / 1f）

@@ -304,6 +304,22 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - [x] デモガイドに「自己チェックが失敗するとき」の節を追加
 - **未確認**: 訪問者の実際の環境（ブラウザ・ネットワーク）。公開 URL もこのサンドボックスからは到達できない。
 
+### 3.12 サイクル14: シグナリングの低遅延化（SSE / WebSocket、#45）
+
+- **依頼**: sonneko（2026-11-23）。`plan.md` §4.2 の継続課題。
+- **スコープ判断**: 仕様は §10.4.1 に追加（§9.4 は依頼文の参照違いで、シグナリングは §10.4 にある）。既定はポーリングのまま。版番号は 0.8.1 のまま。
+- **変更**:
+  - [x] 仕様 §10.4.1（トランスポート別の契約、再生・重複排除・順序・public-key の扱い）
+  - [x] 設計 §3.34
+  - [x] 参照サーバーの `/events`（SSE）と `/ws`（WebSocket）、`examples/lib/ws-server.mjs`
+  - [x] `SseSignalingAdapter` / `WebSocketSignalingAdapter`（ライブラリの公開 API に追加）
+  - [x] デモの `?signaling=poll|sse|ws`（既定 poll）
+  - [x] 検証: `examples/verify-signaling-transports.mjs`（同一メッセージ列 30 件・80 KiB SDP を 3 経路で送り、受信結果の完全一致と遅延を計測）、`examples/verify-signaling-browser.mjs`（Chromium で経路ごとに 2 タブ実 WebRTC 接続、使われた経路（`/messages` / `/events` / `/ws`）も記録）。いずれも CI の `browser-e2e` で実行
+  - [x] 単体テスト `webtcp_jslib/tests/signaling-transports.test.mjs`（17 件: 再接続・カーソル・`resume`・バックオフ・大容量フレーム・断片化フレーム・マスク・切断後の購読解除）
+  - [x] 設計上の修正（開発中に検出）: 初回接続で以前の受信者向けのメッセージを再送すると、同じ NodeId の新しいリスナーに古い offer/candidate が届く。初回は未配信のみ再送、再接続（`resume=1`）は全件再送に分けた（仕様 §10.4.1）
+  - [x] 修正（開発中に検出）: WebSocket の FIN だけの切断で購読が残り、サーバーの `close()` が完了しない。`ws-server.mjs` で `end` でも後始末
+- **未確認**: 実際の中継（プロキシ・CDN）越しの挙動。GitHub Pages は静的配信のため、このトランスポートは使えない（サーバーが必要）。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
@@ -323,7 +339,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 | 課題 | 内容 | 目標 |
 | :--- | :--- | :--- |
 | マルチホップ厳格化 | RPF の厳格化、ループ検出・スプリットホライズンの強化。 | #46 |
-| シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装追加。 | #45 |
+| シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装を追加（サイクル14 / §3.12、既定はポーリングのまま）。 | #45 |
 | 鍵学習の最適化 | 未知公開鍵の待機（既定 5 秒）を、オンデマンドな鍵照会リクエストに置き換える。 | #47 |
 | API の中断伝播 | `connect()` / `connectToPeer()` / `TransportLayer.connect()` への `AbortSignal` 伝播（#40 の恒久対策）。 | #44 |
 
