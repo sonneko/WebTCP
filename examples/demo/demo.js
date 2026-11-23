@@ -206,6 +206,59 @@ function requireDemoServer(element) {
     return false;
 }
 
+/**
+ * ICE 候補の事前診断（#73）。ブラウザが候補を 1 つも出せないと、同一ページ内の接続も確立しない。
+ * 既定の `iceServers` で `RTCPeerConnection` を 1 つ作り、候補の型（host は mDNS か IP か）を数える。
+ */
+async function probeIceCandidates(iceServers, timeoutMs = 5000) {
+    const started = performance.now();
+    const pc = new RTCPeerConnection({ iceServers });
+    const candidates = [];
+    try {
+        pc.createDataChannel('webtcp-ice-probe');
+        const gathered = new Promise((resolve) => {
+            pc.onicecandidate = (event) => {
+                if (event.candidate) candidates.push(event.candidate.candidate);
+                else resolve(true);
+            };
+        });
+        await pc.setLocalDescription(await pc.createOffer());
+        const completed = await Promise.race([gathered, new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs))]);
+        return summarizeIceCandidates(candidates, {
+            gatheringState: pc.iceGatheringState,
+            gatheringCompleted: completed,
+            ms: Math.round(performance.now() - started),
+        });
+    } finally {
+        pc.close();
+    }
+}
+
+/** 候補の文字列から型の内訳を作る。 */
+function summarizeIceCandidates(lines, extra = {}) {
+    const counts = { hostMdns: 0, hostIp: 0, srflx: 0, relay: 0, other: 0 };
+    for (const line of lines) {
+        const type = /typ (\w+)/.exec(line)?.[1] ?? 'other';
+        if (type === 'host') {
+            const address = line.split(/\s+/)[4] ?? '';
+            if (address.endsWith('.local')) counts.hostMdns += 1;
+            else counts.hostIp += 1;
+        } else if (type === 'srflx') counts.srflx += 1;
+        else if (type === 'relay') counts.relay += 1;
+        else counts.other += 1;
+    }
+    return { total: lines.length, ...counts, ...extra };
+}
+
+/** 診断の 1 行表示。 */
+function describeIceProbe(probe) {
+    return `host(mdns)=${probe.hostMdns} host(ip)=${probe.hostIp} srflx=${probe.srflx} relay=${probe.relay} 状態=${probe.gatheringState}（${probe.ms} ms）`;
+}
+
+/** 候補ゼロのときの利用者向けの説明。 */
+const ICE_BLOCKED_MESSAGE =
+    'WebRTC の ICE 候補を 1 つも得られませんでした。ブラウザの WebRTC 設定（IP 処理の制限）、VPN、企業ネットワーク・ファイアウォールが UDP を遮断している可能性があります。対処: 別のネットワークやブラウザで試す、またはローカルで `node examples/server.mjs` を起動して http://localhost:8787/examples/demo/?selftest=1 を開く。';
+
 function describeIdentity(keys) {
     if (!keys) {
         return 'Ed25519: 無効（v1 署名なしモード）';
@@ -938,6 +991,15 @@ async function runSelfTest() {
     let nsClient = null;
 
     try {
+        // 0. ICE 候補の事前診断（#73）。候補が無ければ以降の接続は確立しないため、ここで止めて理由を示す
+        let iceProbe = null;
+        await runStep('0. WebRTC ICE 候補の収集（事前診断）', async () => {
+            iceProbe = await probeIceCandidates(iceServers);
+            if (iceProbe.total === 0) {
+                throw new Error(`${ICE_BLOCKED_MESSAGE}（${describeIceProbe(iceProbe)}）`);
+            }
+            return describeIceProbe(iceProbe);
+        });
         await netServer.start();
         await netClient.start();
 
@@ -999,7 +1061,8 @@ async function runSelfTest() {
             };
             const res = await netClient.bootstrap(searcher, { maxRetries: 3, initialBackoffMs: 200 });
             if (!res.connected.includes(netServer.localNodeId)) {
-                throw new Error('bootstrap がサーバーノードへ接続できませんでした');
+                const detail = iceProbe ? `（ICE 候補: ${describeIceProbe(iceProbe)}）` : '';
+                throw new Error(`bootstrap がサーバーノードへ接続できませんでした${detail}`);
             }
             return `peer=${netServer.localNodeId.slice(0, 8)}…`;
         });
