@@ -88,6 +88,9 @@ jobs:
       - name: Verify real-browser 2-tab connection over each signaling transport (#45)
         run: node examples/verify-signaling-browser.mjs
 
+      - name: Verify AbortSignal aborts an in-flight real WebRTC connection (#44)
+        run: node examples/verify-abort-browser.mjs
+
       - name: Build website (static Pages output)
         working-directory: webtcp_website
         run: |

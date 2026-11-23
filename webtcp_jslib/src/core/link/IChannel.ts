@@ -1,5 +1,14 @@
 import { NodeId } from '../types/protocol.js';
 
+/** `IChannel.connect()` のオプション（#44）。 */
+export interface ChannelConnectOptions {
+    /**
+     * 中断用シグナル。中断されたら待機中の接続を打ち切り、`AbortError` で reject する。
+     * 中断済みのネゴシエーションは破棄する（他の待機者が残っている場合は共有を保つ）。
+     */
+    signal?: AbortSignal;
+}
+
 /**
  * P2Pリンク層の抽象化インターフェース（specification.md §10.1）。
  *
@@ -24,9 +33,10 @@ export interface IChannel {
     /**
      * 指定ノードとのデータチャネルを確立する。
      * @param targetId 接続先ノードID
-     * @throws タイムアウトまたはシグナリング失敗時
+     * @param options 中断用シグナルなど（#44）
+     * @throws タイムアウトまたはシグナリング失敗時。中断時は `AbortError`
      */
-    connect(targetId: NodeId): Promise<void>;
+    connect(targetId: NodeId, options?: ChannelConnectOptions): Promise<void>;
 
     /**
      * 確立済みチャネルへ1メッセージを送信する。

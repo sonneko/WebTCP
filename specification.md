@@ -452,6 +452,23 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 | HTTP クライアントのヘッダ待ち (`HTTPClient.timeoutMs`) | 30 000 ms |
 | HTTP の `keep-alive` アイドル (`idleTimeoutMs`) | 30 000 ms |
 
+### 8.6 中断（`AbortSignal` / #44）
+
+`connect()` 系の API は `signal`（`AbortSignal`）を受け付ける。対象は次のとおり。`WebTCPNetwork.connect()` / `connectToPeer()` / `connectURL()`（§15.1）、`TransportLayer.connect()`、`LinkManager.connectToNeighbor()`、`IChannel.connect(targetId, options?)`（§10.1）。`signal` を省略した場合の動作は従来どおり（既定の接続タイムアウトのみ）である。
+
+| 項目 | 契約 |
+| :--- | :--- |
+| 中断時の例外 | `name === 'AbortError'` の `Error` で reject する (MUST)。既に中断済みの `signal` は、副作用を起こさずに即座に reject する (MUST)。 |
+| 応答性 | 中断は待機中の処理を即座に打ち切る (MUST)。接続タイムアウト（§8.5）の満了を待ってはならない (MUST NOT)。 |
+| 解放 | 中断は、その呼び出しが作った資源を解放する (MUST): 接続タイムアウトのタイマーと WebRTC の確立タイマー、`signal` のリスナー、部分的に開いた仮想ストリーム（`destroy()` により `RST` を送って破棄する）、発信側のネゴシエーション（`RTCPeerConnection` とデータチャネル）。 |
+| 共有ネゴシエーション | 同じピアへの複数の `connect()` が待機を共有している場合、中断された呼び出しだけを外す。残りの待機者があれば接続は継続する (MUST)。 |
+| 受信側のネゴシエーション | 相手からの offer で始まったネゴシエーションは、待機者を外しても破棄しない (MUST NOT)。相手からの接続を壊さないため。 |
+| 確立済みの接続 | 確立後の中断は接続を変えない。 |
+| 後続の接続 | 中断の後も、同じネットワークからの後続の `connect()` は新しいネゴシエーションで成功しなければならない (MUST)。 |
+| ログ | 中断は `debug` で記録し、`warn` / `error` を出してはならない (MUST NOT)。`bootstrap()` は中断を失敗扱いにせず、そのまま伝播する。 |
+
+**制限（非規範）**: 既に送信した SDP の offer と SYN は取り消せない。相手は応答し得るが、対応する発信側のネゴシエーションが無いため、相手側は自身の接続タイムアウトで破棄する。後続の接続は新しいネゴシエーションで行われる。`ISignalingAdapter.sendMessage()` は `signal` を受け取らないため、シグナリングの HTTP 送信そのものは打ち切られず、その結果だけを捨てる。
+
 ## 9. 生存期間（サービス役の稼働維持 / M7・#51）
 
 ### 9.1 目的とスコープ
@@ -542,7 +559,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 | メソッド/イベント | 契約 |
 | :--- | :--- |
 | `start()` | シグナリングの受信を開始する。完了後に解決。 |
-| `connect(targetId)` | `targetId` とのデータチャネルを確立する。タイムアウトで reject。 |
+| `connect(targetId, options?)` | `targetId` とのデータチャネルを確立する。タイムアウトで reject。`options.signal` で中断でき、中断時は `AbortError` で reject して資源を解放する（§8.6、#44）。 |
 | `send(targetId, data)` | 確立済みチャネルに 1 メッセージを送る。未確立なら reject。 |
 | `disconnect(targetId)` | チャネルを閉じ、`connection-status(false)` を発火する。 |
 | `close()` | 全チャネルを閉じる。 |
@@ -1207,9 +1224,9 @@ new WebTCPNetwork({
 
 start(): Promise<void>
 listen(port: VirtualPort, handler: (stream: VirtualStream) => void): void
-connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort): Promise<VirtualStream>
+connect(remoteId: NodeId, remotePort: VirtualPort, localPort?: VirtualPort, options?: { signal?: AbortSignal }): Promise<VirtualStream>
 connectURL(url: string | WebTCPUrl, options?: ConnectURLOptions): Promise<VirtualStream>
-connectToPeer(remoteId: NodeId): Promise<void>
+connectToPeer(remoteId: NodeId, options?: { signal?: AbortSignal }): Promise<void>
 bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<BootstrapResult>
 getNeighbors(): NodeId[]
 getRoutingTable(): RoutingTable
@@ -1226,7 +1243,7 @@ close(): void
   不一致ならコンストラクタが例外を投げる（`nodeId ... does not match the Ed25519 key fingerprint ...`）。
 - `keyManager` / `keyDirectory` / `requireSignatures` は M3（#28）で追加された。
   `keyManager` を渡すと自動的にプロトコル v2（署名必須）になり、`verifier` も `Ed25519PacketVerifier` が組まれる。
-- `connect()` は必要に応じてリンクを確立してから仮想接続を開始する。
+- `connect()` は必要に応じてリンクを確立してから仮想接続を開始する。`options.signal`（任意）で、リンク確立と仮想接続の両方を中断できる。中断時は `AbortError` で reject する（§8.6、#44）。`connectURL()` の `signal` も同様に `connect()` へ渡す。
 - `connectURL()` は M4 で追加。名前指定には `options.nameServer` が必要。`options.nameServer.domains` 設定時、ゾーン内名前は所有権検証を通る（§14.5）。
 - `serializer` を注入した場合、自動生成される `Ed25519PacketVerifier` にも**同じインスタンス**が渡される（#41）。注入シリアライザが `serializeForSigning()` を実装しない場合、鍵管理併用は構築時に失敗する（§11.3）。
 - `bootstrap()` はエントランス探索結果から候補へ順次接続を試み、失敗時は指数バックオフでリトライする。

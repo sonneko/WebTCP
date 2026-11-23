@@ -27,7 +27,12 @@ import { connectionHasToken, encodeChunk, encodeChunkedEnd, serializeHTTPRequest
 /** `HTTPClient` が要求するネットワーク機能（`WebTCPNetwork` のサブセット）。 */
 export interface HTTPClientNetwork {
     readonly localNodeId: string;
-    connect(remoteId: string, remotePort: VirtualPort, localPort?: VirtualPort): Promise<HTTPStreamLike>;
+    connect(
+        remoteId: string,
+        remotePort: VirtualPort,
+        localPort?: VirtualPort,
+        options?: { signal?: AbortSignal },
+    ): Promise<HTTPStreamLike>;
     connectURL(
         url: string | WebTCPUrl,
         options?: { nameServer?: NameServer; signal?: AbortSignal },
@@ -352,7 +357,7 @@ export class HTTPClient {
         if (signal?.aborted) throw new HTTPAbortError();
         const stream =
             'nodeId' in input && typeof input.nodeId === 'string'
-                ? await this.network.connect(input.nodeId, input.port)
+                ? await this.network.connect(input.nodeId, input.port, undefined, signal ? { signal } : {})
                 : await this.network.connectURL(formatWebTCPUrl((input as HTTPClientUrlRequest).url), {
                       ...(this.nameServer ? { nameServer: this.nameServer } : {}),
                       ...(signal ? { signal } : {}),

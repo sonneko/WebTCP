@@ -600,9 +600,11 @@ export class NameServer {
         };
         signal.addEventListener('abort', onAbort, { once: true });
         const id = randomId();
-        // `connect()` 自体は中断を受け取れない (#44) ため、宙吊りもここで打ち切る。
+        // `connect()` は `controller.signal` で中断できる（#44）。宙吊りの打ち切りは念のため残す。
         const attempt = (async (): Promise<NameAnswer | null> => {
-            holder.stream = await this.network.connect(nodeId, this.port);
+            holder.stream = await this.network.connect(nodeId, this.port, undefined, {
+                signal: controller.signal,
+            });
             const stream = holder.stream;
             if (controller.signal.aborted) { stream.destroy(); throw new Error('query aborted'); }
             this.active.add(stream);

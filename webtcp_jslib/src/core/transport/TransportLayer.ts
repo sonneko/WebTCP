@@ -2,9 +2,16 @@ import { NodeId, VirtualPort, WebTCPPacket } from '../types/index.js';
 import { EventEmitter } from '../util/EventEmitter.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { allocateEphemeralPort } from '../util/id.js';
+import { createAbortError, throwIfAborted } from '../util/abort.js';
 import type { IRoutingLayer } from '../routing/RoutingLayer.js';
 import { ManagedStream, SessionManager, SessionManagerOptions } from './SessionManager.js';
 import { TransportContext, VirtualStream, VirtualStreamOptions } from './VirtualStream.js';
+
+/** `TransportLayer.connect()` のオプション（#44）。 */
+export interface TransportConnectOptions {
+    /** 中断用シグナル。 */
+    signal?: AbortSignal;
+}
 
 /** アプリケーションがポートで待ち受ける際に登録するハンドラ。 */
 export type PortHandler = (stream: VirtualStream) => void;
@@ -93,15 +100,20 @@ export class TransportLayer extends EventEmitter implements TransportContext {
      * @param remoteNodeId 接続先ノードID
      * @param remotePort 接続先ポート
      * @param localPort ローカルポート（省略時は衝突しないエフェメラルポートを自動割り当て）
-     * @throws タイムアウト、RST、または送信失敗時
+     * @param options `signal` で中断できる（#44）。中断時は `AbortError` で reject し、
+     *   既に送った SYN は `RST` で取り消す（`destroy()`）。タイマーとリスナーは解除する。
+     * @throws タイムアウト、RST、送信失敗、または中断（`AbortError`）
      */
     public async connect(
         remoteNodeId: NodeId,
         remotePort: VirtualPort,
         localPort?: VirtualPort,
+        options: TransportConnectOptions = {},
     ): Promise<VirtualStream> {
         if (this.closed) throw new Error('TransportLayer is closed');
         this.assertPort(remotePort);
+        const signal = options.signal;
+        throwIfAborted(signal, `Connection to ${remoteNodeId}:${remotePort} aborted`);
 
         const local =
             localPort !== undefined
@@ -147,22 +159,37 @@ export class TransportLayer extends EventEmitter implements TransportContext {
                 cleanup();
                 reject(new Error('Stream closed before the connection was established'));
             };
+            const onAbort = (): void => {
+                cleanup();
+                this.logger.debug(`Connection to ${remoteNodeId}:${remotePort} aborted`);
+                // RST で相手側の半開きセッションも取り消す（#54）。
+                stream.destroy();
+                reject(createAbortError(`Connection to ${remoteNodeId}:${remotePort} aborted`));
+            };
 
             const cleanup = (): void => {
                 clearTimeout(timer);
                 stream.off('connect', onConnect);
                 stream.off('error', onError);
                 stream.off('close', onClose);
+                signal?.removeEventListener('abort', onAbort);
             };
 
             stream.once('connect', onConnect);
             stream.once('error', onError);
             stream.once('close', onClose);
+            signal?.addEventListener('abort', onAbort, { once: true });
         });
+        // 送信失敗時など `connected` を待たずに抜ける経路があるため、未処理の拒否にしない
+        connected.catch(() => undefined);
 
         try {
             await stream.initiateConnection();
         } catch (error) {
+            if (signal?.aborted) {
+                // 中断は `connected` 側で処理済み（ストリームは破棄されている）
+                throw createAbortError(`Connection to ${remoteNodeId}:${remotePort} aborted`);
+            }
             stream.close();
             throw error;
         }
