@@ -416,3 +416,49 @@ test('domain-resolution: resolve honors its deadline and caller abort even when 
         nodes.forEach((node) => node.close());
     }
 });
+
+test('domain-resolution: a deadline that ties with the query timer is reported as a timeout, not NotFound (#72)', async () => {
+    // 解決デッドラインと問い合わせタイマーは同じ時刻に満了しうる。タイマーの発火順に
+    // 結果が左右されると NameNotFoundError が混ざる（修正前は約 10% の試行で発生）。
+    const hub = new LoopbackNetwork();
+    const keys = await Promise.all([NodeKeyManager.create(), NodeKeyManager.create()]);
+    const channels = keys.map((keyManager) => hub.createChannel(keyManager.nodeId));
+    const originalSend = channels[0].send.bind(channels[0]);
+    channels[0].send = async (targetId, data) => {
+        if (targetId === keys[1].nodeId) return;
+        return originalSend(targetId, data);
+    };
+    const nodes = keys.map((keyManager, index) =>
+        new WebTCPNetwork({
+            channel: channels[index],
+            keyManager,
+            logger: noopLogger,
+            transport: { connectTimeoutMs: 8000, stream: { timeWaitMs: 0 } },
+        }),
+    );
+    const [a, stalled] = nodes;
+    await Promise.all(nodes.map((node) => node.start()));
+    const outcomes = [];
+    try {
+    for (let i = 0; i < 25; i += 1) {
+        const ns = new NameServer(a, {
+            logger: noopLogger,
+            resolvers: [stalled.localNodeId],
+            queryTimeoutMs: 1500,
+            resolveTimeoutMs: 300,
+        });
+        try {
+            await ns.resolve('nowhere');
+            outcomes.push('resolved');
+        } catch (error) {
+            outcomes.push(error?.name ?? 'unknown');
+        } finally {
+            ns.close();
+        }
+    }
+    } finally {
+        nodes.forEach((node) => node.close());
+    }
+    const wrong = outcomes.filter((name) => name !== 'NameResolutionTimeoutError');
+    assert.deepEqual(wrong, [], `every stalled resolution must time out (${outcomes.length} runs)`);
+});

@@ -941,7 +941,7 @@ await ns.resolve(name, { signal?, timeoutMs? }): Promise<NameResolution>
 - 既知ノードは明示 `resolvers`、直接隣接、経路表の宛先から重複を除いて作る。自身は除外し、最大 16 ノードへ最大 4 並列で問い合わせる。問い合わせは `network.connect()` を用いるため、マルチホップ経路と v2 署名検証を利用する。
 - サーバーは自分のローカル登録のみを権威データとして返す。再帰問い合わせはしない。クライアントが CNAME 連鎖を反復解決するため、ノード間の問い合わせループを作らない。
 - 要求/応答は最大 16 KiB。応答は要求 ID と名前が一致しなければならない。不正・タイムアウト応答は無視する。
-- **デッドラインと中断は絶対である (MUST)**。`resolveTimeoutMs`（既定 5 000 ms）と `AbortSignal` は、問い合わせ先列挙・`network.connect()` の宙吊り・応答待機の**いずれの局面でも**守られなければならない（#40）。単一ノードの停滞が `resolve()` 全体を遅らせてはならない (MUST NOT)。デッドライン到達は `NameResolutionTimeoutError`、呼び出し側の明示中断は区別可能なエラーで reject する。
+- **デッドラインと中断は絶対である (MUST)**。`resolveTimeoutMs`（既定 5 000 ms）と `AbortSignal` は、問い合わせ先列挙・`network.connect()` の宙吊り・応答待機の**いずれの局面でも**守られなければならない（#40）。単一ノードの停滞が `resolve()` 全体を遅らせてはならない (MUST NOT)。デッドライン到達は `NameResolutionTimeoutError`、呼び出し側の明示中断は区別可能なエラーで reject する。問い合わせが期限切れで打ち切られた場合は、空応答であっても `NameNotFoundError` ではなく `NameResolutionTimeoutError` とする（MUST、#72。タイマーの発火順に結果を依存させない）。
 - キャッシュは最大 1024 件で、期限切れ掃除後に最古エントリから退避する。検証に失敗したドメイン解決結果はキャッシュしてはならない (MUST NOT)（失敗は §14.5 の短 TTL 失敗キャッシュのみ）。
 - `domains`（`DomainAuthority`、§14.5）を渡した場合、ゾーン内名前の解決と応答は権威へ移譲される。渡さない場合、ゾーン内名前の解決は `DomainResolutionUnavailableError` で失敗する (MUST)。
 - 名前解決の結果は `NameResolution`（`name` / `nodeId` / `ttlMs` / `source` / `chain` / 任意の `record`・`proof`）である。`source` は `'local' | 'cache' | 'remote' | 'domain'`。
