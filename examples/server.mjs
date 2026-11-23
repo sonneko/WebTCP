@@ -17,6 +17,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDomainRegistry } from './domain-registry.mjs';
+import { acceptWebSocket } from './lib/ws-server.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -48,6 +49,9 @@ export function createDemoServer() {
     /** @type {Map<string, number>} */
     const presence = new Map();
     let nextMessageId = 1;
+    /** 押し込み型（SSE / WebSocket）の購読者。nodeId -> Set<(entry) => void>（specification.md §10.4.1）。 */
+    /** @type {Map<string, Set<(entry: any) => void>>} */
+    const subscribers = new Map();
     /** `domain.global` の参照レジストリ（specification.md §14.6）。 */
     const domains = createDomainRegistry();
 
@@ -104,18 +108,135 @@ export function createDemoServer() {
                 return;
             }
 
-            pruneSignals();
-            const queue = queues.get(body.toId) ?? [];
-            queue.push({
-                id: nextMessageId++,
-                fromId: body.fromId,
-                message: { ...body.message, fromId: body.fromId },
-                at: Date.now(),
-            });
-            queues.set(body.toId, queue);
-            presence.set(body.fromId, Date.now());
-
+            enqueue(body.fromId, body.toId, body.message);
             res.writeHead(202).end();
+        });
+    }
+
+    /**
+     * メッセージを宛先の待ち行列へ積み、押し込み型の購読者へ即時に渡す。
+     * ポーリング（`/messages`）と押し込み型（`/events`、`/ws`）の両方が同じ列を使う。
+     */
+    function enqueue(fromId, toId, message) {
+        pruneSignals();
+        const entry = {
+            id: nextMessageId++,
+            fromId,
+            message: { ...message, fromId },
+            at: Date.now(),
+            delivered: false,
+        };
+        const queue = queues.get(toId) ?? [];
+        queue.push(entry);
+        queues.set(toId, queue);
+        presence.set(fromId, Date.now());
+        const listeners = subscribers.get(toId);
+        if (listeners && listeners.size > 0) {
+            entry.delivered = true;
+            for (const deliver of listeners) deliver(entry);
+        }
+        return entry;
+    }
+
+    /**
+     * 押し込み型の購読を開始する。先に再生し、以後の新着は即時に渡す。削除はしない。
+     * - 再接続（`resume`）: `after` より新しい未失効メッセージをすべて再生する。
+     * - 初回（`resume` なし）: 未配信のものだけを再生する（ポーリングと同じ「一度だけ配る」）。
+     * （specification.md §10.4.1）
+     * @returns {() => void} 購読を解除する関数
+     */
+    function subscribe(nodeId, after, resume, deliver) {
+        pruneSignals();
+        for (const entry of queues.get(nodeId) ?? []) {
+            if (entry.id > after && (resume || !entry.delivered)) {
+                entry.delivered = true;
+                deliver(entry);
+            }
+        }
+        const set = subscribers.get(nodeId) ?? new Set();
+        set.add(deliver);
+        subscribers.set(nodeId, set);
+        presence.set(nodeId, Date.now());
+        return () => {
+            const current = subscribers.get(nodeId);
+            if (!current) return;
+            current.delete(deliver);
+            if (current.size === 0) subscribers.delete(nodeId);
+        };
+    }
+
+    /** `GET /events?nodeId=&after=`（SSE、specification.md §10.4.1）。 */
+    function handleEvents(req, url, res) {
+        const nodeId = url.searchParams.get('nodeId');
+        if (!nodeId) {
+            sendJson(res, 400, { error: 'nodeId is required' });
+            return;
+        }
+        const after = Number(req.headers['last-event-id'] ?? url.searchParams.get('after') ?? '0') || 0;
+        const resume = url.searchParams.get('resume') === '1' || after > 0;
+
+        res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+        });
+        res.write(': connected\n\n');
+
+        const unsubscribe = subscribe(nodeId, after, resume, (entry) => {
+            res.write(
+                `id: ${entry.id}\nevent: signal\ndata: ${JSON.stringify({
+                    fromId: entry.fromId,
+                    message: entry.message,
+                })}\n\n`,
+            );
+        });
+        const keepAlive = setInterval(() => {
+            presence.set(nodeId, Date.now());
+            res.write(': keepalive\n\n');
+        }, 15_000);
+        keepAlive.unref();
+
+        req.on('close', () => {
+            clearInterval(keepAlive);
+            unsubscribe();
+        });
+    }
+
+    /** `GET /ws?nodeId=&after=` の Upgrade（WebSocket、specification.md §10.4.1）。 */
+    function handleUpgrade(req, socket, head) {
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        if (url.pathname !== '/ws' || !String(req.headers.upgrade ?? '').toLowerCase().includes('websocket')) {
+            socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+            return;
+        }
+        const nodeId = url.searchParams.get('nodeId');
+        if (!nodeId || !req.headers['sec-websocket-key']) {
+            socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+            return;
+        }
+        const after = Number(url.searchParams.get('after') ?? '0') || 0;
+        const resume = url.searchParams.get('resume') === '1' || after > 0;
+
+        let unsubscribe = () => {};
+        const connection = acceptWebSocket(req, socket, head, {
+            maxPayload: MAX_BODY_BYTES,
+            onText: (text) => {
+                let body;
+                try {
+                    body = JSON.parse(text);
+                } catch {
+                    return;
+                }
+                if (body?.type !== 'send' || typeof body.toId !== 'string' || typeof body.message !== 'object' || body.message === null) {
+                    return;
+                }
+                enqueue(nodeId, body.toId, body.message);
+            },
+            onClose: () => unsubscribe(),
+        });
+        unsubscribe = subscribe(nodeId, after, resume, (entry) => {
+            connection.send(JSON.stringify({ id: entry.id, fromId: entry.fromId, message: entry.message }));
         });
     }
 
@@ -296,6 +417,10 @@ export function createDemoServer() {
             handleMessages(url, res);
             return;
         }
+        if (url.pathname === '/events' && req.method === 'GET') {
+            handleEvents(req, url, res);
+            return;
+        }
         if (url.pathname === '/entrances' && req.method === 'GET') {
             handleEntrances(url, res);
             return;
@@ -314,6 +439,8 @@ export function createDemoServer() {
 
         void serveStatic(url, res, req.method === 'HEAD');
     });
+
+    server.on('upgrade', handleUpgrade);
 
     const pruneTimer = setInterval(pruneSignals, 30_000);
     pruneTimer.unref();
@@ -336,7 +463,7 @@ if (isMain) {
     server.listen(PORT, HOST, () => {
         console.log(`[WebTCP demo] http://localhost:${PORT}/examples/demo/`);
         console.log(`[WebTCP demo] self-test: http://localhost:${PORT}/examples/demo/?selftest=1`);
-        console.log(`[WebTCP demo] signaling hub: POST /signal, GET /messages, GET /entrances`);
+        console.log(`[WebTCP demo] signaling hub: POST /signal, GET /messages (poll), GET /events (SSE), GET /ws (WebSocket), GET /entrances`);
         console.log(`[WebTCP demo] domain registry: POST /domain/record, GET /domain/record|checkpoint|checkpoints|log`);
     });
 }

@@ -82,6 +82,12 @@ jobs:
       - name: Verify 2-tab browser demo (real WebRTC)
         run: node examples/verify-browser.mjs
 
+      - name: Verify signaling transports match (HTTP polling, SSE, WebSocket) (#45)
+        run: node examples/verify-signaling-transports.mjs
+
+      - name: Verify real-browser 2-tab connection over each signaling transport (#45)
+        run: node examples/verify-signaling-browser.mjs
+
       - name: Build website (static Pages output)
         working-directory: webtcp_website
         run: |

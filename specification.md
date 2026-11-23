@@ -608,6 +608,48 @@ interface PublicKeyPayload {
 - サーバーは配信済みメッセージを削除してよい (MAY)。未配信メッセージは 60 秒で失効することを推奨する。
 - `sendMessage` は 2xx 以外で reject する。
 
+### 10.4.1 トランスポート別の契約（M9 / #45）
+
+`ISignalingAdapter` の契約（§10.2）は変えない。トランスポートは次の 3 種類で、既定は**ポーリング**（`SignalingAdapterHub`）である。ポーリングは依存なし・プロキシ耐性が高いため、既定を変えてはならない (MUST NOT)。
+
+| 項目 | ポーリング（既定、`SignalingAdapterHub`） | SSE（`SseSignalingAdapter`） | WebSocket（`WebSocketSignalingAdapter`） |
+| :--- | :--- | :--- | :--- |
+| 受信エンドポイント | `GET /messages?nodeId=<id>&after=<cursor>` | `GET /events?nodeId=<id>&after=<cursor>`（`text/event-stream`） | `GET /ws?nodeId=<id>&after=<cursor>`（Upgrade） |
+| 受信の契機 | 次のポーリング（既定 1000 ms 間隔） | 到着時に即時 | 到着時に即時 |
+| 送信 | `POST /signal` | `POST /signal` | Socket へ `{"type":"send","toId","message"}`。未接続なら `POST /signal` へ切り替える |
+| 切断時の再接続 | 不要（ポーリングを継続） | 指数バックオフで再接続し、カーソルから再生 | 同左 |
+| 追加の依存 | なし | なし（`fetch` のストリーム読み取り） | なし（ブラウザ / Node.js 22 以降の組み込み `WebSocket`） |
+| プロキシ・中継の注意 | 通常の HTTP のみ | 中継がバッファリングすると遅延する | Upgrade を通す設定が必要 |
+
+**共通の規則**
+
+- **再生**（保持期間は 60 秒、§10.4 と同じ）:
+  - *再接続*（クライアントが `resume=1` を付ける。受信済みのカーソルがあるとき）: サーバーは `id > after` の未失効メッセージを**すべて**再送する（配信済みかどうかは問わない。接続が切れる直前に送られたメッセージを失わないため）。
+  - *初回接続*（`resume` が無い）: 受信者へまだ一度も配信されていないメッセージだけを再送する。ポーリングの「一度だけ配る」と同じ扱いで、以前の受信者が受け取った古いメッセージを新しいリスナーへ再送しない。
+  - 再送・新着の配信はいずれも、そのメッセージを「配信済み」とする。削除はしてはならない (MUST NOT)（保持期間の失効まで残す）。
+- **重複排除**: クライアントは `id <= cursor` のメッセージを破棄する (MUST)。カーソルは受信した最大の `id`。
+- **再接続の判定**: クライアントは、一度でも接続に成功した後の再接続では `resume=1` を付けなければならない (MUST)。カーソルが 0 のままでも同様。
+- **順序**: 同一の受信者へは `id` の昇順で配信する (MUST)。
+- **`public-key` の再送**: アダプタは `public-key` を自分で発信しない（§10.2 の MUST NOT）。切断中に送られた `public-key` は、保持期間内であれば再接続後の再生で届く。保持期間を過ぎた場合は、DataChannel 開通時の送信（§10.2.1）に依存する。
+- **バックオフ**（SSE / WebSocket の既定）: 初回 500 ms、以後 2 倍、上限 10 秒。接続が成功するとリセットする。
+- **初回接続**: `listen()` は初回の接続に成功してから解決する。初回が失敗した場合は reject する（ポーリングと同じ）。
+
+**SSE のワイヤ形式**
+
+```
+id: <number>
+event: signal
+data: {"fromId": NodeId, "message": SignalMessage}
+
+```
+
+サーバーは 15 秒ごとにコメント行（`: keepalive`）を送る。クライアントは `after` のクエリ、または `Last-Event-ID` ヘッダーでカーソルを指定してよい (MAY)。
+
+**WebSocket のワイヤ形式（JSON テキストフレーム）**
+
+- サーバー → クライアント: `{"id": number, "fromId": NodeId, "message": SignalMessage}`
+- クライアント → サーバー: `{"type": "send", "toId": NodeId, "message": SignalMessage}`。`fromId` はサーバーが接続時の `nodeId` から設定する。
+
 ### 10.5 EntranceSearcherAdapterHub と自動ブートストラップ
 
 | メソッド | パス | レスポンス |
