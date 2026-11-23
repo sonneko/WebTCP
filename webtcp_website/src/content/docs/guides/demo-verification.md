@@ -17,6 +17,14 @@ description: 2 タブデモの操作手順、内蔵の自己チェック機能�
 
 公開版は静的モードです。デモサーバーが応答しなければ自動的に静的モードになり、ページ上部のバナーに表示されます。`?static=1` を付けると、ローカルでも静的モードを強制できます（検証用）。
 
+### 自己チェックが失敗するとき
+
+自己チェックは最初に **step 0「WebRTC ICE 候補の収集（事前診断）」** を行います。この環境で候補を 1 つも得られない場合、step 0 が数秒で FAIL になり、理由と対処が表示されます（以前は約 45 秒待ってから「bootstrap がサーバーノードへ接続できませんでした」と表示されていました）。
+
+- 原因の多くは、ブラウザの WebRTC 設定（IP 処理の制限）、VPN、企業ネットワークやファイアウォールによる UDP の遮断です。
+- 対処: 別のネットワークやブラウザで試す。ローカルで試すなら `node examples/server.mjs` を起動して `http://localhost:8787/examples/demo/?selftest=1` を開く。
+- step 0 が PASS なのに step 1 が失敗した場合は、詳細に ICE 候補の内訳（`host(mdns)` / `host(ip)` / `srflx` / `relay`）が表示されます。その内訳を Issue に添えてください。
+
 ## デモサーバーの起動
 
 事前にライブラリをビルドしてから、デモサーバーを起動します。
@@ -39,6 +47,7 @@ node examples/server.mjs
 http://localhost:8787/examples/demo/?selftest=1
 ```
 
+0. WebRTC ICE 候補の事前診断（候補ゼロなら以降を止めて理由を表示、#73）
 1. エントランス探索と `network.bootstrap()` による実 WebRTC リンク確立
 1b. Ed25519 署名検証と NodeId の鍵指紋一致（プロトコル v2）
 1c. NameServer 名前解決（A/CNAME）と `webtcp://` URL パース（M4 / #25）

@@ -177,6 +177,7 @@ npm run build     # dist/ に ESM + 型定義を生成
 - **公開デモ**: <https://sonneko.github.io/WebTCP/examples/demo/>。サーバーを使わず、ブラウザだけで動きます。
   - 動くもの: 1 タブの自己チェック（`?selftest=1`、`domain.global` の台帳検査 1d だけは「省略」と表示）と、同じブラウザの 2 タブ接続（BroadcastChannel）。
   - 動かないもの: 別のブラウザ・別のデバイスとの接続、`domain.global` の登録と解決、シグナリングハブ。これらはローカルの `node examples/server.mjs` で動きます（下記）。
+  - 自己チェックは WebRTC の ICE 候補を 1 つも得られない環境（VPN・企業ネットワーク・UDP 遮断など）では動きません。その場合は step 0 で理由が表示されます。詳しくは[デモのガイド](https://sonneko.github.io/WebTCP/guides/demo-verification/)を参照してください。
 - **デプロイ**: `main` への push で `.github/workflows/deploy-pages.yml` が `webtcp_website` をビルドし、GitHub Pages（Source: GitHub Actions）へ配信します。デモは `scripts/sync-demo.mjs` が `examples/demo` と `webtcp_jslib/dist` を複製して同梱します（生成物は Git 管理外）。設計の詳細は [design.md](./design.md) §3.32。
 
 ## デモ（実ブラウザでの 2 タブ検証 & 自己チェック）

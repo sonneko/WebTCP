@@ -120,9 +120,10 @@ if (!origin) {
 const siteRoot = `${origin}${BASE}`;
 console.log(`[verify-static-demo] site: ${siteRoot}`);
 
+// 既定の起動設定（訪問者と同じ ICE 経路: mDNS 候補）で検証する。mDNS を無効にすると経路が変わるため使わない（#73）
 const launchOptions = {
     headless: true,
-    args: ['--disable-features=WebRtcHideLocalIpsWithMdns', '--no-sandbox'],
+    args: ['--no-sandbox'],
     ...(process.env.WEBTCP_CHROMIUM_PATH ? { executablePath: process.env.WEBTCP_CHROMIUM_PATH } : {}),
 };
 const browser = await playwright.chromium.launch(launchOptions);
@@ -219,6 +220,40 @@ try {
     console.log('[4] 静的モードは台帳へ書き込まない');
     const writes = posted.filter((p) => p.includes('/domain/'));
     check(writes.length === 0, `POST /domain/* が発生していない（${writes.length} 件）`);
+
+    // 5. ICE 候補を出せない環境（UDP ホスト候補を遮断）: 約 45 秒の待ちではなく、早く理由を示して止まる（#73）
+    console.log('[5] ICE 候補を出せない環境の自己チェック（早期診断）');
+    const blockedBrowser = await playwright.chromium.launch({
+        ...launchOptions,
+        args: ['--no-sandbox', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+    });
+    try {
+        const blockedPage = await blockedBrowser.newPage();
+        await blockedPage.goto(`${siteRoot}/examples/demo/?selftest=1`, { waitUntil: 'load', timeout: 60_000 });
+        const startedAt = Date.now();
+        await blockedPage.waitForFunction(
+            () => ['pass', 'fail'].includes(document.documentElement.dataset.selftest ?? ''),
+            null,
+            { timeout: 60_000 },
+        );
+        const elapsed = Date.now() - startedAt;
+        const blocked = await blockedPage.evaluate(() => window.__WEBTCP_SELFTEST__ ?? null);
+        const blockedSteps = blocked?.steps ?? [];
+        check(blocked?.ok === false, '候補ゼロのとき自己チェックは FAIL になる');
+        check(
+            blockedSteps[0]?.name?.startsWith('0.') && blockedSteps[0]?.ok === false,
+            `失敗は事前診断（step 0）で起きる（${blockedSteps[0]?.name ?? 'なし'}）`,
+        );
+        check(
+            (blockedSteps[0]?.error ?? '').includes('ICE 候補を 1 つも得られませんでした'),
+            '候補ゼロの理由と対処が表示される',
+        );
+        check(blockedSteps.length === 1, `以降の項目は実行されない（${blockedSteps.length} 件）`);
+        check(elapsed < 20_000, `早く止まる（${elapsed} ms、45 秒の待ちではない）`);
+        console.log(`       ${blockedSteps[0]?.error ?? ''}`);
+    } finally {
+        await blockedBrowser.close();
+    }
 } finally {
     await browser.close();
     if (siteServer) siteServer.close();
