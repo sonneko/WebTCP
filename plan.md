@@ -335,6 +335,17 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 - **既存の検証**: `npm test`、`verify-browser.mjs`、`verify-signaling-browser.mjs`、`verify-signaling-transports.mjs`、`verify-static-demo.mjs`（21 件）で回帰がないことを確認。
 - **未確認 / 制限**: 送信済みの offer / SYN は取り消せない。`ISignalingAdapter.sendMessage()` は中断を受け取らない（HTTP 送信そのものは打ち切らない）。実ネットワーク（TURN 経由・NAT 越え）での中断は未検証。
 
+### 3.14 サイクル16: 名前解決のデッドライン競合の修正（#72）
+
+- **依頼**: sonneko（2026-11-23）。flaky テスト `domain-resolution: resolve honors its deadline and caller abort even when a peer stalls (#40)` を恒久対応する。
+- **原因（実行で確認）**: 解決デッドラインのタイマーと問い合わせタイマーが同時刻に満了する。タイマー処理順によっては、期限で打ち切られた空応答が `NameNotFoundError` として `resolve()` を決着させた。同一プロセスで 60 回試行すると約 10%（7 / 60、3 / 60、8 / 60）で発生。修正前の単発 15 回・負荷下 15 回は偶然通っていた。
+- **変更**:
+  - [x] 仕様 §13.2（期限切れは `NameResolutionTimeoutError`、MUST）、設計 §3.23（#72 の項）
+  - [x] `NameServer.queryNode()`: 解決デッドラインで打ち切られたら `NameResolutionTimeoutError`
+  - [x] `NameServer.queryKnownNodes()`: 期限到達を記録し、空応答で終わった場合はタイムアウトとして返す
+  - [x] 回帰テスト `domain-resolution: a deadline that ties with the query timer ...`（25 回連続で必ずタイムアウトになることを確認。修正前のコードでは失敗、修正後は通過）
+- **検証**: 修正後の同一プロセス 60 回 × 2 回で `NameNotFoundError` 0 件（120 / 120 タイムアウト）。`domain-resolution.test.mjs` 単体を 5 回連続で 9 / 9 合格。`npm test` 260 件中 259 合格、0 失敗、1 skip。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）

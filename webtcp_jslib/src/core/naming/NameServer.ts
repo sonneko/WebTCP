@@ -564,8 +564,13 @@ export class NameServer {
         let next = 0;
         const answers: NameAnswer[] = [];
         const collectAll = wantOwnership;
+        // デッドラインに達したことを記録する。空応答のまま終わった原因が「期限切れ」なら
+        // 「名前が存在しない」ではなく「タイムアウト」として報告する (#72)。
+        // タイマー発火順（デッドラインの setTimeout と問い合わせのタイマーは同時刻）に結果を依存させないため。
+        let deadlineReached = false;
         const worker = async (): Promise<void> => {
-            while (!signal.aborted && Date.now() < deadline && (collectAll || answers.length === 0)) {
+            while (!signal.aborted && (collectAll || answers.length === 0)) {
+                if (Date.now() >= deadline) { deadlineReached = true; return; }
                 const nodeId = candidates[next++];
                 if (nodeId === undefined) return;
                 try {
@@ -573,11 +578,13 @@ export class NameServer {
                     if (answer && (collectAll || answers.length === 0)) answers.push(answer);
                 } catch (error) {
                     if (signal.aborted) return;
+                    if (error instanceof NameResolutionTimeoutError) { deadlineReached = true; return; }
                     this.logger.debug(`Name query to ${nodeId} failed:`, error);
                 }
             }
         };
         await Promise.all(Array.from({ length: Math.min(this.queryConcurrency, candidates.length) }, () => worker()));
+        if (answers.length === 0 && deadlineReached && !signal.aborted) throw new NameResolutionTimeoutError(name);
         return answers;
     }
 
@@ -588,8 +595,12 @@ export class NameServer {
         deadline: number,
         wantOwnership: boolean,
     ): Promise<NameAnswer | null> {
-        const remaining = Math.min(this.queryTimeoutMs, deadline - Date.now());
+        const untilDeadline = deadline - Date.now();
+        const remaining = Math.min(this.queryTimeoutMs, untilDeadline);
+        if (untilDeadline <= 0) throw new NameResolutionTimeoutError(name);
         if (remaining <= 0 || signal.aborted) throw new Error('query deadline exceeded');
+        // 残り時間が queryTimeoutMs より短い = 解決全体のデッドラインが打ち切り理由 (#72)。
+        const clippedByDeadline = untilDeadline < this.queryTimeoutMs;
         const controller = new AbortController();
         // `stream` は非同期の `connect()` 完了後に入るため、制御流れ解析に頼まないよう箱に入れる。
         const holder: { stream: VirtualStream | null } = { stream: null };
@@ -637,6 +648,8 @@ export class NameServer {
                     const late = holder.stream;
                     if (late) { this.active.delete(late); late.destroy(); }
                 });
+                // 解決全体のデッドラインで打ち切られた場合はタイムアウトとして報告する (#72)。
+                if (clippedByDeadline) throw new NameResolutionTimeoutError(name);
                 throw new Error('query timed out');
             }
             return outcome;

@@ -327,6 +327,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 ### 3.23 停滞ノードに強い解決と、署名対象のシリアライザ同一性（#40 / #41）
 
 - **#40**: `NameServer` の問い合わせは「`connect()` 待機」「応答待機」を区別せず、**同じ AbortController でまとめる**。`queryKnownNodes()` は `Promise.all` をやめ、*最初の成功* または *デッドライン* で返す（残りのワーカーは abort してストリームを `destroy()`）。`resolve()` は各 `await` 後に中断・超過を再評価し、`NameResolutionTimeoutError` を返す。宙吊り `connect()` を殺せない TransportLayer の制約（#44）は、**待たずに返す**ことでユーザー体感として解決する（内部的に残りが解決しても無視する）。
+- **#72**: 解決デッドラインと問い合わせタイマーは同じ時刻に満了しうる。どちらが先に処理されるかで、期限切れの打ち切りが `NameNotFoundError`（空応答）として `resolve()` を決着させる競合があった（ループ試行で約 10%、単発の CI 実行でも稀に発生）。対策: `queryNode()` は解決デッドラインで打ち切られた場合 `NameResolutionTimeoutError` を投げ、`queryKnownNodes()` は期限到達を記録して空応答のまま終わった場合にタイムアウトとして返す。`NameNotFoundError` は期限内に候補が尽きた場合だけ生じる。
 - **#41**: `Ed25519PacketVerifier` は署名対象を `serializer.serializeForSigning()` からのみ得る。`WebTCPNetwork` は注入された `serializer` を検証器へも渡す。`serializeForSigning` 欠落時に v1 ヘッダーで近似していた黙ったフォールバックは削除し、構築時エラーへ置き換える（誤った署名対象で署名し続ける状態を作らない）。
 
 ### 3.24 HTTP を「ストリームの上の純粋なバイトプロトコル」として実装する（M6 / #50）
