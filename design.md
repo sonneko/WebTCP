@@ -364,7 +364,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **`HTTPServer` は `network.listen()` のハンドラを 1 つ占有する**。同じポートに別のハンドラを登録できないのは `TransportLayer` の既存契約であり、これは意図的（1 ポート 1 ハンドラ = HTTP サーバー）。HTTP と生 TCP を同じポートで混在させたい場合は仮想ポートを分ける。
 - **接続ごとに `AbortController` を持ち**、`server.close()` で全接続を中断する。ハンドラの Promise が後から解決しても、応答は破棄する（`HTTPResponseWriter` が `closed` フラグを見る）。
 - **アイドルタイムアウト**はサーバー側で `idleTimeoutMs`（既定 30 000 ms）のタイマーとして実装し、リクエスト受信のたびにリセットする。発火したら `end()`。クライアント側は接続プールのエントリに `lastUsed` を持ち、`HTTPClient.fetch()` の前に期限切れを捨てる。
-- **`HTTPClient` の接続プールはキー `(nodeId, port)` で 1 本**。同時 `fetch()` が重なった場合は新しい接続を作って並行実行し、終了後にプールへ戻す（戻すのは 1 本だけ）。これは HTTP/1.1 の「1 接続 1 リクエスト」原則と一致する。
+- **`HTTPClient` の接続プールはキー `(nodeId, port)` で 1 本**（サイクル17 / §3.36 で上限・LRU・アイドル回収を追加。詳細は §3.36）。同時 `fetch()` が重なった場合は新しい接続を作って並行実行し、終了後にプールへ戻す（戻すのは 1 本だけ）。これは HTTP/1.1 の「1 接続 1 リクエスト」原則と一致する。
 
 ### 3.27 `serveHTTP` / `fetchURL` を `WebTCPNetwork` に生やす理由
 
@@ -453,6 +453,21 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **NameServer / HTTPClient も signal を渡す**: `NameServer` の問い合わせは `controller.signal` を `connect()` へ渡すようになった（#40 の回帰テストは変わらず通る。宙吊りの打ち切りは念のため残した）。`HTTPClient` は `signal` を `network.connect()` へ渡す。
 - **制限**: 送信済みの offer / SYN は取り消せない（相手側は自身のタイムアウトで破棄する）。`ISignalingAdapter.sendMessage()` は `signal` を受け取らないため、シグナリング HTTP の送信そのものは打ち切らない。将来 `ISignalingAdapter` の契約へ `signal` を足す余地はあるが、本サイクルの範囲外とした。
 - **検証**: `tests/abort-propagation.test.mjs`（9 件）は、接続試行中（SYN 送信済み・RTCPeerConnection 生成済み）に中断し、タイマー・リスナー・セッション・RTCPeerConnection が残らないこと、後続接続が成功することを確かめる。変異（WebRTC の破棄を外す）で失敗することも確認した。`examples/verify-abort-browser.mjs` は実 Chromium の RTCPeerConnection で同じ検証を行い、CI の `browser-e2e` で実行する。
+
+### 3.36 HTTPClient の接続プールに上限・LRU・アイドル回収を入れる（#58 / サイクル17）
+
+- **問題**: プールは `Map<key, PooledConnection>` で、`close()` まで無制限に `VirtualStream` を保持した。アイドル期限は次のリクエストのときにしか判定されず、多数の `(nodeId, port)` を巡回すると接続とタイマーが残り、サーバーの `maxConnections`（既定 64）に当たって `503` を受けうる。
+- **同時に見つかった既存の不具合**: 同じキーで並行リクエストが重なると、後から作った接続が `pool.set(key, …)` で前の接続を上書きした。上書きされた接続は `close()` の対象から外れ、閉じられずに残っていた。
+- **決定**:
+  - プールは **接続の集合（`Set<PooledConnection>`、挿入順 = LRU 順）** にする。各エントリが `key` を持ち、キーでの検索は線形（上限が小さいため十分）。使用時・返却時に末尾へ移して最近使用順を保つ。
+  - `maxPooledConnections`（既定 32、1 以上の整数。不正値は構築時に例外）。返却（`release(keep=true)`）のたびに超過分を **アイドルの LRU から** `end()` する。**使用中の接続は追い出さない**（使用中が上限を超える間は一時的に超えてよい。仕様 §16.5 の 9）。
+  - **アイドル回収はエントリごとのタイマー**（`idleTimeoutMs`、`unref` 可能なら付ける）。アイドルになった時点で張り、取得・終了時に消す。発火したら `end()` してプールから外す。
+  - **相手からの切断はアイドル中に検知する**: アイドルのエントリに `end` / `close` リスナーを付け、使用に入るときに外す。リスナーは `busy` を見て、使用中のエントリを誤って外さない。
+  - **同キーの余分な接続は戻さない**: 返却時にアイドルの同キー接続が既にあれば、今回の接続を `end()` する（仕様 §16.5 の 10）。
+  - `getPoolStats()` は `total / busy / idle / max` と累計 `evictedLru / expiredIdle / closedByPeer` を返す。`pooledConnectionCount` は `total` と同じ値を返す（互換のため残す）。
+- **互換**: 既定値（keep-alive 既定、30 000 ms、`fetchURL()` の 1 リクエストごとの切断）は変えない。`pool` は非公開フィールドであり、テストは内部構造に依存しない形にする（既存テストは `[...client.pool][0]` を使っていたため、`pool` の走査方法だけを更新）。
+- **制限**: LRU は接続数の上限であり、メモリ使用量の上限ではない。`VirtualStream` の受信バッファは接続ごとに上限があるが、総量は見ていない（#56 の範囲）。
+- **検証**: `tests/http-client-pool.test.mjs`（上限超過時の LRU 追い出し・使用中を追い出さないこと・アイドルタイマーでの回収・相手切断の即時除去・同キー並行の上書き不具合の修正・`getPoolStats()` の内訳）を、実際のループバック接続で実行する。
 
 ## 4. クラス責務
 

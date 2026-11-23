@@ -70,6 +70,7 @@ export type {
     HTTPClientDirectRequest,
     HTTPClientNetwork,
     HTTPClientOptions,
+    HTTPPoolStats,
     HTTPClientRequestOptions,
     HTTPClientUrlRequest,
 } from './client.js';

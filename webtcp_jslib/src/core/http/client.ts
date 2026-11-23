@@ -81,6 +81,11 @@ export interface HTTPClientOptions {
     keepAlive?: boolean;
     /** `keep-alive` 接続のアイドルタイムアウト（ms）。既定 30 000。 */
     idleTimeoutMs?: number;
+    /**
+     * 接続プールの上限（接続数）。既定 32。超えたらアイドル接続のうち最も古く使われたものを閉じる。
+     * 使用中の接続は追い出さない（仕様 §16.5 の 9）。
+     */
+    maxPooledConnections?: number;
     /** パーサの上限。 */
     limits?: HTTPParserLimits;
     /** ロガー。 */
@@ -95,10 +100,33 @@ export interface FetchURLOptions extends HTTPClientRequestOptions {
 }
 
 interface PooledConnection {
+    key: string;
     stream: HTTPStreamLike;
     reader: HTTPMessageReader;
     lastUsed: number;
     busy: boolean;
+    /** アイドル期限のタイマー（アイドル中だけ張る）。 */
+    idleTimer: ReturnType<typeof setTimeout> | null;
+    /** アイドル中に相手の `end` / `close` を検知するリスナー（使用に入るとき外す）。 */
+    onPeerClose: (() => void) | null;
+}
+
+/** 接続プールの診断情報（`getPoolStats()`）。 */
+export interface HTTPPoolStats {
+    /** プールしている接続数（使用中を含む）。 */
+    total: number;
+    /** 使用中（リクエストの途中）の接続数。 */
+    busy: number;
+    /** アイドルの接続数。 */
+    idle: number;
+    /** 上限（`maxPooledConnections`）。 */
+    max: number;
+    /** LRU 追い出しの累計。 */
+    evictedLru: number;
+    /** アイドル期限切れによる回収の累計。 */
+    expiredIdle: number;
+    /** 相手からの切断（FIN / close）でプールから外した累計。 */
+    closedByPeer: number;
 }
 
 type SendCapableStream = HTTPStreamLike & {
@@ -121,9 +149,12 @@ export class HTTPClient {
     private readonly maxResponseBytes: number;
     private readonly keepAlive: boolean;
     private readonly idleTimeoutMs: number;
+    private readonly maxPooledConnections: number;
     private readonly limits: HTTPParserLimits;
     private readonly nameServer: NameServer | null;
-    private readonly pool = new Map<string, PooledConnection>();
+    /** 挿入順を LRU 順（先頭が最も古い）として使う。 */
+    private readonly pool = new Set<PooledConnection>();
+    private readonly poolCounters = { evictedLru: 0, expiredIdle: 0, closedByPeer: 0 };
     private closed = false;
 
     constructor(network: HTTPClientNetwork, options: HTTPClientOptions = {}) {
@@ -133,6 +164,9 @@ export class HTTPClient {
         this.maxResponseBytes = options.maxResponseBytes ?? 8 * 1024 * 1024;
         this.keepAlive = options.keepAlive !== false;
         this.idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
+        const max = options.maxPooledConnections ?? 32;
+        if (!Number.isInteger(max) || max <= 0) throw new Error('maxPooledConnections must be a positive integer');
+        this.maxPooledConnections = max;
         this.limits = options.limits ?? {};
         void (options.logger as Logger | undefined);
     }
@@ -301,7 +335,8 @@ export class HTTPClient {
     /** 接続プールを閉じる。 */
     public close(): void {
         this.closed = true;
-        for (const entry of this.pool.values()) {
+        for (const entry of [...this.pool]) {
+            this.detachIdle(entry);
             entry.reader.dispose();
             try {
                 (entry.stream as SendCapableStream).destroy?.();
@@ -317,6 +352,21 @@ export class HTTPClient {
         return this.pool.size;
     }
 
+    /** プールの内訳と累計（診断用）。 */
+    public getPoolStats(): HTTPPoolStats {
+        let busy = 0;
+        for (const entry of this.pool) if (entry.busy) busy += 1;
+        return {
+            total: this.pool.size,
+            busy,
+            idle: this.pool.size - busy,
+            max: this.maxPooledConnections,
+            evictedLru: this.poolCounters.evictedLru,
+            expiredIdle: this.poolCounters.expiredIdle,
+            closedByPeer: this.poolCounters.closedByPeer,
+        };
+    }
+
     private assertOpen(): void {
         if (this.closed) throw new Error('HTTPClient is closed');
     }
@@ -328,29 +378,18 @@ export class HTTPClient {
         signal?: AbortSignal,
     ): Promise<{ stream: HTTPStreamLike; reader: HTTPMessageReader; pooled: PooledConnection | null }> {
         if (keepAlive) {
-            const pooled = this.pool.get(key);
-            if (pooled && !pooled.busy && this.isUsable(pooled)) {
-                pooled.busy = true;
-                return { stream: pooled.stream, reader: pooled.reader, pooled };
-            }
-            if (pooled && !pooled.busy) {
-                // アイドル期限切れ、または相手が FIN を送ってきた（サーバーの idle timeout 等）
-                pooled.reader.dispose();
-                try {
-                    (pooled.stream as SendCapableStream).destroy?.();
-                } catch {
-                    /* 無視 */
+            // 同キーのアイドル接続を、新しいものから順に探す。使えないものはその場で外す。
+            for (const entry of [...this.pool].reverse()) {
+                if (entry.key !== key || entry.busy) continue;
+                const reason = this.unusableReason(entry);
+                if (reason !== null) {
+                    this.drop(entry, reason);
+                    continue;
                 }
-                this.pool.delete(key);
-            }
-            if (pooled && !pooled.busy) {
-                pooled.reader.dispose();
-                try {
-                    (pooled.stream as SendCapableStream).destroy?.();
-                } catch {
-                    /* 無視 */
-                }
-                this.pool.delete(key);
+                this.detachIdle(entry);
+                entry.busy = true;
+                this.touch(entry);
+                return { stream: entry.stream, reader: entry.reader, pooled: entry };
             }
         }
 
@@ -364,18 +403,37 @@ export class HTTPClient {
                   });
         const reader = new HTTPMessageReader(stream, { limits: this.limits, label: 'client' });
         if (!keepAlive) return { stream, reader, pooled: null };
-        const entry: PooledConnection = { stream, reader, lastUsed: Date.now(), busy: true };
-        this.pool.set(key, entry);
+        if (this.closed) {
+            // 接続中に close() された場合は、プールに載せずに閉じる
+            reader.dispose();
+            try {
+                (stream as SendCapableStream).destroy?.();
+            } catch {
+                /* 無視 */
+            }
+            throw new Error('HTTPClient is closed');
+        }
+        const entry: PooledConnection = {
+            key,
+            stream,
+            reader,
+            lastUsed: Date.now(),
+            busy: true,
+            idleTimer: null,
+            onPeerClose: null,
+        };
+        this.pool.add(entry);
+        this.enforceCap();
         return { stream, reader, pooled: entry };
     }
 
-    /** プール済み接続がまだ使えるか（状態とアイドル時間の両方を見る）。 */
-    private isUsable(pooled: PooledConnection): boolean {
-        if (Date.now() - pooled.lastUsed > this.idleTimeoutMs) return false;
-        const state = (pooled.stream as { state?: string }).state;
+    /** アイドル接続が今も使えるか。使えない理由（期限切れ・相手による切断）を返す。使えるなら `null`。 */
+    private unusableReason(entry: PooledConnection): 'expiredIdle' | 'closedByPeer' | null {
+        if (Date.now() - entry.lastUsed > this.idleTimeoutMs) return 'expiredIdle';
+        const state = (entry.stream as { state?: string }).state;
         // `CLOSE_WAIT` は相手の FIN 受信済み、`CLOSED` は終了済み。どちらも再利用できない。
-        if (state === undefined) return true;
-        return state === 'ESTABLISHED';
+        if (state !== undefined && state !== 'ESTABLISHED') return 'closedByPeer';
+        return null;
     }
 
     private release(
@@ -383,30 +441,116 @@ export class HTTPClient {
         acquired: { stream: HTTPStreamLike; reader: HTTPMessageReader; pooled: PooledConnection | null },
         keep: boolean,
     ): void {
-        if (!keep) {
-            if (acquired.pooled && this.pool.get(key) === acquired.pooled) this.pool.delete(key);
-            acquired.reader.dispose();
-            try {
-                (acquired.stream as SendCapableStream).end?.();
-            } catch {
-                /* 無視 */
-            }
+        const entry = acquired.pooled;
+        if (!keep || !entry) {
+            if (entry) this.drop(entry, 'closed', false);
+            else this.endUnpooled(acquired);
             return;
         }
-        const pooled = acquired.pooled ?? this.pool.get(key);
-        if (pooled && pooled.stream === acquired.stream) {
-            pooled.busy = false;
-            pooled.lastUsed = Date.now();
-        } else {
-            // プールに載っていない接続（keepAlive=false で作った）は閉じる
-            acquired.reader.dispose();
-            try {
-                (acquired.stream as SendCapableStream).end?.();
-            } catch {
-                /* 無視 */
+        if (!this.pool.has(entry) || this.closed) {
+            this.drop(entry, 'closed', false);
+            return;
+        }
+        // 同キーのアイドルが既にあれば、余分な接続は戻さない（仕様 §16.5 の 10）
+        for (const other of this.pool) {
+            if (other !== entry && other.key === key && !other.busy) {
+                this.drop(entry, 'closed', false);
+                return;
             }
         }
+        entry.busy = false;
+        this.touch(entry);
+        this.armIdle(entry);
+        this.enforceCap();
     }
+
+    /** 上限を超えたら、アイドルだけを最も古く使われたもの（LRU）から閉じる（仕様 §16.5 の 9）。 */
+    private enforceCap(): void {
+        while (this.pool.size > this.maxPooledConnections) {
+            let victim: PooledConnection | null = null;
+            for (const entry of this.pool) {
+                if (!entry.busy) {
+                    victim = entry;
+                    break;
+                }
+            }
+            // 使用中しか無い間は一時的に上限を超えてよい
+            if (victim === null) return;
+            this.drop(victim, 'lru');
+        }
+    }
+
+    /** LRU 順で末尾（最近使用）へ移す。 */
+    private touch(entry: PooledConnection): void {
+        this.pool.delete(entry);
+        entry.lastUsed = Date.now();
+        this.pool.add(entry);
+    }
+
+    /** アイドルになった接続に期限タイマーと相手切断の監視を付ける。 */
+    private armIdle(entry: PooledConnection): void {
+        this.detachIdle(entry);
+        const timer = setTimeout(() => {
+            if (!entry.busy && this.pool.has(entry)) this.drop(entry, 'expiredIdle');
+        }, this.idleTimeoutMs);
+        (timer as { unref?: () => void }).unref?.();
+        entry.idleTimer = timer;
+        const onPeerClose = (): void => {
+            if (!entry.busy && this.pool.has(entry)) this.drop(entry, 'closedByPeer');
+        };
+        entry.onPeerClose = onPeerClose;
+        entry.stream.on('end', onPeerClose);
+        entry.stream.on('close', onPeerClose);
+    }
+
+    /** アイドル用のタイマーと監視を外す（使用に入るとき、または破棄するとき）。 */
+    private detachIdle(entry: PooledConnection): void {
+        if (entry.idleTimer !== null) {
+            clearTimeout(entry.idleTimer);
+            entry.idleTimer = null;
+        }
+        if (entry.onPeerClose !== null) {
+            entry.stream.off('end', entry.onPeerClose);
+            entry.stream.off('close', entry.onPeerClose);
+            entry.onPeerClose = null;
+        }
+    }
+
+    /**
+     * プールから外して閉じる。理由ごとに累計を増やす（`counted` が false なら増やさない）。
+     */
+    private drop(
+        entry: PooledConnection,
+        reason: 'lru' | 'expiredIdle' | 'closedByPeer' | 'closed',
+        counted = true,
+    ): void {
+        this.detachIdle(entry);
+        this.pool.delete(entry);
+        if (counted) {
+            if (reason === 'lru') this.poolCounters.evictedLru += 1;
+            else if (reason === 'expiredIdle') this.poolCounters.expiredIdle += 1;
+            else if (reason === 'closedByPeer') this.poolCounters.closedByPeer += 1;
+        }
+        entry.reader.dispose();
+        try {
+            // 相手がもう閉じている接続には RST、それ以外は FIN で終える
+            if (reason === 'closedByPeer') (entry.stream as SendCapableStream).destroy?.();
+            else (entry.stream as SendCapableStream).end?.();
+        } catch {
+            /* 無視 */
+        }
+    }
+
+    /** プールに載せなかった接続（`keepAlive: false`）を閉じる。 */
+    private endUnpooled(acquired: { stream: HTTPStreamLike; reader: HTTPMessageReader }): void {
+        acquired.reader.dispose();
+        try {
+            (acquired.stream as SendCapableStream).end?.();
+        } catch {
+            /* 無視 */
+        }
+    }
+
 }
 
 function normalizeTarget(path: string): string {

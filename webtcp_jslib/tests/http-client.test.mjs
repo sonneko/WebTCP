@@ -312,7 +312,7 @@ test('http-client: server closes the pool entry so the next request reconnects',
         // FIN がクライアントに届くのを待つ（`waitFor` を挟まないと、プールの検査と
         // サーバーの `CLOSE_WAIT` 化が競合して「閉じた直後の接続を再利用」する）
         await waitFor(() => {
-            const state = [...client.pool.values()][0]?.stream.state;
+            const state = [...client.pool][0]?.stream.state;
             return state === 'CLOSE_WAIT' || state === 'CLOSED' || state === undefined;
         }, { timeoutMs: 4000 });
         const response = await client.fetch(`webtcp://${NODE_B}:8080/b`, { timeoutMs: 5000 });
