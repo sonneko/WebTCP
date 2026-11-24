@@ -60,7 +60,7 @@ curl 'http://127.0.0.1:18080/api/echo?x=1'
 
 - **ローカル側に認証はありません**。同じマシンのプロセスと、ループバックへ要求を送れるブラウザページから使えます。
   ブリッジ越しに公開するサービスは、呼び出し元を信頼しない前提で作ってください。
-- **`node-datachannel` は自動バインドで ICE 候補を 0 件にすることがあります**（非ループバックのインターフェースがリンクローカルのみのホストなど、[#61](https://github.com/sonneko/WebTCP/issues/61)）。その場合は `--rtc-bind` / `bindAddress` を指定してください。ICE 候補が 0 件のまま収集が終わると、ログに警告が出ます。`@roamhq/wrtc` は自動バインドでも開通することを確認しています。
+- **`node-datachannel` は自動バインドで ICE 候補を 0 件にすることがあります**（非ループバックのインターフェースがリンクローカルのみのホストなど、[#61](https://github.com/sonneko/WebTCP/issues/61)）。その場合は `--rtc-bind` / `bindAddress` を指定してください。ICE 候補が 0 件のまま収集が終わると、ログに警告が出ます。接続はタイムアウトしますが、そのエラーにも候補 0 件であることと `bindAddress` の指定が含まれます。`@roamhq/wrtc` は自動バインドでも開通することを確認しています。
 - UDP・SOCKS・TLS 終端・ブリッジの npm 公開（`webtcp-bridge` の `bin`）は未対応です（公開方針は [#49](https://github.com/sonneko/WebTCP/issues/49)）。
 
 ## 検証

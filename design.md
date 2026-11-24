@@ -409,6 +409,20 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **設計上の扱い（#67）**: リポジトリ側は変更しない。`watchIceGathering` は SDP で数えるため、この挙動の影響を受けない（収集完了時に `localDescription` は暗黙の offer として既に存在し、`127.0.0.1` で候補 1 件・自動バインドで 0 件を確認）。`icecandidate` のリスナーは生成直後に同期登録する（仕様 §19.8）。上流の挙動は `tests/node-datachannel-polyfill.characterization.test.mjs` で固定し、変わったら検出する。
 - 検証: 自動バインドでは警告、`127.0.0.1` では警告なし（実 `node-datachannel` で確認）。
 
+### 3.32 候補 0 件の接続は、タイムアウトの原因を示して失敗させる（#61 / 0.8.1）
+
+- **問題**: 自動バインドで候補 0 件のホストでは、接続は成立せず `connectTimeoutMs` まで待ってから失敗する。警告は収集完了時に 1 回出るが、接続の失敗（`connect()` の拒否、`bootstrap()` の `warn`）は「timed out」だけで、原因が分からない。
+- **検討した方針**:
+  - (a) 候補 0 件なら `127.0.0.1` へ自動で再バインドする。却下。同一ホストでしか成立しない接続を黙って作り、リモートの相手では依然失敗する。候補収集の後でオファーを作り直す必要があり、#67 と同じタイミングの問題を抱える。
+  - (b) 警告のみ（現状）。不十分。原因はログの 1 行にしか現れず、接続の失敗理由には含まれない。
+  - (c) 既定の `bindAddress` を固定する。却下。実ネットワークで候補が減る（#61 の既存の懸念）。
+  - **採用**: (b) を強化する。接続のタイムアウトのエラーに原因を含める。既定値は変えず、待ち時間も変えない。
+- **判定**: タイムアウトの時点で、`iceGatheringState === 'complete'` かつ `localDescription.sdp` に `a=candidate:` 行が無いときだけ、原因（候補 0 件、`peerConnectionOptions.bindAddress`、#61 の Issue）を付ける。収集中・候補ありのときは付けない（誤って原因を断定しない）。
+- **早期に失敗させない理由**: 収集完了の時点で即座に拒否する案は、`complete` が `setLocalDescription()` より前に起きる実装（#67 の polyfill）で `localDescription` が無いまま判定する競合を抱える。タイムアウト時点の判定は収集が確実に終わっているため、この競合が無い。
+- **構成**: 基底の `WebRTCChannel` に既定が空の protected フック `describeConnectTimeout(connection)` を置き、`NodeWebRTCChannel` だけが上記の判定を実装する（ブラウザ経路は変えない）。
+- **#67 / `watchIceGathering` との関係**: 判定基準（SDP の `a=candidate:` 行）は `watchIceGathering` と同じ。`watchIceGathering` の収集完了時の警告はそのまま残す。`icecandidate` イベントには依存しないため、#67 の配送タイミングの影響は受けない。
+- **検証**: `tests/webrtc-connect-timeout.test.mjs`（fake PC で 0 件・候補あり・収集中の 3 件、実 `node-datachannel` で自動バインドの 1 件。実 `node-datachannel` のテストは子プロセスで実行する）。修正前は 2 件失敗、修正後は 4 件合格。
+
 ---
 
 ### 3.32 公開デモは静的ホスティングで動く範囲だけを提供し、サーバー依存部はローカルに残す（サイクル11 / GitHub Pages）
