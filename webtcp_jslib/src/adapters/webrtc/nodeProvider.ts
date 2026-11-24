@@ -179,7 +179,8 @@ export function watchIceGathering(pc: RTCPeerConnection, logger: Logger): RTCPee
     target.addEventListener('icegatheringstatechange', () => {
         if (pc.iceGatheringState !== 'complete' || warned) return;
         // 候補の数は SDP（収集完了後の localDescription）で数える。
-        // `icecandidate` イベントの配送は実装ごとに異なるため（node-datachannel/polyfill は届かない）、
+        // `icecandidate` の配送は実装ごとに異なる。node-datachannel/polyfill は収集を createDataChannel()
+        // の時点で始めて候補を再送しないため、生成直後に登録しないリスナーには候補が届かない（#67）。
         // イベントには依存しない。
         const sdp = pc.localDescription?.sdp ?? '';
         if (/^a=candidate:/m.test(sdp)) return;

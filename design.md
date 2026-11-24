@@ -404,7 +404,9 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 ### 3.31 ICE 候補 0 件は収集完了後の SDP で検出する（#61 / 0.8.1）
 
 - `node-datachannel` は、既定の自動バインドでリンクローカルのみのホストに ICE 候補を 0 件にすることがある（#61）。既定値は変えず、`createNodeNetwork()` が `icegatheringstatechange` で収集完了を検出し、候補 0 件なら警告ログを出す。
-- **候補の数はイベントではなく SDP（`localDescription.sdp` の `a=candidate:` 行）で数える。** `icecandidate` の配送は実装ごとに異なり（`node-datachannel/polyfill` では `addEventListener` のリスナーに届かなかった）、イベントに頼ると正常な接続まで誤って警告するため。
+- **候補の数はイベントではなく SDP（`localDescription.sdp` の `a=candidate:` 行）で数える。** `icecandidate` の配送は実装ごとに異なり、イベントに頼ると正常な接続まで誤って警告するため。`node-datachannel/polyfill` では、生成直後に登録しなかったリスナーには候補が届かない（#67、下記）。
+- **#67 の原因（上流の挙動。node-datachannel 0.33.6 で再現）**: polyfill は `createDataChannel()` の時点で ICE 収集を始め、`setLocalDescription()` より前に約 2 ms で `complete` にする。候補イベントはその約 1 ms 後に `dispatchEvent` され、再送されない（`dist/esm/polyfill/RTCPeerConnection.mjs` の `onLocalCandidate`）。そのため、生成直後に同期登録したリスナーは候補を受け取るが、数百 ms 後に登録したリスナーは `addEventListener` でも `onicecandidate` でも 0 回になる（SDP には候補が残っている。遅延登録 3/3・5/5 で再現）。`candidate === null` の終了イベントも発行されない。
+- **設計上の扱い（#67）**: リポジトリ側は変更しない。`watchIceGathering` は SDP で数えるため、この挙動の影響を受けない（収集完了時に `localDescription` は暗黙の offer として既に存在し、`127.0.0.1` で候補 1 件・自動バインドで 0 件を確認）。`icecandidate` のリスナーは生成直後に同期登録する（仕様 §19.8）。上流の挙動は `tests/node-datachannel-polyfill.characterization.test.mjs` で固定し、変わったら検出する。
 - 検証: 自動バインドでは警告、`127.0.0.1` では警告なし（実 `node-datachannel` で確認）。
 
 ---
