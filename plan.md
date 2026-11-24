@@ -360,6 +360,25 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - [x] 公開ドキュメント（website `reference/api.md`）の更新
 - **既定値・API の互換**: 既定の keep-alive 挙動、`fetchURL()` の切断、`pooledConnectionCount` は変えない。版数は変更しない（ユーザー指示がない限り据え置き）。
 
+### 3.16 サイクル18: node-datachannel/polyfill の icecandidate 配送（#67）
+
+- **依頼**: sonneko（2026-11-24）。Issue #67 の原因切り分けと、上流の挙動の固定。
+- **結論**: 上流（node-datachannel 0.33.6 の polyfill）の登録タイミング依存。リポジトリの実装は影響を受けない。「リスナーだけ届かない」という元の症状は再現せず、`addEventListener` と `onicecandidate` は同じ条件で同じ結果になった。
+- **変更**:
+  - [x] 仕様 §19.8（既知の制約 #67: 生成直後の同期登録が MUST）
+  - [x] 設計 §3.31（#67 の原因、タイムライン、設計上の扱い。従来の「リスナーに届かなかった」記述を訂正）
+  - [x] characterization テスト `tests/node-datachannel-polyfill.characterization.test.mjs`（(a) 同期登録は届く、(b) 遅延登録は 0 回、(c) `null` 終了イベントは送られない）。`node-datachannel` が無い環境では skip
+  - [x] `nodeProvider.ts` の `watchIceGathering` のコメントを登録タイミングの説明に更新（挙動は変えない）
+- **検証**: characterization テストを実行して回数を記録（下記）。上流の挙動を一時的に変えた変異（複製し、検証後に元へ戻した）でテストが失敗することを確認。`npm test` は `node-datachannel` を入れた状態で全件実行。
+- **#61 への影響**: なし。`watchIceGathering` の判定は SDP なので、`127.0.0.1` で警告なし、自動バインドで警告ありのまま。
+- **結果（候補の呼び出し回数。修正前・修正後とも同一。挙動は変えていない）**:
+  - (a) 生成直後に登録: SDP 1 件 → `addEventListener` 1 回、`onicecandidate` 1 回。
+  - (b) 約 300 ms 後に登録（収集は `complete` 済み）: SDP 1 件 → `addEventListener` 0 回、`onicecandidate` 0 回。
+  - (c) `candidate === null`: `addEventListener` 0 回、`onicecandidate` 0 回。
+  - 繰り返し: characterization テストを 5 回連続で実行し、いずれも 3/3 合格。`npm test` は 271 件すべて合格（`node-datachannel` を導入した状態）。`node-datachannel` を退避すると 3 件とも skip。
+  - 変異の確認（上流の `RTCPeerConnection.mjs` を一時的に変更し、SHA-256 で元に戻したことを確認）: 遅延登録のリスナーへ候補を再送する変異では (b) が失敗（`addEventListener` 1 回）。`complete` 時に `candidate === null` を送る変異では (c) が失敗（各 2 回）。
+- **実装上の注意**: `node-datachannel` は、PC を `close()` しても（生成のみでも）ネイティブのハンドルが残り、`node --test` のプロセスが終わらない（実測で 300 秒のタイムアウト）。そのため、各シナリオは子プロセス（`tests/helpers/node-datachannel-probe.mjs`、末尾で `process.exit`）で実行し、テストはその JSON 出力を検証する。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
@@ -525,4 +544,4 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #55 | documentation | M6 開始時の網羅同期チェックの残り（簡体字の `前缀`、§17 → §19） | 本 PR で修正。他の項目は既に修正済みと確認 |
 | #65 | bug | 対応セッションの無い RST に RST を返し、両端 `destroy()` で往復し続ける可能性（#54 修正中に発見） | 本 PR で修正（RST への返信を抑止）。仕様 §8.2 に MUST NOT |
 | #66 | bug | 受信 RST で `error` リスナーが無いと例外になる（#54 修正中に発見） | 本 PR で修正（リスナーがある場合のみ発火）。仕様 §8.2 に明記 |
-| #67 | bug | `node-datachannel/polyfill` が `icecandidate` を `addEventListener` のリスナーへ配送しない（#61 の調査中に発見） | 起票。本 PR では SDP で候補を数えて回避。上流の挙動は未確認 |
+| #67 | bug | `node-datachannel/polyfill` が `icecandidate` を `addEventListener` のリスナーへ配送しない（#61 の調査中に発見） | 起票。SDP で候補を数えて回避。サイクル18 / §3.16 で原因を上流の登録タイミング依存と切り分け、仕様 §19.8・設計 §3.31 に注記、characterization テストで固定 |
