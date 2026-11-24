@@ -364,7 +364,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **`HTTPServer` は `network.listen()` のハンドラを 1 つ占有する**。同じポートに別のハンドラを登録できないのは `TransportLayer` の既存契約であり、これは意図的（1 ポート 1 ハンドラ = HTTP サーバー）。HTTP と生 TCP を同じポートで混在させたい場合は仮想ポートを分ける。
 - **接続ごとに `AbortController` を持ち**、`server.close()` で全接続を中断する。ハンドラの Promise が後から解決しても、応答は破棄する（`HTTPResponseWriter` が `closed` フラグを見る）。
 - **アイドルタイムアウト**はサーバー側で `idleTimeoutMs`（既定 30 000 ms）のタイマーとして実装し、リクエスト受信のたびにリセットする。発火したら `end()`。クライアント側は接続プールのエントリに `lastUsed` を持ち、`HTTPClient.fetch()` の前に期限切れを捨てる。
-- **`HTTPClient` の接続プールはキー `(nodeId, port)` で 1 本**（サイクル17 / §3.36 で上限・LRU・アイドル回収を追加。詳細は §3.36）。同時 `fetch()` が重なった場合は新しい接続を作って並行実行し、終了後にプールへ戻す（戻すのは 1 本だけ）。これは HTTP/1.1 の「1 接続 1 リクエスト」原則と一致する。
+- **`HTTPClient` の接続プールはキー `(nodeId, port)` で 1 本**（サイクル17 / §3.37 で上限・LRU・アイドル回収を追加。詳細は §3.37）。同時 `fetch()` が重なった場合は新しい接続を作って並行実行し、終了後にプールへ戻す（戻すのは 1 本だけ）。これは HTTP/1.1 の「1 接続 1 リクエスト」原則と一致する。
 
 ### 3.27 `serveHTTP` / `fetchURL` を `WebTCPNetwork` に生やす理由
 
@@ -425,7 +425,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 
 ---
 
-### 3.32 公開デモは静的ホスティングで動く範囲だけを提供し、サーバー依存部はローカルに残す（サイクル11 / GitHub Pages）
+### 3.33 公開デモは静的ホスティングで動く範囲だけを提供し、サーバー依存部はローカルに残す（サイクル11 / GitHub Pages）
 
 - **公開先**: `https://sonneko.github.io/WebTCP/`（GitHub Pages のプロジェクトサイト）。Astro の `site` は `https://sonneko.github.io`、`base` は `/WebTCP`。リンクは `/WebTCP` を前置する rehype プラグイン（`webtcp_website/src/plugins/base-links.mjs`）で補う。
 - **デプロイ**: `.github/workflows/deploy-pages.yml` が `main` への push と手動実行で、`webtcp_jslib` と `webtcp_website` をビルドして `actions/upload-pages-artifact` + `actions/deploy-pages` で配信する。Pages の Source は `build_type: workflow`（確認済み）。PR の検証は既存の `build-website` ジョブが担い、デプロイ用ワークフローは `main` のみ。
@@ -437,7 +437,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **検証**: `examples/verify-static-demo.mjs` が Playwright で、(1) サイト表示、(2) デモ読み込み（静的モード表示）、(3) `?selftest=1` の全項目（スキップ以外）PASS を確認する。CI の `browser-e2e` ジョブに組み込み、ビルド済み `webtcp_website/dist` を一時 HTTP サーバーで配信して検査する。
 - **既存の CI の役割**: `build-website` は PR の検証として残す。`build-website` は `webtcp_jslib` のビルド成果物を必要とするため、ジョブ内で先に `npm ci && npm run build`（jslib）を実行する。
 
-### 3.33 公開デモは ICE 候補の事前診断を行い、候補ゼロなら早く止めて理由を示す（サイクル13 / #73）
+### 3.34 公開デモは ICE 候補の事前診断を行い、候補ゼロなら早く止めて理由を示す（サイクル13 / #73）
 
 - **事象**: 公開デモの自己チェック step 1 が、ICE 候補を 1 つも得られない訪問者の環境で約 45 秒かけて失敗し、原因が表示されなかった。`bootstrap()` の既定リトライ（3 回 × 15 秒）が続くため。
 - **決定**: 自己チェックの先頭（step 0）で、デモ側が `RTCPeerConnection` を 1 つ作って候補を収集する（ライブラリの変更はしない）。候補が 0 件、または gathering が完了しない場合は step 0 を FAIL にし、残りを実行しない。理由（UDP 遮断・VPN・企業ネットワーク）と対処（ローカルサーバー、別のネットワーク）を表示する。
@@ -445,7 +445,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **STUN について**: 既定の `iceServers` は空のまま（同一ホスト向け）。STUN / TURN で改善するかは環境次第で、UDP 自体が遮断されていれば効かない。公開版では保証しない。
 - **対象外**: 2 タブ（BroadcastChannel）の経路は WebRTC を使うが、今回の事前診断は自己チェックだけに付ける。プロトコルは変更しない（仕様書は更新なし）。
 
-### 3.34 シグナリングのトランスポートは「配送の仕方」だけを変え、契約と既定は変えない（M9 / #45 / サイクル14）
+### 3.35 シグナリングのトランスポートは「配送の仕方」だけを変え、契約と既定は変えない（M9 / #45 / サイクル14）
 
 - **問題**: ポーリングの平均遅延は約 500 ms（1000 ms 間隔）で、ICE 候補の逐次到着が遅い。
 - **決定**: `ISignalingAdapter` の契約は変えず、SSE と WebSocket の実装を追加する。既定は `SignalingAdapterHub`（ポーリング）のまま（依存なし・プロキシ耐性）。
@@ -456,7 +456,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **検証**: CI の `browser-e2e` で、同じ 2 タブの自動検証を 3 つのトランスポートで実行し、結果（成功・ステップ名・接続）が一致することを確認する。加えて Node.js の検証で、同じメッセージ列が 3 つで同順・同内容に届くことと、遅延の差を測る。
 - **対象外**: 双方向の認証（トークン）、ハブの水平分散、TURN の変更。
 
-### 3.35 API の中断は「待機者単位」で外し、RST と資源解放を契約にする（M9 / #44 / サイクル15）
+### 3.36 API の中断は「待機者単位」で外し、RST と資源解放を契約にする（M9 / #44 / サイクル15）
 
 - **問題**: `connect()` は中断を受け取れず、リンク確立（WebRTC 既定 15 秒）や仮想接続（10 秒）をアプリから打ち切れなかった。UI のキャンセルやタイムアウト設計ができない（#40 の恒久対策）。
 - **決定**: `connect()` 系 API に `AbortSignal` を伝播する。中断は `name === 'AbortError'` の `Error` で表す（DOM 互換。`HTTPAbortError` と同じ名前）。共通ヘルパーは `core/util/abort.ts`（`raceAbort` / `throwIfAborted` / `createAbortError` / `isAbortError`）。
@@ -470,7 +470,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - **制限**: 送信済みの offer / SYN は取り消せない（相手側は自身のタイムアウトで破棄する）。`ISignalingAdapter.sendMessage()` は `signal` を受け取らないため、シグナリング HTTP の送信そのものは打ち切らない。将来 `ISignalingAdapter` の契約へ `signal` を足す余地はあるが、本サイクルの範囲外とした。
 - **検証**: `tests/abort-propagation.test.mjs`（9 件）は、接続試行中（SYN 送信済み・RTCPeerConnection 生成済み）に中断し、タイマー・リスナー・セッション・RTCPeerConnection が残らないこと、後続接続が成功することを確かめる。変異（WebRTC の破棄を外す）で失敗することも確認した。`examples/verify-abort-browser.mjs` は実 Chromium の RTCPeerConnection で同じ検証を行い、CI の `browser-e2e` で実行する。
 
-### 3.36 HTTPClient の接続プールに上限・LRU・アイドル回収を入れる（#58 / サイクル17）
+### 3.37 HTTPClient の接続プールに上限・LRU・アイドル回収を入れる（#58 / サイクル17）
 
 - **問題**: プールは `Map<key, PooledConnection>` で、`close()` まで無制限に `VirtualStream` を保持した。アイドル期限は次のリクエストのときにしか判定されず、多数の `(nodeId, port)` を巡回すると接続とタイマーが残り、サーバーの `maxConnections`（既定 64）に当たって `503` を受けうる。
 - **同時に見つかった既存の不具合**: 同じキーで並行リクエストが重なると、後から作った接続が `pool.set(key, …)` で前の接続を上書きした。上書きされた接続は `close()` の対象から外れ、閉じられずに残っていた。
