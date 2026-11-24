@@ -185,12 +185,14 @@ description: "@sonneko/webtcp-tunneler の公開クラス・関数・オプシ�
 | `timeoutMs` | `number` | `30000` | 応答ヘッダ到着までのタイムアウト |
 | `maxResponseBytes` | `number` | `8 * 1024 * 1024` | `text()` / `json()` / `arrayBuffer()` の上限。`0` は無制限 |
 | `keepAlive` | `boolean` | `true` | 接続プールを使う |
-| `idleTimeoutMs` | `number` | `30000` | プールした接続のアイドル期限 |
+| `idleTimeoutMs` | `number` | `30000` | プールした接続のアイドル期限。期限が来たアイドル接続はタイマーで閉じる（次のリクエストを待たない） |
+| `maxPooledConnections` | `number` | `32` | プールの接続数の上限。超えたら最も古く使われたアイドル接続を閉じる（使用中の接続は閉じない） |
 | `limits` | `HTTPParserLimits` | 既定 §16.2.1 | パーサの上限 |
 
 - `fetch(url, init)` — `method` / `headers` / `body`（`string` / `Uint8Array` / `AsyncIterable<Uint8Array>`）/ `timeoutMs` / `signal` / `keepAlive`。
 - `request({ nodeId, port, path, ... })` — NodeId と仮想ポートを直接指定する。
 - `pooledConnectionCount` / `close()`。
+- `getPoolStats()` — `{ total, busy, idle, max, evictedLru, expiredIdle, closedByPeer }`（プールの内訳と累計。`HTTPPoolStats` 型）。
 
 ### メッセージと型
 

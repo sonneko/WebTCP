@@ -346,6 +346,20 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - [x] 回帰テスト `domain-resolution: a deadline that ties with the query timer ...`（25 回連続で必ずタイムアウトになることを確認。修正前のコードでは失敗、修正後は通過）
 - **検証**: 修正後の同一プロセス 60 回 × 2 回で `NameNotFoundError` 0 件（120 / 120 タイムアウト）。`domain-resolution.test.mjs` 単体を 5 回連続で 9 / 9 合格。`npm test` 260 件中 259 合格、0 失敗、1 skip。
 
+### 3.15 サイクル17: HTTPClient の接続プールに上限・LRU・アイドル回収を入れる（#58）
+
+- **依頼**: sonneko（2026-11-23）。Issue #58。仕様 → 設計 → 計画の順に更新してから実装する。関連 #50（L7 HTTP トンネルのビジョン、クローズ済み）を PR から参照する。
+- **変更**:
+  - [x] 仕様 §16.5（規則 5 を MUST に、規則 9〜11 を追加）、§16 の API 一覧（`maxPooledConnections` / `getPoolStats()`）
+  - [x] 設計 §3.36（決定と既存の上書き不具合の扱い）、§3.26 のプール記述から §3.36 への参照
+  - [x] `HTTPClient`: `maxPooledConnections`（既定 32）と LRU 追い出し（アイドルのみ、使用中は追い出さない）
+  - [x] アイドル接続のタイマー回収（`idleTimeoutMs`、`unref`）と、アイドル中の相手切断の即時除去
+  - [x] 同キーの並行接続で前の接続を上書きして閉じられなくなる不具合の修正（返却は 1 本だけ）
+  - [x] `getPoolStats()` の公開（`HTTPPoolStats`）、`pooledConnectionCount` の互換維持
+  - [x] テスト `tests/http-client-pool.test.mjs`（8 件。修正前のコードで 6 件失敗、変異 2 種で該当テストが失敗することを確認）、`npm test` 268 件中 267 件合格・0 失敗・1 skip
+  - [x] 公開ドキュメント（website `reference/api.md`）の更新
+- **既定値・API の互換**: 既定の keep-alive 挙動、`fetchURL()` の切断、`pooledConnectionCount` は変えない。版数は変更しない（ユーザー指示がない限り据え置き）。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
@@ -490,7 +504,7 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #55 | documentation | M6 開始時の網羅同期チェックで見つかった文書の陳腐化（`plan.md` の M5 ステータス、README の M4「実装済み」・テスト件数、`path` / `query` の記述、`DomainQueryTransport` の残存、全角混入） | 本 PR で修正 → close |
 | #56 | enhancement | 受信ウィンドウ（フロー制御）の広告が無く、大きな HTTP 応答が受信側メモリに依存する | 起票して 未定（§4.4） |
 | #57 | enhancement | HTTP/2・WebSocket アップグレード・`CONNECT`・圧縮・Cookie ジャー・認証・リダイレクト追従（HTTP 層のフル実装） | 起票して 未定（§4.4） |
-| #58 | enhancement | `HTTPClient` の接続プールが上限・LRU を持たず、多数の `(nodeId, port)` で `VirtualStream` を保持し続ける | 起票して 未定（§4.4） |
+| #58 | enhancement | `HTTPClient` の接続プールが上限・LRU を持たず、多数の `(nodeId, port)` で `VirtualStream` を保持し続ける | 起票して 未定（§4.4）→ サイクル17 / §3.15 で対応（PR 作成、マージ待ち） |
 
 ### 6.7 M8 で対応・起票した Issue
 

@@ -1394,10 +1394,11 @@ router.add(method, pattern, handler)       // '/users/:id' 記法
 router.handle: HTTPHandler
 
 // クライアント（§16.4）
-new HTTPClient(network, { nameServer?, timeoutMs?, maxResponseBytes?, keepAlive?, idleTimeoutMs?, logger? })
+new HTTPClient(network, { nameServer?, timeoutMs?, maxResponseBytes?, keepAlive?, idleTimeoutMs?, maxPooledConnections?, logger? })
 await client.fetch(url, { method?, headers?, body?, signal?, timeoutMs?, keepAlive? })
 await client.request({ nodeId, port, method, path, headers?, body?, signal? })
 client.close()
+client.getPoolStats()   // { total, busy, idle, max, evictedLru, expiredIdle, closedByPeer }（§16.5 の 9〜11）
 
 // 低レベル（§16.2）
 new HTTPReader(stream, { maxHeaderBytes?, maxHeaderCount?, maxLineBytes?, strictLineEndings?, logger? })
@@ -1524,7 +1525,10 @@ HTTP/1.1 の `keep-alive` と `VirtualStream` の Half-Close を衝突させな�
 2. `keep-alive` を使う場合、`HTTPClient` はリクエストを送っても `FIN` を送らない。接続は `HTTPClient.close()` またはアイドルタイムアウトで `end()` する。
 3. `Connection: close` を使う（または `keepAlive: false`）場合、クライアントはリクエスト送信後に `end()` を呼んでよい。サーバーは `CLOSE_WAIT` で応答を送り、`end()` する（「**FIN の後に応答する**」）。これは §8.2 の Half-Close の正規の使い方であり、L4 の変更を要しない。
 4. サーバーは応答送信後に `Connection: close` を返した場合、`end()` する。クライアントは `end` を待たずに接続を破棄してよい。
-5. アイドル接続（リクエストの途中でない接続）は `idleTimeoutMs`（既定 30 000 ms）で閉じる (SHOULD)。途中のリクエストは L4 のセッションタイムアウト（§8.5、300 000 ms）に委ねる。
+5. アイドル接続（リクエストの途中でない接続）は `idleTimeoutMs`（既定 30 000 ms）で閉じる (MUST)。期限切れは次のリクエストを待たず、接続ごとのタイマーで `end()` する（`unref` 可能な場合は付ける）。途中のリクエストは L4 のセッションタイムアウト（§8.5、300 000 ms）に委ねる。
+9. **接続プールには上限がある (MUST)。** プールの接続数は `maxPooledConnections`（既定 32、1 以上の整数）を超えない。超えたときは **アイドル接続のうち最後に使われた時刻が最も古いもの（LRU）** を `end()` して外す。**使用中（リクエストの途中）の接続は追い出してはならない (MUST NOT)**。使用中の接続が多く上限を超えている間は一時的に超えてよく、使用が終わった時点で上限まで戻す。
+10. 相手から `FIN` / `close` を受けたアイドル接続は、次のリクエストを待たずにプールから外す (MUST)。同じ `(nodeId, port)` で並行リクエストが終わったとき、プールに戻すのは 1 本だけとし、余分な接続は `end()` する (MUST)。
+11. プールの状態は `getPoolStats()`（合計・使用中・アイドル・上限と、LRU 追い出し・アイドル期限切れ・相手による切断の累計）で診断できる (SHOULD)。
 6. 応答本文の受信中に接続が切れた場合、`HTTPClient` は `HTTPConnectionClosedError` を投げる。`Content-Length` が宣言されていて実際のバイト数が足りない場合も同様とする (MUST)。
 7. **正常な接続の終了は `FIN`（`VirtualStream.end()`）で行う (MUST)。** `VirtualStream.destroy()` は `RST` で相手に中断を伝えるため（§8.2）、相手側の `HTTPClient` は `HTTPConnectionClosedError` で終わる。応答を完了させて閉じる場合は `end()` を使う。接続を捨てる（資源の即時解放）場合にだけ `destroy()` を使ってよい。
 8. `HTTPServer.close()` は待ち受けを解除し、保持している全接続に `FIN` を送る (MUST)。送信中の応答は打ち切ってよい（`Connection: close` を返した接続は 4 に従う）。
