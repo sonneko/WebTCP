@@ -41,4 +41,18 @@ export class NodeWebRTCChannel extends WebRTCChannel {
     protected createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
         return this.factory({ iceServers });
     }
+
+    /**
+     * 収集が完了しても ICE 候補が 1 件も無いとき、タイムアウトの原因として bind の設定を示す（#61）。
+     * 候補の判定は収集完了後の SDP で行う（{@link watchIceGathering} と同じ基準）。
+     */
+    protected override describeConnectTimeout(connection: RTCPeerConnection): string {
+        if (connection.iceGatheringState !== 'complete') return '';
+        if (/^a=candidate:/m.test(connection.localDescription?.sdp ?? '')) return '';
+        return (
+            ' (ICE gathering finished with 0 local candidates. This happens with node-datachannel when the host has ' +
+            'only link-local addresses; set peerConnectionOptions.bindAddress, e.g. 127.0.0.1 for same-host use. ' +
+            'See https://github.com/sonneko/WebTCP/issues/61)'
+        );
+    }
 }

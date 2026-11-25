@@ -1703,6 +1703,6 @@ curl http://127.0.0.1:18080/api/echo?x=1
 ### 19.8 配布と実 WebRTC の依存
 
 - 実 WebRTC の実装（`@roamhq/wrtc` / `node-datachannel`）は**同梱しない**。`NodeWebRTCChannel` は `createPeerConnection` 注入を基本とし、`createNodeNetwork()` は既定の順序（`@roamhq/wrtc`、次に `node-datachannel`）で**導入済みのもの**を解決する。どちらも無ければ `WebRTCProviderUnavailableError` を投げ、導入方法を示す (MUST)。
-- 既知の制約（#61）: `node-datachannel` は、非ループバックのインターフェースがリンクローカルのみのホストで、既定の自動バインドでは ICE 候補を 0 件にすることがある。その場合は `peerConnectionOptions.bindAddress`（CLI は `--rtc-bind`）を指定する。`@roamhq/wrtc` は同条件で DataChannel が開くことを確認している。 実装は、ICE 収集が候補 0 件で完了したときに警告を出す（候補の数は収集完了後の SDP で数える。設計 §3.31）。既定の bind は変えない。
+- 既知の制約（#61）: `node-datachannel` は、非ループバックのインターフェースがリンクローカルのみのホストで、既定の自動バインドでは ICE 候補を 0 件にすることがある。その場合は `peerConnectionOptions.bindAddress`（CLI は `--rtc-bind`）を指定する。`@roamhq/wrtc` は同条件で DataChannel が開くことを確認している。 実装は、ICE 収集が候補 0 件で完了したときに警告を出す（候補の数は収集完了後の SDP で数える。設計 §3.31）。候補 0 件のまま接続がタイムアウトした場合、そのエラーメッセージには候補 0 件であることと `peerConnectionOptions.bindAddress` の指定を示す (MUST)（設計 §3.32）。既定の bind は変えず、自動の再バインドもしない。
 - 既知の制約（#67）: `node-datachannel/polyfill` は `createDataChannel()` の時点で ICE 収集を始め、候補イベントを再送しない。そのため、`icecandidate` のリスナー（`addEventListener` でも `onicecandidate` でも）は `RTCPeerConnection` の生成直後に**同期的に登録しなければならない (MUST)**。後から登録したリスナーは候補を 1 件も受け取れない。終了時の `candidate === null` のイベントも送られない。WebTCP の `WebRTCChannel` は生成直後に登録するため影響を受けない。
 - `webtcp-bridge` の `bin` 登録と npm 公開は #49 に従い後続とする。M8 では `examples/bridge.mjs` を正とし、`webtcp_jslib` の `exports` には含めない（ブラウザ安全な `index.ts` へは再エクスポートしない）。

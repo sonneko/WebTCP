@@ -20,7 +20,7 @@
  *
  * デモサーバー（`examples/server.mjs`）が無ければ静的モードで動く。静的モードでは
  * シグナリングを同一ページ内のメモリ（自己チェック）か BroadcastChannel（タブ間）で行い、
- * `/domain/*` に依存する検査は省略する。詳細は `design.md` §3.32。
+ * `/domain/*` に依存する検査は省略する。詳細は `design.md` §3.33。
  */
 import {
     EXAMPLE_STUN_ICE_SERVERS,

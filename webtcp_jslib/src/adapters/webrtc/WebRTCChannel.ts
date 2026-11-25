@@ -115,6 +115,14 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
     /** プラットフォーム固有の RTCPeerConnection を生成する。 */
     protected abstract createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection;
 
+    /**
+     * 接続がタイムアウトしたときのエラーメッセージに付け足す原因の説明（既定は空）。
+     * 実装ごとの既知の原因（例: node-datachannel の ICE 候補 0 件、#61）を利用者へ示すために使う。
+     */
+    protected describeConnectTimeout(_connection: RTCPeerConnection): string {
+        return '';
+    }
+
     public get localNodeId(): NodeId {
         return this.signaling.getLocalNodeId();
     }
@@ -349,7 +357,9 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         state.openTimer = setTimeout(() => {
             this.rejectOpenWaiters(
                 state,
-                new Error(`WebRTC connection to ${peerId} timed out after ${timeoutMs}ms`),
+                new Error(
+                    `WebRTC connection to ${peerId} timed out after ${timeoutMs}ms${this.describeConnectTimeout(state.connection)}`,
+                ),
             );
             this.destroyPeer(peerId, state, true);
         }, timeoutMs);

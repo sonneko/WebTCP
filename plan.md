@@ -272,7 +272,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 ### 3.10 サイクル11: GitHub Pages への自動デプロイと公開デモ（0.8.1 のまま）
 
 - **依頼**: sonneko（2026-11-21 20:20 JST）。`https://sonneko.github.io/WebTCP/` で目に見える成果（ドキュメントとデモ）を公開する。
-- **スコープ判断**: プロトコル・API・版番号は変えない（文書バージョン 0.8.1 のまま。版上げは別指示）。設計判断は `design.md` §3.32。
+- **スコープ判断**: プロトコル・API・版番号は変えない（文書バージョン 0.8.1 のまま。版上げは別指示）。設計判断は `design.md` §3.33。
 - **変更**:
   - [x] `.github/workflows/deploy-pages.yml`（`main` push と手動実行、`pages: write` / `id-token: write` / `contents: read`）
   - [x] `webtcp_website/astro.config.mjs`（`site` / `base`）、`src/plugins/base-links.mjs`（内部リンクの base 前置）
@@ -298,7 +298,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - ICE 候補を UDP ホスト候補から作れない条件（`disable_non_proxied_udp`）で、生の 2 接続は候補 0 件のまま接続せず、自己チェックは公開版と同じ文言・約 45.9 秒で FAIL。→ 訪問者の環境で ICE 候補が出ていない可能性が高い。
   - 既存の検証は mDNS 無効で起動していたため、既定の経路を検証していなかった（#73 に記録）。
 - **変更**:
-  - [x] `design.md` §3.33（ICE 候補の事前診断）
+  - [x] `design.md` §3.34（ICE 候補の事前診断）
   - [x] 自己チェックの step 0（ICE 候補の事前診断）と、step 1 の失敗時の内訳表示
   - [x] `verify-static-demo.mjs`: 既定の起動設定で実行し、候補 0 件の場合の早期の診断も確認する
   - [x] デモガイドに「自己チェックが失敗するとき」の節を追加
@@ -310,7 +310,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 - **スコープ判断**: 仕様は §10.4.1 に追加（§9.4 は依頼文の参照違いで、シグナリングは §10.4 にある）。既定はポーリングのまま。版番号は 0.8.1 のまま。
 - **変更**:
   - [x] 仕様 §10.4.1（トランスポート別の契約、再生・重複排除・順序・public-key の扱い）
-  - [x] 設計 §3.34
+  - [x] 設計 §3.35
   - [x] 参照サーバーの `/events`（SSE）と `/ws`（WebSocket）、`examples/lib/ws-server.mjs`
   - [x] `SseSignalingAdapter` / `WebSocketSignalingAdapter`（ライブラリの公開 API に追加）
   - [x] デモの `?signaling=poll|sse|ws`（既定 poll）
@@ -326,7 +326,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 - **スコープ判断**: Issue #44 が挙げる仕様の節（§9.1 IChannel 契約、§13.1 公開 API）は、現在の仕様書では別の内容を指している。IChannel 契約は §10.1、公開 API は §15.1、トランスポート層のタイムアウトは §8.5 にあるため、契約は新設の §8.6 にまとめ、§10.1 と §15.1 を更新した。既定の動作は変えない。版番号は 0.8.1 のまま。
 - **変更**:
   - [x] 仕様 §8.6（中断の契約）、§10.1（`IChannel.connect` の行）、§15.1（公開 API の署名と説明）
-  - [x] 設計 §3.35
+  - [x] 設計 §3.36
   - [x] `core/util/abort.ts`（共通ヘルパー）、`TransportLayer.connect()` の中断（RST・タイマー・リスナーの解放）
   - [x] `IChannel.connect(targetId, options?)` / `LinkManager.connectToNeighbor()` / `WebRTCChannel.connect()`（待機者単位の中断、発信側かつ待機者ゼロのときだけ破棄）
   - [x] `WebTCPNetwork.connect()` / `connectToPeer()` / `connectURL()` / `bootstrap()`、`NameServer` と `HTTPClient` からの伝播
@@ -351,7 +351,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 - **依頼**: sonneko（2026-11-23）。Issue #58。仕様 → 設計 → 計画の順に更新してから実装する。関連 #50（L7 HTTP トンネルのビジョン、クローズ済み）を PR から参照する。
 - **変更**:
   - [x] 仕様 §16.5（規則 5 を MUST に、規則 9〜11 を追加）、§16 の API 一覧（`maxPooledConnections` / `getPoolStats()`）
-  - [x] 設計 §3.36（決定と既存の上書き不具合の扱い）、§3.26 のプール記述から §3.36 への参照
+  - [x] 設計 §3.37（決定と既存の上書き不具合の扱い）、§3.26 のプール記述から §3.37 への参照
   - [x] `HTTPClient`: `maxPooledConnections`（既定 32）と LRU 追い出し（アイドルのみ、使用中は追い出さない）
   - [x] アイドル接続のタイマー回収（`idleTimeoutMs`、`unref`）と、アイドル中の相手切断の即時除去
   - [x] 同キーの並行接続で前の接続を上書きして閉じられなくなる不具合の修正（返却は 1 本だけ）
@@ -359,6 +359,23 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - [x] テスト `tests/http-client-pool.test.mjs`（8 件。修正前のコードで 6 件失敗、変異 2 種で該当テストが失敗することを確認）、`npm test` 268 件中 267 件合格・0 失敗・1 skip
   - [x] 公開ドキュメント（website `reference/api.md`）の更新
 - **既定値・API の互換**: 既定の keep-alive 挙動、`fetchURL()` の切断、`pooledConnectionCount` は変えない。版数は変更しない（ユーザー指示がない限り据え置き）。
+
+### 3.17 サイクル19: 自動バインドで候補 0 件のときの接続失敗を原因つきにする（#61）
+
+- **依頼**: sonneko（2026-11-24）。自動バインドで接続できないホストでも、接続するか、原因の分かるエラーで失敗させる。黙って 20 秒タイムアウトする状態をなくす。既定値は安易に変えない。
+- **再現（実行で確認）**: この sandbox は `eth0` が `169.254.0.21/30` のみ（#61 の条件）。自動バインドの 2 ノードは候補 0 件（両方）、20 秒後に bootstrap が失敗。`bindAddress: '127.0.0.1'` は候補 1 件ずつ、250 ms で接続。
+- **方針**: 既定の bind は変えない。候補 0 件のままのタイムアウトに原因を付ける（設計 §3.32）。自動フォールバックと既定の固定は採らない。
+- **変更**:
+  - [x] 仕様 §19.8 の #61 の制約行に、タイムアウトのエラーに原因を示す MUST を追記（`specification.md`）
+  - [x] 設計 §3.32（問題、検討した (a)(b)(c)、判定、早期失敗を採らない理由、#67 / `watchIceGathering` との関係）
+  - [x] `WebRTCChannel` の protected フック `describeConnectTimeout`（既定は空）と、`NodeWebRTCChannel` の判定の実装
+  - [x] テスト `tests/webrtc-connect-timeout.test.mjs`（4 件）と子プロセス `tests/helpers/node-datachannel-timeout-probe.mjs`
+  - [x] 公開ガイド `guides/bridge.md` に、タイムアウトのエラーに原因が含まれる旨を追記
+- **検証（修正前後、実行）**:
+  - 修正前: 原因の文言（fake・実 `node-datachannel`）が失敗 2 件、誤検出防止（候補あり・収集中）は合格 2 件。
+  - 修正後: 4 件合格。自動バインドの bootstrap の警告に「0 local candidates」「bindAddress」「#61」が出ることを再現スクリプトで確認。接続の成否と待ち時間（20 秒）は変わらない。`127.0.0.1` は従来どおり 250 ms で接続。
+- **順序の注意**: 指示は仕様 → 設計 → 計画の順で更新してから実装することだったが、実装を先に行った（実装の後にドキュメントを更新した）。PR の説明で明記する。
+- **版数**: 0.8.1 のまま（挙動の変更はエラーメッセージの文言のみ。指示がない限り据え置き）。
 
 ### 3.16 サイクル18: node-datachannel/polyfill の icecandidate 配送（#67）
 
@@ -400,7 +417,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 | マルチホップ厳格化 | RPF の厳格化、ループ検出・スプリットホライズンの強化。 | #46 |
 | シグナリングの低遅延化 | SSE / WebSocket ベースの `ISignalingAdapter` 実装を追加（サイクル14 / §3.12、既定はポーリングのまま）。 | #45 |
 | 鍵学習の最適化 | 未知公開鍵の待機（既定 5 秒）を、オンデマンドな鍵照会リクエストに置き換える。 | #47 |
-| API の中断伝播 | `connect()` / `connectToPeer()` / `TransportLayer.connect()` への `AbortSignal` 伝播（#40 の恒久対策）。サイクル15 / §3.13 で対応（仕様 §8.6、設計 §3.35）。 | #44 |
+| API の中断伝播 | `connect()` / `connectToPeer()` / `TransportLayer.connect()` への `AbortSignal` 伝播（#40 の恒久対策）。サイクル15 / §3.13 で対応（仕様 §8.6、設計 §3.36）。 | #44 |
 
 ### 4.3 名前解決と分散ドメイン（M4 / M5 で実装・残課題は未定）
 
@@ -544,4 +561,5 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #55 | documentation | M6 開始時の網羅同期チェックの残り（簡体字の `前缀`、§17 → §19） | 本 PR で修正。他の項目は既に修正済みと確認 |
 | #65 | bug | 対応セッションの無い RST に RST を返し、両端 `destroy()` で往復し続ける可能性（#54 修正中に発見） | 本 PR で修正（RST への返信を抑止）。仕様 §8.2 に MUST NOT |
 | #66 | bug | 受信 RST で `error` リスナーが無いと例外になる（#54 修正中に発見） | 本 PR で修正（リスナーがある場合のみ発火）。仕様 §8.2 に明記 |
+| #61 | bug | 自動バインドで候補 0 件のホストの接続失敗に原因が無い（サイクル19） | タイムアウトのエラーに候補 0 件と `bindAddress` の指定を示した（既定は変えない）。設計 §3.32、§3.17。Issue #61 は open のまま |
 | #67 | bug | `node-datachannel/polyfill` が `icecandidate` を `addEventListener` のリスナーへ配送しない（#61 の調査中に発見） | 起票。SDP で候補を数えて回避。サイクル18 / §3.16 で原因を上流の登録タイミング依存と切り分け、仕様 §19.8・設計 §3.31 に注記、characterization テストで固定 |
