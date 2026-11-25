@@ -132,8 +132,7 @@ export async function createNodeNetwork(options: CreateNodeNetworkOptions): Prom
         options.createPeerConnection ??
         (await resolveNodeRTCProvider({ ...(options.rtcPackages ? { packages: options.rtcPackages } : {}) }))
             .createPeerConnection;
-    const createPeerConnection = (config: RTCConfiguration): RTCPeerConnection =>
-        watchIceGathering(factory(config), logger);
+    const createPeerConnection = wrapNodePeerConnection(factory, logger);
 
     const extra = options.peerConnectionOptions ?? {};
     const keyDirectory =
@@ -190,6 +189,144 @@ export function watchIceGathering(pc: RTCPeerConnection, logger: Logger): RTCPee
                 'Set peerConnectionOptions.bindAddress (e.g. the host address of a non-link-local interface, or 127.0.0.1 for same-host tests). ' +
                 'See https://github.com/sonneko/WebTCP/issues/61',
         );
+    });
+    return pc;
+}
+
+/**
+ * `createNodeNetwork()` が生成するすべての PC に適用する共通の包み（#61 の収集完了の警告、#67 の橋渡し）。
+ * 注入された factory も同じ経路を通る。
+ */
+export function wrapNodePeerConnection(factory: PeerConnectionFactory, logger: Logger): PeerConnectionFactory {
+    return (config) => watchIceGathering(bridgeIceCandidateEvents(factory(config)), logger);
+}
+
+/** `icecandidate` の終了マーカー（`candidate === null`）を待つ上限（1 ms 刻みの確認回数）。 */
+const MAX_END_MARKER_CHECKS = 200;
+
+const countCandidateLines = (sdp: string): number => (sdp.match(/^a=candidate:/gm) ?? []).length;
+
+/**
+ * `icecandidate` の候補と終了マーカーを、リスナーの登録タイミングに関係なく届ける（#67 / 設計 §3.38）。
+ *
+ * `node-datachannel/polyfill` は候補イベントを再送せず、終了時の `candidate === null` も送らない（上流）。
+ * 生成直後に記録を始め、後から登録された `addEventListener` のリスナーと `onicecandidate` へ、
+ * 既に発行された候補を順に渡す。収集完了後は SDP の候補数に達してから `null` を 1 回発行する。
+ * ネイティブが自前で `null` を発行する場合はそれを使い、二重に出さない。
+ * 生の PC（`createNodeNetwork()` を通さないもの）には適用しない。
+ */
+export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnection {
+    const target = pc as unknown as EventTarget & {
+        iceGatheringState: RTCIceGatheringState;
+        localDescription: RTCSessionDescription | null;
+        connectionState?: string;
+        onicecandidate: ((event: Event) => void) | null;
+    };
+    if (typeof target.addEventListener !== 'function' || typeof target.dispatchEvent !== 'function') return pc;
+
+    const nativeAdd = target.addEventListener;
+    const nativeRemove = target.removeEventListener;
+    const nativeDispatch = target.dispatchEvent;
+
+    let events: Event[] = [];
+    let ended = false;
+    let endScheduled = false;
+    /** ハンドラごとに、既に渡した件数（`onicecandidate` の再代入で重複させないため）。 */
+    let handlerCounts = new WeakMap<object, number>();
+    const registered = new Set<unknown>();
+    let currentHandler: ((event: Event) => void) | null = target.onicecandidate ?? null;
+
+    const deliver = (listener: unknown, event: Event): void => {
+        if (typeof listener === 'function') {
+            (listener as (this: EventTarget, e: Event) => void).call(target, event);
+        } else if (listener && typeof (listener as EventListenerObject).handleEvent === 'function') {
+            (listener as EventListenerObject).handleEvent(event);
+        }
+    };
+    const candidateCount = (): number => events.filter((e) => (e as Event & { candidate: unknown }).candidate !== null).length;
+    const startRound = (): void => {
+        events = [];
+        ended = false;
+        endScheduled = false;
+        handlerCounts = new WeakMap<object, number>();
+    };
+
+    // 記録: 発行の時点で記録し、その後にネイティブの配送（登録済みリスナーと onicecandidate）を行う。
+    target.dispatchEvent = function (this: EventTarget, event: Event): boolean {
+        if (event.type === 'icecandidate' && !ended) {
+            events.push(event);
+            if ((event as Event & { candidate: unknown }).candidate === null) ended = true;
+            if (currentHandler) handlerCounts.set(currentHandler, events.length);
+        }
+        return nativeDispatch.call(this, event);
+    };
+
+    // 後から代入された onicecandidate へ、未受信の分を渡す。
+    Object.defineProperty(target, 'onicecandidate', {
+        configurable: true,
+        enumerable: true,
+        get: () => currentHandler,
+        set: (handler: unknown) => {
+            currentHandler = typeof handler === 'function' ? (handler as (event: Event) => void) : null;
+            if (!currentHandler) return;
+            const start = handlerCounts.get(currentHandler) ?? 0;
+            const pending = events.slice(start);
+            handlerCounts.set(currentHandler, events.length);
+            for (const event of pending) deliver(currentHandler, event);
+        },
+    });
+
+    // 後から登録されたリスナーへ、既に発行された候補を順に渡す（同じリスナーの二重登録では渡さない）。
+    target.addEventListener = function (this: EventTarget, type: string, listener: unknown, options?: unknown): void {
+        if (type !== 'icecandidate' || !listener) {
+            nativeAdd.call(this, type, listener as EventListenerOrEventListenerObject, options as AddEventListenerOptions);
+            return;
+        }
+        if (registered.has(listener)) return;
+        const once = typeof options === 'object' && options !== null && (options as { once?: boolean }).once === true;
+        if (once && events.length > 0) {
+            const first = events[0];
+            if (first) deliver(listener, first);
+            return;
+        }
+        registered.add(listener);
+        nativeAdd.call(this, type, listener as EventListenerOrEventListenerObject, options as AddEventListenerOptions);
+        if (!once) for (const event of events.slice()) deliver(listener, event);
+    };
+    target.removeEventListener = function (this: EventTarget, type: string, listener: unknown, options?: unknown): void {
+        if (type === 'icecandidate') registered.delete(listener);
+        nativeRemove.call(this, type, listener as EventListenerOrEventListenerObject, options as EventListenerOptions);
+    };
+
+    // 終了マーカー: SDP の候補数に達してから 1 回だけ発行する。
+    const emitEnd = (): void => {
+        if (ended) return;
+        ended = true;
+        const end = new Event('icecandidate');
+        Object.defineProperty(end, 'candidate', { value: null });
+        events.push(end);
+        if (currentHandler) handlerCounts.set(currentHandler, events.length);
+        nativeDispatch.call(target, end);
+    };
+    const scheduleEnd = (attempt: number): void => {
+        if (ended || target.connectionState === 'closed') return;
+        const sdp = target.localDescription?.sdp;
+        const expected = typeof sdp === 'string' ? countCandidateLines(sdp) : null;
+        if ((expected !== null && candidateCount() >= expected) || attempt >= MAX_END_MARKER_CHECKS) {
+            emitEnd();
+            return;
+        }
+        setTimeout(() => scheduleEnd(attempt + 1), 1);
+    };
+    nativeAdd.call(target, 'icegatheringstatechange', () => {
+        if (target.iceGatheringState === 'gathering' && ended) {
+            startRound();
+            return;
+        }
+        if (target.iceGatheringState === 'complete' && !endScheduled) {
+            endScheduled = true;
+            scheduleEnd(0);
+        }
     });
     return pc;
 }
