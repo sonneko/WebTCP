@@ -234,6 +234,8 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
     /** ハンドラごとに、既に渡した件数（`onicecandidate` の再代入で重複させないため）。 */
     let handlerCounts = new WeakMap<object, number>();
     const registered = new Set<unknown>();
+    /** `once` で登録したリスナーの、ネイティブ登録用のラッパー（発火時に `registered` から外すため）。 */
+    const onceWrappers = new Map<unknown, EventListener>();
     let currentHandler: ((event: Event) => void) | null = target.onicecandidate ?? null;
 
     const deliver = (listener: unknown, event: Event): void => {
@@ -290,11 +292,32 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
             return;
         }
         registered.add(listener);
+        if (once) {
+            // DOM と同じく、発火時（コールバックの直前）に除去する。こうすると、コールバック内での再登録も受け付けられる。
+            const wrapper = function (this: EventTarget, event: Event): void {
+                registered.delete(listener);
+                onceWrappers.delete(listener);
+                if (typeof listener === 'function') {
+                    (listener as (this: EventTarget, e: Event) => void).call(this, event);
+                } else if (listener && typeof (listener as EventListenerObject).handleEvent === 'function') {
+                    (listener as EventListenerObject).handleEvent(event);
+                }
+            };
+            onceWrappers.set(listener, wrapper);
+            nativeAdd.call(this, type, wrapper, options as AddEventListenerOptions);
+            return;
+        }
         nativeAdd.call(this, type, listener as EventListenerOrEventListenerObject, options as AddEventListenerOptions);
-        if (!once) for (const event of events.slice()) deliver(listener, event);
+        for (const event of events.slice()) deliver(listener, event);
     };
     target.removeEventListener = function (this: EventTarget, type: string, listener: unknown, options?: unknown): void {
-        if (type === 'icecandidate') registered.delete(listener);
+        if (type === 'icecandidate') {
+            registered.delete(listener);
+            const wrapper = onceWrappers.get(listener);
+            onceWrappers.delete(listener);
+            nativeRemove.call(this, type, (wrapper ?? listener) as EventListenerOrEventListenerObject, options as EventListenerOptions);
+            return;
+        }
         nativeRemove.call(this, type, listener as EventListenerOrEventListenerObject, options as EventListenerOptions);
     };
 
