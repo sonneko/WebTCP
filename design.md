@@ -406,7 +406,7 @@ TTL は中継ごとに減算されるため **0 に正規化**して署名対象
 - `node-datachannel` は、既定の自動バインドでリンクローカルのみのホストに ICE 候補を 0 件にすることがある（#61）。既定値は変えず、`createNodeNetwork()` が `icegatheringstatechange` で収集完了を検出し、候補 0 件なら警告ログを出す。
 - **候補の数はイベントではなく SDP（`localDescription.sdp` の `a=candidate:` 行）で数える。** `icecandidate` の配送は実装ごとに異なり、イベントに頼ると正常な接続まで誤って警告するため。`node-datachannel/polyfill` では、生成直後に登録しなかったリスナーには候補が届かない（#67、下記）。
 - **#67 の原因（上流の挙動。node-datachannel 0.33.6 で再現）**: polyfill は `createDataChannel()` の時点で ICE 収集を始め、`setLocalDescription()` より前に約 2 ms で `complete` にする。候補イベントはその約 1 ms 後に `dispatchEvent` され、再送されない（`dist/esm/polyfill/RTCPeerConnection.mjs` の `onLocalCandidate`）。そのため、生成直後に同期登録したリスナーは候補を受け取るが、数百 ms 後に登録したリスナーは `addEventListener` でも `onicecandidate` でも 0 回になる（SDP には候補が残っている。遅延登録 3/3・5/5 で再現）。`candidate === null` の終了イベントも発行されない。
-- **設計上の扱い（#67）**: リポジトリ側は変更しない。`watchIceGathering` は SDP で数えるため、この挙動の影響を受けない（収集完了時に `localDescription` は暗黙の offer として既に存在し、`127.0.0.1` で候補 1 件・自動バインドで 0 件を確認）。`icecandidate` のリスナーは生成直後に同期登録する（仕様 §19.8）。上流の挙動は `tests/node-datachannel-polyfill.characterization.test.mjs` で固定し、変わったら検出する。
+- **設計上の扱い（#67）**: サイクル20 で `createNodeNetwork()` 経由の PC に橋渡しを入れた（§3.38）。上流の挙動は変わらず、`tests/node-datachannel-polyfill.characterization.test.mjs` で固定する。`watchIceGathering` の SDP カウントは変えない（収集完了時に `localDescription` は暗黙の offer として既に存在し、`127.0.0.1` で候補 1 件・自動バインドで 0 件を確認）。
 - 検証: 自動バインドでは警告、`127.0.0.1` では警告なし（実 `node-datachannel` で確認）。
 
 ### 3.32 候補 0 件の接続は、タイムアウトの原因を示して失敗させる（#61 / 0.8.1）
@@ -671,3 +671,22 @@ HTTPClient                                   HTTPServer
 - **受信フロー制御（ウィンドウ広告）は無い**: 送信側の制限は輻輳ウィンドウと `maxWindowBytes` のみ。遅い受信側で大量の HTTP 応答を受けるとメモリを消費する（`specification.md` §8.3.1）。
 - **`NodeWebRTCChannel` を実接続に使う構成は CI 対象外**: 実ブラウザ検証（Playwright）と LoopbackChannel が検証範囲。
 - **サービス役は凍結中のタブでは応答しない**: 状態の永続化・復元と keep-alive 補助で停止からの回復は速くなるが、非可視タブの凍結は防げない（`specification.md` §9.6）。HTTP ハンドラと `onPageHide` は復元時に利用者が付け直す。
+
+### 3.38 `node-datachannel/polyfill` の ICE 候補と終了マーカーを、アダプタ層で後から登録しても届くようにする（#67 / サイクル20）
+
+- **問題**: 上流の polyfill は候補イベントを再送せず、終了時の `candidate === null` も送らない（characterization で固定）。`addEventListener` のリスナーは生成直後に登録しないと候補を 1 件も受け取れない。`onicecandidate` も後から代入すると同じく届かない。上流の `complete` は候補イベントより先に発火する（30 回の実測で `complete > complete > candidate` の順）。
+- **検討した方針**:
+  - (a) 上流を直す。却下。上流のリポジトリへの報告は、この sandbox から Issue を作れない（#67 の option 3 と同じ）。
+  - (b) 利用者に SDP で数えさせる。不十分。利用者がイベントで候補を数える前提を守れない。
+  - (c) 候補を数える利用者向けに、イベントの代わりに SDP を見るよう文書化する。却下。終了の合図が無いまま待つことになる。
+  - **採用**: 橋渡しをアダプタ層（`createNodeNetwork()` の factory の直後）に置く。生成直後に記録用の処理を入れ、後から登録されたリスナーへ記録を再送する。
+- **仕組み**（`src/adapters/webrtc/nodeProvider.ts` の `bridgeIceCandidateEvents`）:
+  - `dispatchEvent` を差し替え、`icecandidate` を発行の時点で記録する。上流の内部リスナー（`onicecandidate` への配送）も同じ経路を通るため、`onicecandidate` の既存の動作は変わらない。
+  - `addEventListener('icecandidate', l)` は、`l` が初めての登録なら、記録済みの候補を登録時に同期的に順に渡す（`once` の場合は先頭 1 件だけ渡して、ネイティブには登録しない）。同じリスナーの二重登録では再送しない。
+  - `onicecandidate` の代入（アクセサ）は、代入されたハンドラが未受信の分だけを渡す。同じハンドラの再代入では重複しない。
+  - 終了マーカー: 収集が `complete` になったら、`localDescription.sdp` の `a=candidate:` 行の数に記録済みの候補数が達するまで 1 ms ごとに確認し、達した時点で `candidate === null` を 1 回発行する（上限 200 回で打ち切り）。`complete` の時点で候補は届いていないことがあるため、即座には出さない。`localDescription` が無い場合（#67 の順序）は SDP の件数が分からないため、同じ上限（200 回）まで待ってから出す。
+  - ネイティブ実装が `null` を自前で発行した場合は、それを記録して二重に出さない。
+  - 収集が再開された（`gathering` に戻った）場合は、記録と終了の状態を次の収集の分として初期化する。
+- **#61 / `watchIceGathering` との関係**: `watchIceGathering` は SDP で候補を数える（変更なし）。#61 の `describeConnectTimeout`（§3.32）も SDP で判定する（変更なし）。#67 の橋渡しは候補 0 件の判定を変えない。#61 は自動バインドの host 設定の問題で、この変更では解決しないため open のまま。
+- **適用範囲**: `createNodeNetwork()` が生成する PC（注入された factory を含む）。生の `RTCPeerConnection` は変えない（characterization テストは上流の挙動をそのまま固定する）。
+- **検証**: `tests/icecandidate-bridge.test.mjs`（fake PC で、後からの登録・代入・二重登録・`once`・終了マーカーの順序・ネイティブの `null`・SDP 件数の待ち）と、実 `node-datachannel`（子プロセス）で、修正前（生の PC）と修正後（橋渡し）の候補数・終了数を比較する。

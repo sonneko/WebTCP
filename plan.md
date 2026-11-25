@@ -396,6 +396,25 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - 変異の確認（上流の `RTCPeerConnection.mjs` を一時的に変更し、SHA-256 で元に戻したことを確認）: 遅延登録のリスナーへ候補を再送する変異では (b) が失敗（`addEventListener` 1 回）。`complete` 時に `candidate === null` を送る変異では (c) が失敗（各 2 回）。
 - **実装上の注意**: `node-datachannel` は、PC を `close()` しても（生成のみでも）ネイティブのハンドルが残り、`node --test` のプロセスが終わらない（実測で 300 秒のタイムアウト）。そのため、各シナリオは子プロセス（`tests/helpers/node-datachannel-probe.mjs`、末尾で `process.exit`）で実行し、テストはその JSON 出力を検証する。
 
+### 3.18 サイクル20: node-datachannel/polyfill の ICE 候補と終了マーカーの橋渡し（#67）
+
+- **依頼**: sonneko（2026-11-25）。`icecandidate` をリスナーで受け取っても候補が届かない問題を修正する。上流で直せない場合は再現テストと回帰テストを残し、調査を記録する。
+- **結論**: 上流（polyfill）は未修正のまま、アダプタ層で橋渡しした（設計 §3.38）。上流の挙動は characterization テストで固定し、変わったら検出する。
+- **変更**:
+  - [x] 仕様 §19.8 の #67 の制約を、橋渡しの MUST に更新（生の PC の同期登録は引き続き MUST）
+  - [x] 設計 §3.31 の #67 の扱いを訂正し、§3.38 を追加（方針、仕組み、#61 との関係、適用範囲）
+  - [x] `nodeProvider.ts` に `bridgeIceCandidateEvents` を追加し、`createNodeNetwork()` の factory に適用
+  - [x] テスト `tests/icecandidate-bridge.test.mjs`（fake PC）、子プロセス probe（実 `node-datachannel`、修正前後の比較）
+- **#61**: open のまま（host の自動バインド設定の問題で、この変更では解決しない）。
+- **検証（実行）**:
+  - 実 `node-datachannel` の修正前（生の PC）と修正後（橋渡し）。loopback の SDP 候補 1 件。
+    - 修正前: 同タイミングの候補 1/1、後から登録 0/0、後から `onicecandidate` 0/0、終了マーカー 0 回。
+    - 修正後: 同タイミング 1/1、後から登録 1/1、後から `onicecandidate` 1/1。終了マーカーは各リスナーで 1 回、候補の後。
+    - 自動バインド（SDP 0 件）: 候補 0 件、終了マーカーは各リスナーで 1 回。
+  - fake PC の論理テスト 12 件すべて合格。変異 M1（後から登録への再送を止める）で 7 件、M2（終了マーカーを出さない）で 6 件が失敗し、元に戻したことをハッシュで確認。
+  - `npm test`: 289 件すべて合格、0 fail、0 skip（修正前は 275）。
+- **#61 / #67 の関係**: #61 の判定（SDP 基準）と `describeConnectTimeout` は変わらない。#61 は open のまま。#67 の上流は未修正のため、characterization テストは従来どおり上流の挙動を固定する。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
@@ -562,4 +581,4 @@ README の主張「ブラウザを自己完結型のサーバー実行環境に�
 | #65 | bug | 対応セッションの無い RST に RST を返し、両端 `destroy()` で往復し続ける可能性（#54 修正中に発見） | 本 PR で修正（RST への返信を抑止）。仕様 §8.2 に MUST NOT |
 | #66 | bug | 受信 RST で `error` リスナーが無いと例外になる（#54 修正中に発見） | 本 PR で修正（リスナーがある場合のみ発火）。仕様 §8.2 に明記 |
 | #61 | bug | 自動バインドで候補 0 件のホストの接続失敗に原因が無い（サイクル19） | タイムアウトのエラーに候補 0 件と `bindAddress` の指定を示した（既定は変えない）。設計 §3.32、§3.17。Issue #61 は open のまま |
-| #67 | bug | `node-datachannel/polyfill` が `icecandidate` を `addEventListener` のリスナーへ配送しない（#61 の調査中に発見） | 起票。SDP で候補を数えて回避。サイクル18 / §3.16 で原因を上流の登録タイミング依存と切り分け、仕様 §19.8・設計 §3.31 に注記、characterization テストで固定 |
+| #67 | bug | `node-datachannel/polyfill` が `icecandidate` を `addEventListener` のリスナーへ配送しない（#61 の調査中に発見） | 起票。SDP で候補を数えて回避。サイクル18 / §3.16 で上流の登録タイミング依存と切り分け、characterization テストで固定。サイクル20 / §3.18 で `createNodeNetwork()` 経由の PC に候補と終了マーカーの橋渡しを追加（設計 §3.38） |
