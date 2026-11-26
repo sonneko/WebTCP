@@ -683,6 +683,7 @@ HTTPClient                                   HTTPServer
 - **仕組み**（`src/adapters/webrtc/nodeProvider.ts` の `bridgeIceCandidateEvents`）:
   - `dispatchEvent` を差し替え、`icecandidate` を発行の時点で記録する。上流の内部リスナー（`onicecandidate` への配送）も同じ経路を通るため、`onicecandidate` の既存の動作は変わらない。
   - `addEventListener('icecandidate', l)` は、`l` が初めての登録なら、記録済みの候補を登録時に同期的に順に渡す（`once` の場合は先頭 1 件だけ渡して、ネイティブには登録しない）。同じリスナーの二重登録では再送しない。
+  - **`once` の意味論（サイクル21、PR #81 のフォローアップ）**: DOM の `once` と同じく、発火した `once` リスナーは除去され、同じリスナーを再登録できる。修正前は発火後も登録済みの Set に残り、再登録が無言で捨てられていた。実装は、`once` のリスナーを、発火時に `registered` から外すラッパー経由でネイティブ登録する。除去はコールバックの直前に行うため（DOM と同じ）、コールバック内での再登録も受け付けられる。`removeEventListener` はラッパーを外す。再登録は新しい登録として扱うため、§3.38 の登録時の再送に従う（記録済みの候補があれば先頭 1 件を渡す）。発火していない `once` の二重登録は重複として無視する。`removeEventListener` は、発火前の `once` リスナーも除去する。
   - `onicecandidate` の代入（アクセサ）は、代入されたハンドラが未受信の分だけを渡す。同じハンドラの再代入では重複しない。
   - 終了マーカー: 収集が `complete` になったら、`localDescription.sdp` の `a=candidate:` 行の数に記録済みの候補数が達するまで 1 ms ごとに確認し、達した時点で `candidate === null` を 1 回発行する（上限 200 回で打ち切り）。`complete` の時点で候補は届いていないことがあるため、即座には出さない。`localDescription` が無い場合（#67 の順序）は SDP の件数が分からないため、同じ上限（200 回）まで待ってから出す。
   - ネイティブ実装が `null` を自前で発行した場合は、それを記録して二重に出さない。

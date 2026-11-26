@@ -231,3 +231,78 @@ test('icecandidate bridge: the factory wrapper used by createNodeNetwork applies
     assert.deepEqual(late.seen, ['candidate:1', 'end']);
     assert.equal(created.length, 1);
 });
+
+// `once` の意味論（PR #81 のフォローアップ / 設計 §3.38）: 発火した once リスナーは除去され、再登録できる。
+// 発火していない once リスナーの再登録は重複として扱い、二重に登録しない。
+
+test('icecandidate bridge: a once listener that has fired can be registered again (it is not dropped as a duplicate)', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(2);
+    pc.setGatheringState('gathering');
+
+    const once = recorder();
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.emitCandidate(1); // the once listener fires and is removed
+    assert.deepEqual(once.seen, ['candidate:1']);
+
+    pc.addEventListener('icecandidate', once.listener, { once: true }); // registered again after firing
+    await wait(5);
+    assert.deepEqual(once.seen, ['candidate:1', 'candidate:1'], 'the re-registration must be accepted and fire again');
+});
+
+test('icecandidate bridge: a once listener fires only once for live events', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(2);
+    pc.setGatheringState('gathering');
+
+    const once = recorder();
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.emitCandidate(1);
+    pc.emitCandidate(2);
+    assert.deepEqual(once.seen, ['candidate:1']);
+});
+
+test('icecandidate bridge: a once listener that has not fired yet is a duplicate when added again', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(1);
+    pc.setGatheringState('gathering');
+
+    const once = recorder();
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.emitCandidate(1);
+    assert.deepEqual(once.seen, ['candidate:1']);
+});
+
+test('icecandidate bridge: removing a once listener before it fires stops delivery, and it can be added again', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(2);
+    pc.setGatheringState('gathering');
+
+    const once = recorder();
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.removeEventListener('icecandidate', once.listener);
+    pc.emitCandidate(1);
+    assert.deepEqual(once.seen, []);
+
+    // a new registration gets the buffered candidates first (design §3.38), once: only the first one
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.emitCandidate(2);
+    assert.deepEqual(once.seen, ['candidate:1']);
+});
+
+test('icecandidate bridge: a once listener can register itself again from inside its own callback (removed before it runs)', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(2);
+    pc.setGatheringState('gathering');
+
+    const seen = [];
+    const listener = (event) => {
+        seen.push(event.candidate ? 'candidate' : 'end');
+        if (seen.length === 1) pc.addEventListener('icecandidate', listener, { once: true });
+    };
+    pc.addEventListener('icecandidate', listener, { once: true });
+    pc.emitCandidate(1);
+    pc.emitCandidate(2);
+    assert.deepEqual(seen, ['candidate', 'candidate']);
+});
