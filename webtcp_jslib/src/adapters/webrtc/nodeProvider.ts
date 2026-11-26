@@ -128,13 +128,26 @@ export interface CreateNodeNetworkOptions
  */
 export async function createNodeNetwork(options: CreateNodeNetworkOptions): Promise<WebTCPNetwork> {
     const logger = resolveLogger(options.logger, options.logLevel);
-    const factory =
-        options.createPeerConnection ??
-        (await resolveNodeRTCProvider({ ...(options.rtcPackages ? { packages: options.rtcPackages } : {}) }))
-            .createPeerConnection;
+    const resolved = options.createPeerConnection
+        ? null
+        : await resolveNodeRTCProvider({ ...(options.rtcPackages ? { packages: options.rtcPackages } : {}) });
+    const factory = options.createPeerConnection ?? (resolved as NodeRTCProvider).createPeerConnection;
     const createPeerConnection = wrapNodePeerConnection(factory, logger);
 
-    const extra = options.peerConnectionOptions ?? {};
+    // node-datachannel の既定バインドが候補 0 件になるホスト（リンクローカルのみ）では、そのアドレスへ置き換える（#61 / 設計 §3.40）。
+    // 利用者の peerConnectionOptions.bindAddress は、後のマージで常に優先される。
+    const userExtra = options.peerConnectionOptions ?? {};
+    const defaultBind =
+        resolved?.name.startsWith('node-datachannel') && userExtra.bindAddress === undefined
+            ? chooseNodeDatachannelDefaultBindAddress(listLocalNetworkInterfaces())
+            : undefined;
+    if (defaultBind !== undefined) {
+        logger.info(
+            `[webrtc] node-datachannel: this host has only link-local addresses, so the ICE bind address is ${defaultBind} (#61). ` +
+                'Set peerConnectionOptions.bindAddress to choose another.',
+        );
+    }
+    const extra = { ...(defaultBind !== undefined ? { bindAddress: defaultBind } : {}), ...userExtra };
     const keyDirectory =
         options.keyDirectory ??
         (options.keyManager || options.verifier instanceof Ed25519PacketVerifier
@@ -161,6 +174,46 @@ export async function createNodeNetwork(options: CreateNodeNetworkOptions): Prom
         nodeId: options.nodeId ?? options.keyManager?.nodeId ?? options.signaling.getLocalNodeId(),
         ...(keyDirectory ? { keyDirectory } : {}),
     });
+}
+
+/** `os.networkInterfaces()` と同じ形（テストで偽の値を渡せるように、必要な項目だけを型にする）。 */
+export type NodeNetworkInterfaces = Record<
+    string,
+    readonly { address: string; family: string | number; internal: boolean }[] | undefined
+>;
+
+const LINK_LOCAL_IPV4 = /^169\.254\./;
+const LINK_LOCAL_IPV6 = /^fe80:/i;
+
+/**
+ * node-datachannel の既定（自動バインド）が候補 0 件になるホストで、置き換える bind アドレスを返す（#61 / 設計 §3.40）。
+ *
+ * 非ループバックのアドレス（`internal` でないもの）がすべてリンクローカルで、その中に IPv4 があれば、
+ * その最初の IPv4 を返す。ルーティング可能なアドレスが 1 つでもあれば `undefined`（既定のまま）。
+ * IPv6 のリンクローカルだけのホストは対象外（`undefined`）。
+ */
+export function chooseNodeDatachannelDefaultBindAddress(interfaces: NodeNetworkInterfaces): string | undefined {
+    const external = Object.values(interfaces)
+        .flatMap((list) => list ?? [])
+        .filter((entry) => !entry.internal);
+    const isV4 = (entry: { family: string | number }): boolean => entry.family === 'IPv4' || entry.family === 4;
+    const isV6 = (entry: { family: string | number }): boolean => entry.family === 'IPv6' || entry.family === 6;
+    const routable = external.some(
+        (entry) =>
+            (isV4(entry) && !LINK_LOCAL_IPV4.test(entry.address)) || (isV6(entry) && !LINK_LOCAL_IPV6.test(entry.address)),
+    );
+    if (routable) return undefined;
+    return external.find((entry) => isV4(entry) && LINK_LOCAL_IPV4.test(entry.address))?.address;
+}
+
+/**
+ * Node.js のネットワークインターフェース一覧。`node:os` を静的に import しない（パッケージの入口は
+ * ブラウザでも読まれるため）。`process.getBuiltinModule` が無い環境では空を返し、既定のまま。
+ */
+function listLocalNetworkInterfaces(): NodeNetworkInterfaces {
+    const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+    const os = proc?.getBuiltinModule?.('node:os') as { networkInterfaces?: () => NodeNetworkInterfaces } | undefined;
+    return os?.networkInterfaces?.() ?? {};
 }
 
 /**
