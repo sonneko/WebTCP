@@ -22,6 +22,12 @@ export const FLAG_BITS = {
     RT_UPDATE: 0b01000000,
 } as const;
 
+/**
+ * `WIN` ビット（フラグのビット 7、specification.md §6.3 / §8.3.4）。
+ * 受信ウィンドウの交渉と窓更新の問い合わせに使う。旧実装は受信時に無視する。
+ */
+export const WIN_FLAG_BIT = 0b10000000;
+
 /** フラグ文字列をビットマスクへ変換する。 */
 export function flagsToMask(flags: WebTCPFlags): number {
     return FLAG_BITS[flags];
@@ -177,6 +183,7 @@ export class BinaryPacketSerializer implements IPacketSerializer {
             throw new Error(`invalid flags: 0x${flagMask.toString(16)}`);
         }
         const flags = maskToFlags(flagMask);
+        const windowFlag = (flagMask & WIN_FLAG_BIT) !== 0;
         const sourcePort = view.getUint16(4, false);
         const destinationPort = view.getUint16(6, false);
         const seqNum = view.getUint32(8, false);
@@ -238,6 +245,7 @@ export class BinaryPacketSerializer implements IPacketSerializer {
             seqNum,
             ackNum,
             payload,
+            ...(windowFlag ? { windowFlag: true } : {}),
         };
     }
 
@@ -316,7 +324,7 @@ export class BinaryPacketSerializer implements IPacketSerializer {
         view.setUint8(0, WEBTCP_MAGIC);
         view.setUint8(1, version);
         view.setUint8(2, packet.ttl);
-        view.setUint8(3, flagsToMask(packet.flags));
+        view.setUint8(3, flagsToMask(packet.flags) | (packet.windowFlag ? WIN_FLAG_BIT : 0));
         view.setUint16(4, packet.sourcePort, false);
         view.setUint16(6, packet.destinationPort, false);
         view.setUint32(8, packet.seqNum, false);
