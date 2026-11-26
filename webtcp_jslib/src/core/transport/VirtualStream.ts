@@ -40,6 +40,16 @@ export interface VirtualStreamOptions {
     maxWindowBytes?: number;
     /** 送信バッファの上限（バイト）。既定 4 MiB。 */
     maxSendBufferBytes?: number;
+    /**
+     * 受信バッファの上限（バイト）。連続未読バイトと順序外保持バイトの合計をこの値以内に保つ。
+     * 既定 1 MiB。MSS 未満の値は MSS に切り上げる（specification.md §8.3.4）。
+     */
+    maxRecvBufferBytes?: number;
+    /**
+     * 受信ウィンドウの交渉（フラグの `WIN` ビット、specification.md §8.3.4）を申し出るか。既定 `true`。
+     * `false` にすると窓を交渉しない（旧実装と同じ送信側の挙動）。受信側の上限は常に適用される。
+     */
+    windowNegotiation?: boolean;
     /** 初期再送タイムアウト（ms）。既定 1000。 */
     initialRtoMs?: number;
     /** 後方互換用: `initialRtoMs` の別名。 */
@@ -84,6 +94,14 @@ export interface VirtualStreamStats {
     fastRetransmits: number;
     sackBlocksReceived: number;
     sackBlocksSent: number;
+    /** 受信側が現在広告できる空き（バイト）。`maxRecvBufferBytes - 未読 - 順序外保持`。 */
+    recvWindowBytes: number;
+    /** 受信バッファの上限（バイト、MSS 切り上げ後）。 */
+    maxRecvBufferBytes: number;
+    /** 送信側が相手の窓で送れる残り（バイト）。窓を交渉していなければ `null`。 */
+    peerWindowBytes: number | null;
+    /** 受信ウィンドウを交渉したか（`WIN` ビット）。 */
+    windowNegotiated: boolean;
 }
 
 interface PendingSendEntry {
@@ -108,6 +126,16 @@ const DEFAULT_MSS = 16 * 1024;
 const MAX_ALLOWED_MSS = 60 * 1024;
 const DEFAULT_MAX_WINDOW_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SEND_BUFFER_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_RECV_BUFFER_BYTES = 1024 * 1024;
+/** ウィンドウ付き ACK の payload 先頭に置く受信ウィンドウ（uint32、ビッグエンディアン）の長さ。 */
+const WINDOW_FIELD_BYTES = 4;
+const MAX_WINDOW_FIELD = 0xffffffff;
+
+/** ウィンドウ付き ACK の payload 先頭から受信ウィンドウ（uint32）を読む。長さが足りなければ `null`。 */
+function readWindowPrefix(payload: Uint8Array): number | null {
+    if (payload.byteLength < WINDOW_FIELD_BYTES) return null;
+    return new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, false);
+}
 
 /**
  * WebTCP における単一の仮想 TCP セッション（M2: フル TCP セマンティクス）。
@@ -145,6 +173,8 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
     private readonly mss: number;
     private readonly maxWindowBytes: number;
     private readonly maxSendBufferBytes: number;
+    private readonly maxRecvBufferBytes: number;
+    private readonly windowNegotiationEnabled: boolean;
     private readonly maxRetransmissions: number;
     private readonly defaultTtl: number;
     private readonly initialRtoMs: number;
@@ -176,6 +206,18 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
 
     // 順序外受信バッファ
     private readonly pendingSegments: OutOfOrderSegment[] = [];
+
+    // 受信ウィンドウ（specification.md §8.3.4）
+    /** 能動側: SYN で `WIN` を申し出たか。 */
+    private windowOffered = false;
+    /** 両側が `WIN` を交渉したか。交渉しない接続は窓を使わない（従来動作）。 */
+    private windowNegotiated = false;
+    /** 相手の窓から求めた送信可能な右端（シーケンス番号）。単調非減少。交渉時のみ使う。 */
+    private peerWindowEdge: SequenceNumber | null = null;
+    /** 最後に広告した受信ウィンドウ（バイト）。窓更新の要否の判定に使う。 */
+    private lastAdvertisedWindow: number;
+    /** 最後に窓の問い合わせを送った時刻（ms）。 */
+    private lastWindowProbeAt = 0;
 
     // 連続受信バイトバッファ（部分読み取り用）
     private readonly recvChunks: Uint8Array[] = [];
@@ -226,6 +268,14 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
             this.mss,
             options.maxSendBufferBytes ?? DEFAULT_MAX_SEND_BUFFER_BYTES,
         );
+        const rawRecvBuffer = options.maxRecvBufferBytes ?? DEFAULT_MAX_RECV_BUFFER_BYTES;
+        if (!Number.isInteger(rawRecvBuffer) || rawRecvBuffer < 1) {
+            throw new Error(`maxRecvBufferBytes must be a positive integer (got ${rawRecvBuffer})`);
+        }
+        // 1 セグメントは必ず空の受信バッファに収まること（進捗のため）
+        this.maxRecvBufferBytes = Math.max(this.mss, rawRecvBuffer);
+        this.windowNegotiationEnabled = options.windowNegotiation ?? true;
+        this.lastAdvertisedWindow = this.maxRecvBufferBytes;
         this.maxRetransmissions = options.maxRetransmissions ?? 5;
         this.defaultTtl = options.defaultTtl ?? 64;
         this.initialRtoMs = options.initialRtoMs ?? options.rtoMs ?? 1000;
@@ -279,6 +329,10 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
             fastRetransmits: this.fastRetransmitsCount,
             sackBlocksReceived: this.sackBlocksReceivedCount,
             sackBlocksSent: this.sackBlocksSentCount,
+            recvWindowBytes: this.recvWindowBytes(),
+            maxRecvBufferBytes: this.maxRecvBufferBytes,
+            peerWindowBytes: this.windowNegotiated ? this.peerWindowAvailable() : null,
+            windowNegotiated: this.windowNegotiated,
         };
     }
 
@@ -319,6 +373,8 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
 
         // SYN の ackNum は 0（RFC 793 / #31）
         const syn = this.createPacket('SYN', this.nextSendSeqNum, 0);
+        this.windowOffered = this.windowNegotiationEnabled;
+        if (this.windowOffered) syn.windowFlag = true;
         this.nextSendSeqNum = seqAdd(this.nextSendSeqNum, 1);
         this.state = 'SYN_SENT';
         this.startRetransmissionTimer();
@@ -444,6 +500,14 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
             );
         }
         if (bytes === 0) return Promise.resolve(new Uint8Array(0));
+        if (bytes > this.maxRecvBufferBytes) {
+            // 受信バッファに収まらないため、待ち続けると必ず固まる（specification.md §8.3.3）
+            return Promise.reject(
+                new RangeError(
+                    `readExact(${bytes}) exceeds maxRecvBufferBytes (${this.maxRecvBufferBytes})`,
+                ),
+            );
+        }
 
         if (this.readExactWaiters.length === 0 && this.recvTotalBytes >= bytes) {
             return Promise.resolve(this.consumeRecvBytes(bytes));
@@ -527,7 +591,14 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
         }
 
         this.expectedRecvSeqNum = seqAdd(packet.seqNum, 1);
-        const synAck = this.createPacket('SYN_ACK', this.nextSendSeqNum, this.expectedRecvSeqNum);
+        this.windowNegotiated = this.windowNegotiationEnabled && packet.windowFlag === true;
+        const synAck = this.createPacket(
+            'SYN_ACK',
+            this.nextSendSeqNum,
+            this.expectedRecvSeqNum,
+            this.windowNegotiated ? this.windowPrefix() : undefined,
+        );
+        if (this.windowNegotiated) synAck.windowFlag = true;
         this.nextSendSeqNum = seqAdd(this.nextSendSeqNum, 1);
         this.synAckEndSeq = this.nextSendSeqNum;
         this.synAckSent = true;
@@ -554,6 +625,17 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
             return;
         }
 
+        this.windowNegotiated = this.windowOffered && packet.windowFlag === true;
+        if (this.windowNegotiated) {
+            const window = readWindowPrefix(packet.payload);
+            if (window === null) {
+                this.logger.warn('Ignoring SYN_ACK without a window field');
+                return;
+            }
+            // 窓は確立より前に反映する（確立直後の送信がこの窓に従うように）
+            this.updatePeerWindow(packet.ackNum, window);
+        }
+
         this.expectedRecvSeqNum = seqAdd(packet.seqNum, 1);
         this.processAck(packet.ackNum, [], false);
         this.establish();
@@ -561,11 +643,29 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
     }
 
     private handleAck(packet: WebTCPPacket): void {
-        const sackBlocks = decodeSackBlocks(packet.payload);
+        let sackPayload = packet.payload;
+        if (this.windowNegotiated) {
+            const window = readWindowPrefix(packet.payload);
+            if (window === null) {
+                this.logger.warn('Dropping ACK without a window field');
+                return;
+            }
+            // 窓は ACK 処理より前に反映する（新しく開いた窓で、同じ ACK の後の送信が進むように）
+            this.updatePeerWindow(packet.ackNum, window);
+            sackPayload = packet.payload.subarray(WINDOW_FIELD_BYTES);
+        }
+
+        const sackBlocks = decodeSackBlocks(sackPayload);
         if (sackBlocks.length > 0) {
             this.sackBlocksReceivedCount += sackBlocks.length;
         }
         this.processAck(packet.ackNum, sackBlocks, true);
+
+        if (this.windowNegotiated) {
+            this.flushSendBuffer();
+            // 窓の問い合わせ（WIN 付き ACK）には現在の窓で必ず答える。答えには WIN を立てない（無限往復を防ぐ）。
+            if (packet.windowFlag === true) this.sendAck();
+        }
     }
 
     private handleData(packet: WebTCPPacket): void {
@@ -592,6 +692,28 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
 
         if (seqLte(segEnd, this.expectedRecvSeqNum)) {
             // 完全に重複した古いセグメント
+            this.sendAck();
+            return;
+        }
+
+        // 受信バッファの上限（specification.md §8.3.4）。交渉の有無によらず適用する。
+        // 破棄したデータは未確認のままなので、送信側が再送する。
+        const newBytes = seqDiff(
+            segEnd,
+            seqGt(segSeq, this.expectedRecvSeqNum) ? segSeq : this.expectedRecvSeqNum,
+        );
+        if (seqLte(segSeq, this.expectedRecvSeqNum)) {
+            // 先頭の欠損を埋めるデータ: 連続未読の空きに収まる限り格納する。順序外保持の分は押し出す
+            // （押し出さないと先頭の欠損が埋まらず、順序外バイトも配送・解放されないまま止まる）。
+            if (newBytes > this.maxRecvBufferBytes - this.recvTotalBytes) {
+                this.logger.debug(`Dropping DATA seq=${segSeq} (${newBytes} bytes): unread buffer full`);
+                this.sendAck();
+                return;
+            }
+            this.evictOutOfOrderFor(newBytes);
+        } else if (newBytes > this.recvWindowBytes()) {
+            // 順序外のデータは空きに収まる場合だけ格納する
+            this.logger.debug(`Dropping DATA seq=${segSeq} (${newBytes} bytes): receive buffer full`);
             this.sendAck();
             return;
         }
@@ -851,7 +973,11 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
         }
 
         while (this.sendBuffer.length > 0) {
-            const available = this.effectiveWindowBytes() - this.unackedQueue.getEffectiveInFlightBytes();
+            const windowAvailable = this.peerWindowAvailable();
+            const available = Math.min(
+                this.effectiveWindowBytes() - this.unackedQueue.getEffectiveInFlightBytes(),
+                windowAvailable,
+            );
             if (available <= 0) {
                 break;
             }
@@ -863,8 +989,12 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
                 this.unackedQueue.getEffectiveInFlightBytes() === 0
                     ? this.mss
                     : Math.min(this.mss, available);
-            const chunkLen = Math.min(remaining, maxChunk);
+            const chunkLen = Math.min(remaining, maxChunk, windowAvailable);
             if (chunkLen <= 0) {
+                break;
+            }
+            // 相手の窓で切られた小さすぎる断片は送らず、窓が広がるまで待つ（SWS 回避）
+            if (windowAvailable < remaining && chunkLen < Math.min(this.mss, remaining)) {
                 break;
             }
 
@@ -1056,6 +1186,7 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
             }
         }
 
+        this.maybeSendWindowUpdate();
         return result;
     }
 
@@ -1103,6 +1234,105 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
             this.unackedQueue.clear();
             if (this.timeWaitMs <= 0) this.finalize();
             else this.restartTimeWaitTimer();
+        }
+    }
+
+    // ===============================================
+    // 受信ウィンドウ（specification.md §8.3.4）
+    // ===============================================
+
+    /** 受信側が現在広告できる空き（バイト）。 */
+    private recvWindowBytes(): number {
+        return Math.max(0, this.maxRecvBufferBytes - this.recvTotalBytes - this.outOfOrderBytes());
+    }
+
+    private outOfOrderBytes(): number {
+        let total = 0;
+        for (const seg of this.pendingSegments) total += seg.data.byteLength;
+        return total;
+    }
+
+    /**
+     * 先頭の欠損を埋めるデータを `need` バイト格納できるよう、順序外保持のセグメントを
+     * 後ろ（期待位置から遠いもの）から押し出す。押し出したデータは未確認のままなので送信側が再送する。
+     */
+    private evictOutOfOrderFor(need: number): void {
+        while (
+            this.pendingSegments.length > 0 &&
+            this.recvTotalBytes + this.outOfOrderBytes() + need > this.maxRecvBufferBytes
+        ) {
+            let farthest = 0;
+            for (let i = 1; i < this.pendingSegments.length; i += 1) {
+                const distance = seqDiff(this.pendingSegments[i]!.seq, this.expectedRecvSeqNum);
+                const current = seqDiff(this.pendingSegments[farthest]!.seq, this.expectedRecvSeqNum);
+                if (distance > current) farthest = i;
+            }
+            const evicted = this.pendingSegments.splice(farthest, 1)[0]!;
+            this.logger.debug(`Evicting out-of-order DATA seq=${evicted.seq} (${evicted.data.byteLength} bytes) to admit the head gap`);
+        }
+    }
+
+    /** 窓の値を 4 バイトの先頭フィールドにし、広告済みの値として記録する。 */
+    private windowPrefix(): Uint8Array {
+        const window = this.recvWindowBytes();
+        this.lastAdvertisedWindow = window;
+        const out = new Uint8Array(WINDOW_FIELD_BYTES);
+        new DataView(out.buffer).setUint32(0, Math.min(window, MAX_WINDOW_FIELD), false);
+        return out;
+    }
+
+    /** 相手の窓から送信可能な右端を更新する。右端は後退させない（最大値を使う）。 */
+    private updatePeerWindow(ackNum: SequenceNumber, window: number): void {
+        const edge = seqAdd(ackNum, window);
+        if (this.peerWindowEdge === null || seqGt(edge, this.peerWindowEdge)) {
+            this.peerWindowEdge = edge;
+        }
+    }
+
+    /** 相手の窓で、新規データをあと何バイト送れるか。交渉しない接続では無制限。 */
+    private peerWindowAvailable(): number {
+        if (!this.windowNegotiated) return Number.POSITIVE_INFINITY;
+        if (this.peerWindowEdge === null) return 0;
+        return Math.max(0, seqDiff(this.peerWindowEdge, this.nextSendSeqNum));
+    }
+
+    /** 送信データが相手の窓で止まっているか。 */
+    private windowBlocked(): boolean {
+        if (!this.windowNegotiated || this.sendBuffer.length === 0) return false;
+        if (this.state !== 'ESTABLISHED' && this.state !== 'CLOSE_WAIT') return false;
+        const head = this.sendBuffer[0]!;
+        const remaining = head.data.byteLength - head.offset;
+        return this.peerWindowAvailable() < Math.min(this.mss, remaining);
+    }
+
+    /**
+     * 窓で止まっている間、RTO 間隔で `WIN` 付きの問い合わせ ACK を送る（window probe）。
+     * 窓更新が失われても送信が止まったままにならないようにする。
+     */
+    private maybeSendWindowProbe(): void {
+        if (!this.windowBlocked()) return;
+        const now = Date.now();
+        if (now - this.lastWindowProbeAt < this.unackedQueue.getRtoMs()) return;
+        this.lastWindowProbeAt = now;
+
+        const probe = this.createPacket(
+            'ACK',
+            this.nextSendSeqNum,
+            this.expectedRecvSeqNum,
+            this.windowPrefix(),
+        );
+        probe.windowFlag = true;
+        void this.transport.sendPacket(probe).catch((error) => {
+            this.logger.warn('Failed to send window probe:', error);
+        });
+    }
+
+    /** 読み取りで空きが十分に増えたら、窓を載せた ACK を送って送信側を再開させる。 */
+    private maybeSendWindowUpdate(): void {
+        if (!this.windowNegotiated || this.state === 'CLOSED') return;
+        const threshold = Math.min(this.mss, Math.floor(this.maxRecvBufferBytes / 2));
+        if (this.recvWindowBytes() - this.lastAdvertisedWindow >= threshold) {
+            this.sendAck();
         }
     }
 
@@ -1198,10 +1428,19 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
 
     private sendAck(): void {
         const sackBlocks = this.computeSackBlocks();
-        let payload: Uint8Array = new Uint8Array(0);
+        let sackPayload: Uint8Array = new Uint8Array(0);
         if (sackBlocks.length > 0) {
-            payload = encodeSackBlocks(sackBlocks);
+            sackPayload = encodeSackBlocks(sackBlocks);
             this.sackBlocksSentCount += sackBlocks.length;
+        }
+
+        let payload = sackPayload;
+        if (this.windowNegotiated) {
+            // 交渉した接続では、payload の先頭に受信ウィンドウを載せ、その後ろに SACK を続ける
+            const windowField = this.windowPrefix();
+            payload = new Uint8Array(WINDOW_FIELD_BYTES + sackPayload.byteLength);
+            payload.set(windowField, 0);
+            payload.set(sackPayload, WINDOW_FIELD_BYTES);
         }
 
         const ack = this.createPacket('ACK', this.nextSendSeqNum, this.expectedRecvSeqNum, payload);
@@ -1257,6 +1496,8 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
     }
 
     private retransmissionLoop(): void {
+        this.maybeSendWindowProbe();
+
         const timedOut = this.unackedQueue.getPacketsForRetransmission();
         if (timedOut.length === 0) return;
 

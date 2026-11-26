@@ -30,7 +30,7 @@ description: WebTCP のマイルストーン計画（M0–M8）と現在の制�
 - **Node.js 鍵ファイルは平文 PEM**: `NodeKeyManager.open({ keyFile })` は `0600` で保存しますが、ディスク暗号化やバックアップは利用者の責任です。
 - **Node.js 向け WebRTC 実装は非同梱**: `createNodeNetwork()` は導入済みの `@roamhq/wrtc`、次に `node-datachannel` を自動で使います（どちらも無ければ `WebRTCProviderUnavailableError`）。`node-datachannel` は自動バインドで ICE 候補を 0 件にすることがあります（[#61](https://github.com/sonneko/WebTCP/issues/61)）。
 - **HTTP はサブセット（M6 / #50）**: リクエストライン・ヘッダ・本文（`Content-Length` / `chunked`）・`keep-alive`・`HEAD` は実装済みですが、HTTP/2・HTTP/3・`Upgrade` / WebSocket・`CONNECT`・パイプライン・圧縮・Cookie ジャー・認証・リダイレクト追従・TLS 終端は未実装です（#57）。`webtcp://` URL の `fragment` は送りません。
-- **受信フロー制御が無い**: パケット形式に受信ウィンドウが無く、送信側の制限は輻輳ウィンドウと `maxWindowBytes` のみです。大きな HTTP 応答は受信側メモリに依存します（#56）。`HTTPClient` の接続プールにも上限がありません（#58）。
+- **受信フロー制御は対応済み（#56）**: v2 の `WIN` ビットで受信ウィンドウを交渉し、受信側のバッファを `maxRecvBufferBytes`（既定 1 MiB）以内に保ちます。交渉しない旧実装の相手とは窓無しで通信し、上限超過分は再送で回復します（回復は遅くなります）。`HTTPClient` の接続プールにも上限がありません（#58）。
 - **サービスはタブに縛られる**: M7 で、待ち受け・名前登録・所有権レコードを保存して再読み込み後に復元できるようになりました（`persistState` / `restoreState`）。ただし非可視タブが凍結されている間は応答せず、HTTP ハンドラは再登録が必要です（#51、仕様 §9）。既存の TCP/HTTP クライアント（curl 等）を入れるブリッジはありません（#52）。
 
 詳細は [domain.global と所有権証明](/guides/domain-ownership/) を参照してください。

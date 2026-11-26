@@ -31,6 +31,12 @@ export interface WebTCPPacket {
     destinationPort: VirtualPort;
     /** SYN, ACK, FIN, RST, DATA, RT_UPDATE などのフラグ。 */
     flags: WebTCPFlags;
+    /**
+     * `WIN` ビット（フラグのビット 7、specification.md §6.3 / §8.3.4）。
+     * 受信ウィンドウ対応を交渉した接続だけで使う。`SYN` / `SYN_ACK` では交渉、`ACK` では窓更新の問い合わせを表す。
+     * 受信パケットで立っていなければ `undefined`（ビットが 0 の場合はプロパティを持たない）。
+     */
+    windowFlag?: boolean;
     /** バイト単位のシーケンス番号（mod 2^32）。 */
     seqNum: SequenceNumber;
     /** 次に期待する受信バイトのシーケンス番号（mod 2^32）。 */

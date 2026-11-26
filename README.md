@@ -135,7 +135,7 @@ WebRTC の接続には Offer/Answer と ICE 候補の交換が必要です。同
 - RPF 厳格化と距離ベクトルの収束強化（#46）、SSE / WebSocket シグナリング（#45）は未着手です。
 - TURN サーバー自体は同梱していません（`iceServers` / `iceServersProvider` で利用者側サーバーを指定）。
 - HTTP は HTTP/1.1 のサブセットです（M6 / #50）。HTTP/2・HTTP/3、`Upgrade` / WebSocket、`CONNECT`、パイプライン、圧縮、Cookie ジャー、認証、リダイレクト追従、TLS 終端は未実装で、`fragment` は転送しません（#57）。
-- パケット形式に**受信ウィンドウが無い**ため、フロー制御は輻輳ウィンドウと `maxWindowBytes` のみです。遅い受信側で巨大な HTTP 応答を受けるとメモリを消費します（#56）。`HTTPClient` の接続プールにも上限がありません（#58）。
+- 受信ウィンドウ（v2 の `WIN` ビットで交渉）により受信側のバッファは `maxRecvBufferBytes`（既定 1 MiB）以内に抑えられます（#56）。交渉しない旧実装の相手とは窓無しで通信し、上限超過分は再送で回復しますが、その回復は遅くなります。`HTTPClient` の接続プールにも上限がありません（#58）。
 
 ## ビジョンはどこまで実現したか（率直な評価）
 
@@ -378,7 +378,7 @@ const body = await response.text();      // text / json / arrayBuffer。スト�
 - `webtcp://` URL の `fragment` は送りません（HTTP の request-target に含まれないため）。
 - 既存の生 TCP API（`listen()` / `connect()` / `connectURL()`）はバイトストリームのままで、`connectURL()` は今も `path` / `query` を送りません。HTTP は `serveHTTP()` / `fetchURL()` / `HTTPClient` を使い分けてください。
 - `keep-alive` を維持して複数リクエストを再利用するには `new HTTPClient(network, { nameServer })` を直接使います（`fetchURL()` は 1 リクエストごとに閉じます）。
-- 受信ウィンドウの広告が無いため、巨大な応答は受信側メモリに依存します。`maxResponseBytes`（既定 8 MiB）とストリーミング API で抑えてください（#56）。
+- 受信ウィンドウ（`maxRecvBufferBytes`、既定 1 MiB）で受信側のメモリは有界になりました（#56）。巨大な応答には `maxResponseBytes`（既定 8 MiB）とストリーミング API も併用してください。
 
 ### Node.js で NodeId を永続化する
 
