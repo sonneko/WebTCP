@@ -247,7 +247,9 @@ test('icecandidate bridge: a once listener that has fired can be registered agai
 
     pc.addEventListener('icecandidate', once.listener, { once: true }); // registered again after firing
     await wait(5);
-    assert.deepEqual(once.seen, ['candidate:1', 'candidate:1'], 'the re-registration must be accepted and fire again');
+    assert.deepEqual(once.seen, ['candidate:1'], 'the re-registration must not redeliver candidate 1 (#83)');
+    pc.emitCandidate(2);
+    assert.deepEqual(once.seen, ['candidate:1', 'candidate:2'], 'the re-registration must be accepted and fire for the next candidate');
 });
 
 test('icecandidate bridge: a once listener fires only once for live events', async () => {
@@ -306,3 +308,52 @@ test('icecandidate bridge: a once listener can register itself again from inside
     pc.emitCandidate(2);
     assert.deepEqual(seen, ['candidate', 'candidate']);
 });
+
+// Issue #83: 後から登録された once リスナーが、自己再登録しながら buffered 候補を順に読めること。
+// 修正前は先頭の候補を再配送して、後続の候補を取りこぼした（candidate:1 を 3 回）。
+test('icecandidate bridge (#83): a once listener that re-registers itself reads buffered candidates in order, without redelivery', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(3);
+    pc.setGatheringState('gathering');
+    pc.emitCandidate(1);
+    pc.emitCandidate(2);
+
+    const got = [];
+    const listener = (event) => {
+        got.push(event.candidate.candidate);
+        if (got.length < 3) pc.addEventListener('icecandidate', listener, { once: true });
+    };
+    pc.addEventListener('icecandidate', listener, { once: true });
+    pc.emitCandidate(3);
+    assert.deepEqual(got, ['candidate:1', 'candidate:2', 'candidate:3']);
+});
+
+test('icecandidate bridge (#83): a once listener re-registered later resumes from its own position, not from the first candidate', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(3);
+    pc.setGatheringState('gathering');
+
+    const once = recorder();
+    pc.addEventListener('icecandidate', once.listener, { once: true });
+    pc.emitCandidate(1); // fires and is removed
+    pc.emitCandidate(2); // not delivered: the once listener is not registered
+    pc.addEventListener('icecandidate', once.listener, { once: true }); // buffered 2 is the next undelivered
+    assert.deepEqual(once.seen, ['candidate:1', 'candidate:2']);
+    pc.emitCandidate(3);
+    assert.deepEqual(once.seen, ['candidate:1', 'candidate:2'], 'the replayed once listener is not registered for live events');
+});
+
+test('icecandidate bridge (#83): a non-once listener that is removed and added again receives only the candidates it missed', async () => {
+    const pc = bridgeIceCandidateEvents(new UpstreamLikePeerConnection());
+    pc.setCandidateLines(2);
+    pc.setGatheringState('gathering');
+
+    const rec = recorder();
+    pc.addEventListener('icecandidate', rec.listener);
+    pc.emitCandidate(1);
+    pc.removeEventListener('icecandidate', rec.listener);
+    pc.emitCandidate(2);
+    pc.addEventListener('icecandidate', rec.listener);
+    assert.deepEqual(rec.seen, ['candidate:1', 'candidate:2'], 'the candidate 1 must not be delivered twice');
+});
+

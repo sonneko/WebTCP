@@ -454,6 +454,29 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - 相互運用（`/tmp/cy22/interop_final.log`）: 旧→新（読み手 1.5 秒後、上限 256 KiB）は 1 MiB を受信し一致（約 122 秒。押し出し前は 245763 バイトで永久に停止）。新→旧は 59 ms で一致。
   - 受信メモリ: テスト 1 は遅い読み手で受信バッファが上限を超えないことと、送信側が止められることを確認する。
 
+### 3.21 サイクル23: `bridgeIceCandidateEvents` の once リスナーが先頭の候補を再配送する（#83）
+
+- **依頼**: sonneko（2026-11-26）。Issue #83（PR #84 のマージ後に起票）。`once` リスナーが自己再登録すると、先頭の候補を繰り返し受け取り、後続を取りこぼす。仕様 → 設計 → 計画の順に更新し、実装する。
+- **原因**: `addEventListener` の `once` の経路が、常に `events[0]` を渡し、リスナーごとの位置を記録しない（設計 §3.38）。
+- **選んだ方式**: リスナーごとの受信済みの位置（`cursor`）を持つ。登録・再登録のたびに、`cursor` 以降の未受信の候補から配送する。発火時と `removeEventListener` で `cursor` を記録の末尾まで進める。
+- **選んだ理由**: 他のリスナーの配送に影響せず、DOM の「発火ごとに除去」と両立する。修正が最小で、既存の登録経路（同期の再送、二重登録の無視、`onicecandidate` の代入）を変えない。
+- **検討して退けた案**:
+  - 再登録のたびに先頭から渡す（修正前）: 重複し、後続を取りこぼす。
+  - 発火済みの `once` の再登録を無視する: 候補を取りこぼす。
+  - 発火時に記録の先頭を削る: 記録は PC 単位で共有されるため、他のリスナーの位置が壊れる。
+- **変更**:
+  - [x] 仕様 §19.8 の #67 の制約に、リスナーごとの位置と再登録の意味論（MUST）を追記
+  - [x] 設計 §3.38 に、`cursor` の仕組み、`once` の意味論と位置、採用理由と退けた案を追記
+  - [x] 実装: `nodeProvider.ts` の `bridgeIceCandidateEvents` に `cursor`（リスナーごと）を追加
+  - [x] テスト: 再現（Issue #83 のプローブ）、再登録後の位置、通常リスナーの再登録（`tests/icecandidate-bridge.test.mjs`）
+  - [x] 既存の関連テスト（`icecandidate-bridge.test.mjs` の既存 17 件、`icecandidate-bridge-node-datachannel.test.mjs` の実 `node-datachannel` 2 件）が壊れていないことを確認
+- **検証（実行）**:
+  - 再現（Issue #83 のプローブ、`/tmp/cy23/once_probe.test.mjs`）: 修正前 `received: candidate:1, candidate:1, candidate:1`（0/1 合格）→ 修正後 `candidate:1, candidate:2, candidate:3`（1/1 合格）。
+  - `tests/icecandidate-bridge.test.mjs`: 修正前 17/20（#83 の 3 件が失敗、`/tmp/cy23/before.log`）→ 修正後 20/20（`/tmp/cy23/after.log`）。既存 13 番の期待を #83 の仕様に合わせて更新（再登録で候補 1 を重複させず、次の候補 2 から受け取る）。
+  - 変異試験（実ソースに 1 箇所ずつ適用し、SHA-256 で復元を確認）: M-A 登録時の位置を常に 0 にする（修正前の動作）→ 4 件が失敗。M-B 発火時に位置を進めない → 2 件が失敗（13 番と 19 番）。
+  - 実 `node-datachannel`（`npm install --no-save node-datachannel@0.33.6`、`package.json` は変更なし）: `icecandidate-bridge-node-datachannel.test.mjs` 2/2 合格（修正後）。
+  - `npm test`（`webtcp_jslib`）: 300 合格、0 失敗、7 skip（うち実 `node-datachannel` の 2 件は `npm test` では未導入のため skip。上記で個別に 2/2 合格を確認）。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
