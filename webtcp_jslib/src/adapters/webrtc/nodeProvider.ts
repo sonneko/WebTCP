@@ -236,6 +236,11 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
     const registered = new Set<unknown>();
     /** `once` で登録したリスナーの、ネイティブ登録用のラッパー（発火時に `registered` から外すため）。 */
     const onceWrappers = new Map<unknown, EventListener>();
+    /**
+     * リスナーごとの受信済みの位置（記録された候補の件数）。登録・再登録のたびに、ここから先の未受信の候補を配送する（#83）。
+     * 記録は PC 単位で共有されるため、位置はリスナー側に持つ。
+     */
+    let cursors = new WeakMap<object, number>();
     let currentHandler: ((event: Event) => void) | null = target.onicecandidate ?? null;
 
     const deliver = (listener: unknown, event: Event): void => {
@@ -251,6 +256,7 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
         ended = false;
         endScheduled = false;
         handlerCounts = new WeakMap<object, number>();
+        cursors = new WeakMap<object, number>();
     };
 
     // 記録: 発行の時点で記録し、その後にネイティブの配送（登録済みリスナーと onicecandidate）を行う。
@@ -285,10 +291,14 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
             return;
         }
         if (registered.has(listener)) return;
+        const key = listener as object;
         const once = typeof options === 'object' && options !== null && (options as { once?: boolean }).once === true;
-        if (once && events.length > 0) {
-            const first = events[0];
-            if (first) deliver(listener, first);
+        const from = cursors.get(key) ?? 0;
+        if (once && from < events.length) {
+            // 未受信の先頭 1 件だけを渡す。ネイティブには登録しない（次の候補は、再登録されるまで渡さない）。
+            cursors.set(key, from + 1);
+            const pending = events[from];
+            if (pending) deliver(listener, pending);
             return;
         }
         registered.add(listener);
@@ -297,6 +307,7 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
             const wrapper = function (this: EventTarget, event: Event): void {
                 registered.delete(listener);
                 onceWrappers.delete(listener);
+                cursors.set(key, events.length);
                 if (typeof listener === 'function') {
                     (listener as (this: EventTarget, e: Event) => void).call(this, event);
                 } else if (listener && typeof (listener as EventListenerObject).handleEvent === 'function') {
@@ -308,10 +319,15 @@ export function bridgeIceCandidateEvents(pc: RTCPeerConnection): RTCPeerConnecti
             return;
         }
         nativeAdd.call(this, type, listener as EventListenerOrEventListenerObject, options as AddEventListenerOptions);
-        for (const event of events.slice()) deliver(listener, event);
+        // 通常のリスナーは、未受信の分（初回は全部、再登録後は取りこぼした分）を渡してから、以後はネイティブで受け取る。
+        const pendingAll = events.slice(from);
+        cursors.set(key, events.length);
+        for (const event of pendingAll) deliver(listener, event);
     };
     target.removeEventListener = function (this: EventTarget, type: string, listener: unknown, options?: unknown): void {
         if (type === 'icecandidate') {
+            // 登録されていたリスナーは、ここまでの候補をすべて受け取っている。再登録時はこの続きから渡す。
+            if (registered.has(listener)) cursors.set(listener as object, events.length);
             registered.delete(listener);
             const wrapper = onceWrappers.get(listener);
             onceWrappers.delete(listener);
