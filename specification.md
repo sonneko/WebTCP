@@ -603,6 +603,21 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 - 凍結中（非表示が長く続いた後、ブラウザが凍結したタブ）は、隣接からの要求に応答しない。解凍されると、保留された通信は再開する（§9.6 と一致）。
 - リロードや閉じられたタブは、接続と隣接を失う。M9 は状態を戻すが、接続の再確立は利用者または §9.5 の補助が行う。
 
+### 9.8 自動保存（M9 項目 28 / #51）
+
+本節は実装済み（M9 項目 28）。
+
+- `MUST`: `WebTCPNetwork.enableAutoPersist({ nameServer?, debounceMs?, maxWaitMs? })` を提供する。既定では無効（既存の動作を変えない）。
+- `MUST`: 有効化しただけでは保存しない。復元前の空の状態で、保存済みの状態を上書きしないため。
+- `MUST`: 呼び出し順は `restoreState()` の後に `enableAutoPersist()`。利用者向けの文書にこの順を書く。
+- `MUST`: 次の変更で保存を予約する。(a) トランスポートの `listen` / `unlisten`、(b) `nameServer` のローカル登録（`registerA` / `registerCNAME` / `registerDomain` / `unregister` / `unregisterDomain` の成功時）。`restoreState()` の再待ち受けは保存の予約にはなっても、内容は変えない。
+- `MUST`: 保存は最後の変更から `debounceMs` 後に 1 回にまとめる（既定 500 ms）。変更が続いても、最初の未保存の変更から `maxWaitMs` を超えて遅らせない（既定 5000 ms）。
+- `MUST`: 保存が失敗したら変更を未保存のままにし、`debounceMs` 後に再試行する。失敗で `listen()` などの呼び出しを例外にしない（`warn` で記録する）。
+- `MUST`: `close()` は、トランスポートを閉じる前に未保存の変更の保存を開始する（`persistState` の状態取り込みは同期的に行う）。
+- `MUST`: `nameServer` を使う場合は、有効化のときに渡す。渡さないと、保存される名前と所有権レコードが空になる。
+- 保証の範囲: 自動保存は、ページが強制終了された場合の変更の保存を保証しない。保存されていない変更は、最大 `maxWaitMs` 分失われうる。
+- 検証: Node（FakeIndexedDB、`tests/auto-persist.test.mjs`）と実ブラウザ（`examples/verify-persistence-browser.mjs`、書き込み → ページ遷移 → 読み込み）で行う。
+
 ## 10. リンク層
 
 ### 10.1 IChannel の契約
