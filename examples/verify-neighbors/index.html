@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>WebTCP 隣接先の保存と再接続の検証ページ（M9 項目 30 / #51）</title>
+<body>
+<p>検証用ページ。`examples/verify-neighbors-browser.mjs` が読み込みます。</p>
+<script type="module">
+import {
+    BrowserKeyManager,
+    IndexedDBServiceStateStorage,
+    SignalingAdapterHub,
+    createBrowserNetwork,
+    noopLogger,
+} from '../../webtcp_jslib/dist/index.js';
+
+const PORT = 7002;
+const DB_NAME = 'webtcp-verify-neighbors';
+const params = new URLSearchParams(location.search);
+const role = params.get('role');
+const phase = params.get('phase');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const echo = (stream) => { stream.on('data', (data) => stream.send(data)); };
+
+async function open() {
+    const keyManager = await BrowserKeyManager.open({ databaseName: `${DB_NAME}-keys` });
+    const storage = new IndexedDBServiceStateStorage({ databaseName: DB_NAME });
+    const signaling = new SignalingAdapterHub({
+        url: location.origin,
+        nodeId: keyManager.nodeId,
+        pollIntervalMs: 50,
+        logger: noopLogger,
+    });
+    const network = createBrowserNetwork({
+        signaling,
+        keyManager,
+        iceServers: [],
+        stateStorage: storage,
+        logger: noopLogger,
+    });
+    await network.start();
+    return { keyManager, storage, network };
+}
+
+function roundTrip(stream, text, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('echo timeout')), timeoutMs);
+        stream.on('data', (data) => { clearTimeout(timer); resolve(new TextDecoder().decode(data)); });
+        stream.send(text).catch((error) => { clearTimeout(timer); reject(error); });
+    });
+}
+
+async function waitUntil(predicate, timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+        if (await predicate()) return true;
+        await sleep(50);
+    }
+    return false;
+}
+
+function fail(error) {
+    window.verifyError = String(error?.stack ?? error);
+    window.ready = true;
+}
+
+if (role === 'peer') {
+    // 相手役: 待ち受けて、何もせず生き続ける（この検証では再読み込みしない）
+    (async () => {
+        const h = await open();
+        h.network.listen(PORT, echo);
+        // 相手側の隣接の変化を記録する（ノードの再読み込みで、相手の古い接続が残っていたかを確かめるため）
+        window.peerNetwork = h.network;
+        window.peerEvents = [];
+        const t0 = performance.now();
+        h.network.on('neighbor-connected', (id) => window.peerEvents.push({ abs: Date.now(), at: Math.round(performance.now() - t0), ev: 'connected', id: id.slice(0, 8) }));
+        h.network.on('neighbor-disconnected', (id) => window.peerEvents.push({ abs: Date.now(), at: Math.round(performance.now() - t0), ev: 'disconnected', id: id.slice(0, 8) }));
+        window.verify = { nodeId: h.keyManager.nodeId };
+        window.ready = true;
+    })().catch(fail);
+}
+
+if (role === 'node' && phase === 'write') {
+    // 隣接先を保存する（peer が指定されていれば接続し、指定が無ければ隣接先無しの状態を保存する）
+    (async () => {
+        const peer = params.get('peer');
+        const h = await open();
+        const restored = await h.network.restoreState();
+        h.network.enableAutoPersist({ debounceMs: 50, maxWaitMs: 500 });
+        h.network.listen(9001, () => {}); // 保存の契機（待ち受けの変更）
+        if (peer) {
+            await h.network.connectToPeer(peer);
+            await waitUntil(() => h.network.getNeighbors().includes(peer), 15000);
+        }
+        const savedOk = await waitUntil(async () => {
+            const state = await h.storage.load();
+            return peer ? (state?.neighbors ?? []).includes(peer) : Array.isArray(state?.neighbors);
+        }, 15000);
+        window.verify = {
+            nodeId: h.keyManager.nodeId,
+            firstRun: restored === null,
+            neighborsNow: h.network.getNeighbors(),
+            savedOk,
+            savedNeighbors: (await h.storage.load())?.neighbors ?? null,
+        };
+        // persistState() も close() も呼ばない。以降はページ遷移で再読み込みする。
+        window.ready = true;
+    })().catch(fail);
+}
+
+if (role === 'node' && phase === 'read') {
+    // 再読み込み後: 保存された隣接先へ再接続し、エコーを確かめる
+    (async () => {
+        const peer = params.get('peer');
+        const manual = params.get('manual');
+        const h = await open();
+        const restored = await h.network.restoreState();
+        const neighbors = restored?.neighbors ?? [];
+        const verify = {
+            nodeId: h.keyManager.nodeId,
+            restoredNeighbors: neighbors,
+            neighborsAfterRestore: h.network.getNeighbors(),
+        };
+        window.verify = verify;
+        if (manual) {
+            // 対照: 保存が無いときの手動の再入力（利用者が NodeId を書き写して接続する）
+            verify.manualUsed = true;
+            await h.network.connectToPeer(manual);
+        }
+        // 対照の確認: 保存が無いときは、待っても自動では接続されない
+        if (!peer && !manual) {
+            await sleep(3000);
+            verify.neighborsAfterWait = h.network.getNeighbors();
+        }
+        if (peer) {
+            const t0 = performance.now();
+            const result = await h.network.reconnectNeighbors(neighbors, { maxRetries: 3 });
+            verify.reconnect = {
+                connected: result.connected,
+                failed: result.failed.length,
+                attempts: result.attempts,
+                ms: Math.round(performance.now() - t0),
+            };
+            try {
+                const stream = await h.network.connect(peer, PORT);
+                verify.echo = await roundTrip(stream, 'after-reload');
+            } catch (error) {
+                verify.echoError = String(error?.message ?? error);
+            }
+        }
+        verify.neighborsEnd = h.network.getNeighbors();
+        window.verify = verify;
+        window.ready = true;
+    })().catch(fail);
+}
+</script>
+</body>
+</html>

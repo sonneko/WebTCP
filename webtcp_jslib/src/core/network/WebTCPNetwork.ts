@@ -20,6 +20,7 @@ import { KeyDirectory } from '../routing/KeyDirectory.js';
 import { Ed25519KeyManager, NodeIdCollisionError, isValidNodeId } from '../routing/keys.js';
 import type { NameServer } from '../naming/NameServer.js';
 import {
+    MAX_SAVED_NEIGHBORS,
     SERVICE_STATE_VERSION,
     type PersistedServiceState,
     type ServiceStateStorage,
@@ -139,6 +140,11 @@ export interface BootstrapResult {
 /** `restoreState()` の結果。 */
 export interface RestoredServiceState {
     state: PersistedServiceState;
+    /**
+     * 保存時点の隣接先（M9 項目 30）。自動では接続しない。`reconnectNeighbors()` で再接続する。
+     * 古い形式の状態では空配列。
+     */
+    neighbors: NodeId[];
     /** 保存されていた待ち受けポート（NameServer のポートは含まない）。 */
     listenPorts: VirtualPort[];
     /** `handlers` を渡して、復元と同時に待ち受けを開始したポート（M9 項目 29）。 */
@@ -385,6 +391,28 @@ export class WebTCPNetwork extends EventEmitter {
     }
 
     /**
+     * 復元した隣接先へ再接続する（M9 項目 30 / specification.md §9.4）。
+     *
+     * `restoreState()` の `neighbors` を渡す。自分自身・不正な NodeId・既に接続中のノードは除く。
+     * 試行は `bootstrap()` と同じ（候補ごとに `connectToPeer()`、失敗は指数バックオフで再試行）。
+     * 既定は全候補への接続を目標にし、最大 3 回試行する。接続できなかった候補は `failed` に入る（例外にしない）。
+     */
+    public async reconnectNeighbors(
+        neighbors: readonly NodeId[],
+        options: Omit<BootstrapOptions, 'targetConnections'> & { targetConnections?: number } = {},
+    ): Promise<BootstrapResult> {
+        if (this.closed) throw new Error('WebTCPNetwork is closed');
+        const candidates = [...new Set(neighbors)].filter(
+            (id) => isValidNodeId(id) && id !== this.localNodeId && !this.linkManager.isNeighbor(id),
+        );
+        if (candidates.length === 0) return { connected: [], failed: [], attempts: 0 };
+        return this.bootstrap(
+            { search: async () => candidates },
+            { targetConnections: candidates.length, ...options },
+        );
+    }
+
+    /**
      * エントランス探索結果から候補ノードへ順に接続を試みる（#27, specification.md §10.5）。
      *
      * 目標接続数（既定 1）に達するまで候補へ順次 `connectToPeer()` を試行し、
@@ -509,6 +537,9 @@ export class WebTCPNetwork extends EventEmitter {
             names: [],
             domainRecords: [],
             nodeId: this.localNodeId,
+            neighbors: this.getNeighbors()
+                .filter((id) => id !== this.localNodeId)
+                .slice(0, MAX_SAVED_NEIGHBORS),
         };
         if (options.nameServer) {
             const exported = options.nameServer.exportState();
@@ -558,6 +589,7 @@ export class WebTCPNetwork extends EventEmitter {
         }
         return {
             state,
+            neighbors: [...(state.neighbors ?? [])],
             listenPorts: [...state.listenPorts],
             listeningPorts: [...attach],
             unhandledPorts: state.listenPorts.filter((port) => !handlers.has(port)),
@@ -587,11 +619,16 @@ export class WebTCPNetwork extends EventEmitter {
             maxWaitMs: options.maxWaitMs ?? AUTO_PERSIST_MAX_WAIT_MS,
             onError: (error) => this.scopedLogger.warn('auto-persist failed; will retry:', error),
         });
-        const onListeningChanged = (): void => scheduler.notify();
-        this.transportLayer.on('listening-changed', onListeningChanged);
-        const unsubscribeNames = nameServer ? nameServer.onChange(onListeningChanged) : () => undefined;
+        const onChanged = (): void => scheduler.notify();
+        this.transportLayer.on('listening-changed', onChanged);
+        // 隣接先の変化も保存の対象（保存された隣接先が古くならないように）。
+        this.on('neighbor-connected', onChanged);
+        this.on('neighbor-disconnected', onChanged);
+        const unsubscribeNames = nameServer ? nameServer.onChange(onChanged) : () => undefined;
         this.autoPersistStop = async () => {
-            this.transportLayer.off('listening-changed', onListeningChanged);
+            this.transportLayer.off('listening-changed', onChanged);
+            this.off('neighbor-connected', onChanged);
+            this.off('neighbor-disconnected', onChanged);
             unsubscribeNames();
             this.autoPersistStop = null;
             await scheduler.stop();
