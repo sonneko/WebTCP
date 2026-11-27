@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>WebTCP リロード後の名前解決の検証ページ（M9 項目 32 / #51）</title>
+<body>
+<p>検証用ページ。`examples/verify-name-reload-browser.mjs` が読み込みます。</p>
+<script type="module">
+import {
+    BrowserKeyManager,
+    IndexedDBServiceStateStorage,
+    NameServer,
+    SignalingAdapterHub,
+    createBrowserNetwork,
+    noopLogger,
+} from '../../webtcp_jslib/dist/index.js';
+
+const PORT = 7002;
+const DB_NAME = 'webtcp-verify-name-reload';
+const params = new URLSearchParams(location.search);
+const role = params.get('role');
+const phase = params.get('phase');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const echo = (stream) => { stream.on('data', (data) => stream.send(data)); };
+
+async function open() {
+    const keyManager = await BrowserKeyManager.open({ databaseName: `${DB_NAME}-keys` });
+    const storage = new IndexedDBServiceStateStorage({ databaseName: DB_NAME });
+    const signaling = new SignalingAdapterHub({
+        url: location.origin,
+        nodeId: keyManager.nodeId,
+        pollIntervalMs: 50,
+        logger: noopLogger,
+    });
+    const network = createBrowserNetwork({
+        signaling,
+        keyManager,
+        iceServers: [],
+        stateStorage: storage,
+        logger: noopLogger,
+    });
+    await network.start();
+    const nameServer = new NameServer(network, { logger: noopLogger });
+    return { keyManager, storage, network, nameServer };
+}
+
+async function waitUntil(predicate, timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+        if (await predicate()) return true;
+        await sleep(50);
+    }
+    return false;
+}
+
+function roundTrip(stream, text, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('echo timeout')), timeoutMs);
+        stream.on('data', (data) => { clearTimeout(timer); resolve(new TextDecoder().decode(data)); });
+        stream.send(text).catch((error) => { clearTimeout(timer); reject(error); });
+    });
+}
+
+function fail(error) {
+    window.verifyError = String(error?.stack ?? error);
+    window.ready = true;
+}
+
+if (role === 'client') {
+    // 解決する側。再読み込みしない。名前を毎回キャッシュなしで解決し、結果を記録する。
+    (async () => {
+        const h = await open();
+        window.net = h.network;
+        window.ns = h.nameServer;
+        window.attempts = [];
+        window.events = [];
+        h.network.on('neighbor-connected', (id) => window.events.push({ abs: Date.now(), ev: 'connected', id }));
+        h.network.on('neighbor-disconnected', (id) => window.events.push({ abs: Date.now(), ev: 'disconnected', id }));
+
+        // 1 回の試行: キャッシュを消し、リモートへ問い合わせ、解決先へ接続してエコーを確かめる
+        async function attempt(name, owner) {
+            const t = Date.now();
+            const rec = {
+                abs: t,
+                ok: false,
+                source: null,
+                nodeId: null,
+                resolvedOwner: false,
+                neighbors: h.network.getNeighbors().length,
+                routes: h.network.getRoutingTable().getAllEntries().size,
+                routeToOwner: h.network.getRoutingTable().getEntry(owner)?.cost ?? null,
+            };
+            h.nameServer.clearCache();
+            try {
+                const r = await h.nameServer.resolve(name, { timeoutMs: 3000 });
+                rec.source = r.source;
+                rec.nodeId = r.nodeId;
+                rec.resolvedOwner = r.nodeId === owner && r.source === 'remote';
+                rec.resolveMs = Date.now() - t;
+                if (rec.resolvedOwner) {
+                    const stream = await h.network.connect(r.nodeId, PORT, undefined, { signal: AbortSignal.timeout(5000) });
+                    rec.echo = await roundTrip(stream, `name-${name}`);
+                    stream.close();
+                    rec.ok = rec.echo === `name-${name}`;
+                }
+            } catch (error) {
+                rec.error = String(error?.name ?? '') + ': ' + String(error?.message ?? error).slice(0, 120);
+            }
+            rec.ms = Date.now() - t;
+            return rec;
+        }
+
+        let polling = false;
+        window.startPolling = (name, owner, intervalMs = 250) => {
+            polling = true;
+            (async () => {
+                while (polling) {
+                    window.attempts.push(await attempt(name, owner));
+                    if (polling) await sleep(intervalMs);
+                }
+            })();
+        };
+        window.stopPolling = () => { polling = false; };
+        window.verify = { nodeId: h.keyManager.nodeId };
+        window.ready = true;
+    })().catch(fail);
+}
+
+if (role === 'owner' && phase === 'write') {
+    // 名前を登録し、クライアントへ接続して、状態を保存する（persistState も close も呼ばない）
+    (async () => {
+        const peer = params.get('peer');
+        const h = await open();
+        const restored = await h.network.restoreState({ nameServer: h.nameServer });
+        h.network.enableAutoPersist({ nameServer: h.nameServer, debounceMs: 50, maxWaitMs: 500 });
+        h.nameServer.listen(); // 初回は restoreState() が無いため、ここで名前の問い合わせへの応答を開始する
+        h.network.listen(PORT, echo);
+        h.nameServer.registerA('svc.test', h.keyManager.nodeId);
+        if (peer) {
+            await h.network.connectToPeer(peer);
+            await waitUntil(() => h.network.getNeighbors().includes(peer), 15000);
+        }
+        const savedOk = await waitUntil(async () => {
+            const state = await h.storage.load();
+            const nameSaved = (state?.names ?? []).some((n) => n.name === 'svc.test');
+            return nameSaved && (!peer || (state?.neighbors ?? []).includes(peer));
+        }, 15000);
+        window.verify = {
+            nodeId: h.keyManager.nodeId,
+            firstRun: restored === null,
+            neighborsNow: h.network.getNeighbors(),
+            savedOk,
+            savedNames: ((await h.storage.load())?.names ?? []).map((n) => n.name),
+            savedNeighbors: (await h.storage.load())?.neighbors ?? null,
+        };
+        window.ready = true;
+    })().catch(fail);
+}
+
+if (role === 'owner' && phase === 'read') {
+    // 再読み込み後: 名前と待ち受けを復元し（ハンドラを同時に付ける）、保存された隣接先へ再接続する。
+    // noreconnect=1 のときは、再接続を呼ばない対照にする。
+    (async () => {
+        const noreconnect = params.get('noreconnect') === '1';
+        const h = await open();
+        const restoreStartAbs = Date.now();
+        const restored = await h.network.restoreState({
+            nameServer: h.nameServer,
+            handlers: { [PORT]: echo },
+        });
+        const restoreDoneAbs = Date.now();
+        h.network.enableAutoPersist({ nameServer: h.nameServer, debounceMs: 50, maxWaitMs: 500 });
+        const verify = {
+            nodeId: h.keyManager.nodeId,
+            restoreStartAbs,
+            restoreDoneAbs,
+            restoredNames: h.nameServer.localSize,
+            restoredNeighbors: restored?.neighbors ?? [],
+            listeningPorts: restored?.listeningPorts ?? [],
+            unhandledPorts: restored?.unhandledPorts ?? [],
+            noreconnect,
+        };
+        if (!noreconnect && (restored?.neighbors ?? []).length > 0) {
+            const t0 = Date.now();
+            const result = await h.network.reconnectNeighbors(restored.neighbors, { maxRetries: 3 });
+            verify.reconnect = {
+                connected: result.connected,
+                failed: result.failed.length,
+                attempts: result.attempts,
+                ms: Date.now() - t0,
+            };
+        }
+        verify.reconnectDoneAbs = Date.now();
+        verify.neighborsEnd = h.network.getNeighbors();
+        window.verify = verify;
+        window.ready = true;
+    })().catch(fail);
+}
+</script>
+</body>
+</html>
