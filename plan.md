@@ -518,6 +518,20 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - [x] 仕様 §19.8 の #61 の制約行（リンクローカルの定義を IPv4 と IPv6 の両方にし、IPv4 があることを条件とした）
   - [x] 計画 §3.23（本節）
 - **版数**: 0.8.1 のまま。
+
+### 3.24 サイクル26: #67 のクローズアウト判断と上流報告（polyfill の ICE 候補配送）
+
+- **依頼**: sonneko（2026-11-27）。マージ済み main で #67 の挙動を再検証し、クローズの可否、上流報告の条件、ドキュメント同期を確認する。
+- **再検証（マージ済み main `9e48e7e`、実行）**:
+  - 既存の characterization（`tests/node-datachannel-polyfill.characterization.test.mjs`）3/3 成功。生成直後に登録したリスナーは候補 1/1（`addEventListener` / `onicecandidate`）、数百 ms 後に登録したリスナーは 0/0、`candidate === null` は 0 件。
+  - 直接プローブ（`/tmp/cy26/issue67_probe.mjs`）: 生の PC の早期登録 1 件、遅延登録 0 件。`createNodeNetwork()` と同じ経路（橋渡し + `watchIceGathering`）の遅延登録は候補 1 件と終了マーカー 1 件を受け取る。既定バインド（候補 0 件）では警告が 1 回出て、`null` は 1 件。`127.0.0.1` では警告なし。
+  - タイミング（20 回、`createDataChannel()` からの中央値）: `complete` 0.59 ms、`setLocalDescription()` の完了 0.65 ms、最初の候補イベント 0.75 ms。20/20 回で `complete` が完了より先。設計 §3.31 の旧記述（約 2 ms / 約 1 ms）は計測と合わないため修正した。
+  - `npm test` 317/317 成功。
+- **#67 の判断: open のまま**。リポジトリ側の対応（SDP での計数、橋渡し、characterization）は確認済みだが、上流の polyfill の挙動は未修正で、報告先の上流 Issue がまだ無い。閉じると追跡先が失われるため、上流 Issue の URL を記録してから判断する。
+- **上流への報告: 起票できず**。条件（事実の再検証、起票先の確認、再現スクリプト）は満たした。起票先は `murat-dogan/node-datachannel`（npm の `repository`）で、既存の同種 Issue は見つからなかった。しかし `gh issue create` は `Resource not accessible by integration` で拒否された（サイクル25と同じ。統合の権限は READ）。繰り返さず、草稿を `/tmp/cy26/upstream_issue.md`、再現を `/tmp/cy26/upstream_repro.mjs` に保存し、草稿を #67 のコメントにも載せた。
+- **ドキュメント同期**: 仕様 §19.8、設計 §3.31 / §3.38 / §3.40、計画 §3.16 / §3.18 は実装と一致。設計 §3.31 の計時の数値のみ計測値に修正した。
+- **版数**: 0.8.1 のまま。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
