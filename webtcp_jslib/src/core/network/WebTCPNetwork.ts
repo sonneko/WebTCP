@@ -4,6 +4,11 @@ import { IPacketSerializer } from '../types/serializer.js';
 import { EventEmitter } from '../util/EventEmitter.js';
 import { LogLevel, Logger, createScopedLogger, resolveLogger } from '../util/Logger.js';
 import { generateNodeId } from '../util/id.js';
+import {
+    AUTO_PERSIST_DEBOUNCE_MS,
+    AUTO_PERSIST_MAX_WAIT_MS,
+    createAutoPersistScheduler,
+} from '../persistence/AutoPersist.js';
 import { createAbortError, throwIfAborted } from '../util/abort.js';
 import type { ChannelConnectOptions } from '../link/IChannel.js';
 import { IChannel } from '../link/IChannel.js';
@@ -147,6 +152,8 @@ export class WebTCPNetwork extends EventEmitter {
     public readonly transportLayer: TransportLayer;
     public readonly logger: Logger;
     private readonly stateStorage: ServiceStateStorage | null;
+    /** 自動保存（`enableAutoPersist()`）の停止関数。有効でなければ null。 */
+    private autoPersistStop: (() => Promise<void>) | null = null;
     private readonly signatureRequirement: boolean;
     /** Ed25519 鍵管理（未指定なら null）。 */
     public readonly keyManager: Ed25519KeyManager | null;
@@ -531,10 +538,44 @@ export class WebTCPNetwork extends EventEmitter {
         return { state, listenPorts: [...state.listenPorts], nameServer };
     }
 
-    /** 全層を停止する。 */
+    /**
+     * 名前・待ち受けの変更の後に `persistState()` を自動で呼ぶ（M9 / #51 / specification.md §9.8）。
+     *
+     * 変更は、トランスポートの `listen` / `unlisten` と、`nameServer` のローカル登録の変更で検知する。
+     * 保存は `debounceMs` 後に 1 回にまとめ、変更が続いても `maxWaitMs` を超えて遅らせない。
+     * 有効化しただけでは保存しない（復元前の空の状態で保存済みの状態を上書きしないため）。
+     * **呼び出し順: `restoreState()` の後に `enableAutoPersist()` を呼ぶ**。`close()` は、トランスポートを閉じる前に
+     * 未保存の変更を保存する。既定では無効（既存の動作を変えない）。
+     */
+    public enableAutoPersist(
+        options: { nameServer?: NameServer; debounceMs?: number; maxWaitMs?: number } = {},
+    ): void {
+        if (!this.stateStorage) throw new Error('enableAutoPersist requires stateStorage');
+        if (this.closed) throw new Error('WebTCPNetwork is closed');
+        if (this.autoPersistStop) throw new Error('auto-persist is already enabled');
+        const nameServer = options.nameServer;
+        const scheduler = createAutoPersistScheduler({
+            save: () => this.persistState({ ...(nameServer ? { nameServer } : {}) }),
+            debounceMs: options.debounceMs ?? AUTO_PERSIST_DEBOUNCE_MS,
+            maxWaitMs: options.maxWaitMs ?? AUTO_PERSIST_MAX_WAIT_MS,
+            onError: (error) => this.scopedLogger.warn('auto-persist failed; will retry:', error),
+        });
+        const onListeningChanged = (): void => scheduler.notify();
+        this.transportLayer.on('listening-changed', onListeningChanged);
+        const unsubscribeNames = nameServer ? nameServer.onChange(onListeningChanged) : () => undefined;
+        this.autoPersistStop = async () => {
+            this.transportLayer.off('listening-changed', onListeningChanged);
+            unsubscribeNames();
+            this.autoPersistStop = null;
+            await scheduler.stop();
+        };
+    }
+
+    /** 全層を停止する。未保存の自動保存の変更は、トランスポートを閉じる前に保存を開始する。 */
     public close(): void {
         if (this.closed) return;
         this.closed = true;
+        if (this.autoPersistStop) void this.autoPersistStop().catch(() => undefined);
         this.transportLayer.close();
         this.routingLayer.stop();
         this.linkManager.close();

@@ -209,11 +209,14 @@ export class TransportLayer extends EventEmitter implements TransportContext {
             throw new Error(`Port ${port} is already listening`);
         }
         this.portHandlers.set(port, handler);
+        this.emit('listening-changed', port);
     }
 
     /** 指定ポートの待ち受けを解除する。 */
     public unlisten(port: VirtualPort): boolean {
-        return this.portHandlers.delete(port);
+        const removed = this.portHandlers.delete(port);
+        if (removed) this.emit('listening-changed', port);
+        return removed;
     }
 
     /** 待ち受け中のポート一覧。 */

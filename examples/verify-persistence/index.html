@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>WebTCP 自動保存の検証ページ（M9 / #51）</title>
+<body>
+<p>検証用ページ。`examples/verify-persistence-browser.mjs` が読み込みます。</p>
+<script type="module">
+import {
+    BrowserKeyManager,
+    IndexedDBServiceStateStorage,
+    NameServer,
+    createBrowserNetwork,
+    noopLogger,
+} from '../../webtcp_jslib/dist/index.js';
+
+const randomNodeId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+
+/** 名前 `count` 件の状態を IndexedDB へ保存し、保存 1 回あたりの時間（ms）を返す。 */
+window.measureSaveCost = async ({ count, reps, databaseName }) => {
+    const storage = new IndexedDBServiceStateStorage({ databaseName: `${databaseName}-${count}` });
+    const names = Array.from({ length: count }, (_, i) => ({
+        type: 'A',
+        name: `svc-${String(i).padStart(4, '0')}`,
+        target: randomNodeId(),
+        ttlMs: 60000,
+    }));
+    const times = [];
+    for (let i = 0; i < reps; i++) {
+        const state = { version: 1, savedAt: Date.now(), listenPorts: [7001, 7002], names, domainRecords: [], nodeId: randomNodeId() };
+        const t0 = performance.now();
+        await storage.save(state);
+        times.push(performance.now() - t0);
+    }
+    times.sort((a, b) => a - b);
+    const pick = (q) => times[Math.min(times.length - 1, Math.floor(q * times.length))];
+    return { count, reps, p50: pick(0.5), p95: pick(0.95), max: times[times.length - 1] };
+};
+
+// ---- 再読み込み検証（phase=write → reload → phase=read） ----
+const DB_NAME = 'webtcp-verify-persistence';
+const PORT = 9301;
+const phase = new URLSearchParams(location.search).get('phase');
+
+/** 届かないシグナリング（この検証は接続を張らない）。 */
+const inertSignaling = (nodeId) => ({
+    getLocalNodeId: () => nodeId,
+    sendMessage: async () => {},
+    listen: async () => {},
+    close() {},
+});
+
+async function openNetwork() {
+    const keyManager = await BrowserKeyManager.open();
+    const storage = new IndexedDBServiceStateStorage({ databaseName: DB_NAME });
+    const counted = {
+        saves: 0,
+        save(state) { counted.saves += 1; return storage.save(state); },
+        load: () => storage.load(),
+    };
+    const network = createBrowserNetwork({
+        signaling: inertSignaling(keyManager.nodeId),
+        keyManager,
+        stateStorage: counted,
+        logger: noopLogger,
+    });
+    await network.start();
+    const nameServer = new NameServer(network, { logger: noopLogger });
+    return { keyManager, storage, counted, network, nameServer };
+}
+
+if (phase === 'write') {
+    // 再読み込みの前に restoreState、その後に enableAutoPersist（呼び出し順は仕様どおり）。
+    // persistState() も close() も呼ばない。保存されるのは自動保存だけ。
+    (async () => {
+        const h = await openNetwork();
+        const restored = await h.network.restoreState({ nameServer: h.nameServer });
+        h.network.enableAutoPersist({ nameServer: h.nameServer, debounceMs: 50, maxWaitMs: 500 });
+        const owner = randomNodeId();
+        for (let i = 0; i < 10; i++) h.nameServer.registerA(`burst-${i}`, owner);
+        h.nameServer.registerA('printer', owner);
+        h.network.listen(PORT, () => {});
+        window.verify = { ...h, restoredBefore: restored !== null };
+        window.loadSaved = () => h.storage.load();
+        window.savesSoFar = () => h.counted.saves;
+        window.ready = true;
+    })().catch((error) => { window.verifyError = String(error?.stack ?? error); window.ready = true; });
+} else if (phase === 'read') {
+    (async () => {
+        const h = await openNetwork();
+        const restored = await h.network.restoreState({ nameServer: h.nameServer });
+        const printer = await h.nameServer.resolve('printer');
+        window.verify = {
+            restored: restored !== null,
+            restoredListenPorts: restored?.listenPorts ?? [],
+            ports: h.network.transportLayer.getListeningPorts(),
+            names: restored?.nameServer?.names ?? 0,
+            printerNodeId: printer?.nodeId ?? null,
+            localNodeId: h.keyManager.nodeId,
+            savedNodeId: restored?.state?.nodeId ?? null,
+        };
+        window.ready = true;
+    })().catch((error) => { window.verifyError = String(error?.stack ?? error); window.ready = true; });
+}
+</script>
+</body>
+</html>

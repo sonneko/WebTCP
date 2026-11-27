@@ -150,6 +150,7 @@ export class NameServer {
     private readonly local = new Map<string, NameRecord>();
     private readonly ownership = new Map<string, DomainOwnershipRecord>();
     private readonly cache = new Map<string, CacheEntry>();
+    private readonly changeListeners = new Set<() => void>();
     private readonly active = new Set<VirtualStream>();
     private readonly controllers = new Set<AbortController>();
     private listening = false;
@@ -188,6 +189,7 @@ export class NameServer {
         this.assertOpen();
         this.local.set(normalized, { type: 'A', name: normalized, target: nodeId, ttlMs: validTtl(ttlMs) });
         this.cache.delete(normalized);
+        this.notifyChange();
     }
 
     public registerCNAME(name: string, target: string, ttlMs = this.defaultTtlMs): void {
@@ -198,6 +200,7 @@ export class NameServer {
         this.assertOpen();
         this.local.set(normalized, { type: 'CNAME', name: normalized, target: canonical, ttlMs: validTtl(ttlMs) });
         this.cache.delete(normalized);
+        this.notifyChange();
     }
 
     public unregister(name: string): boolean {
@@ -205,6 +208,7 @@ export class NameServer {
         this.cache.delete(normalized);
         const owned = this.ownership.delete(normalized);
         const removed = this.local.delete(normalized);
+        if (removed || owned) this.notifyChange();
         return removed || owned;
     }
 
@@ -247,6 +251,7 @@ export class NameServer {
         });
         this.ownership.set(resolution.domain, resolution.record);
         this.cache.delete(resolution.domain);
+        this.notifyChange();
         this.logger.info(
             `registered ${resolution.domain} -> ${resolution.record.body.nodeId} (serial ${resolution.record.body.serial})`,
         );
@@ -309,7 +314,29 @@ export class NameServer {
         this.cache.delete(normalized);
         const owned = this.ownership.delete(normalized);
         const removed = this.local.delete(normalized);
+        if (owned || removed) this.notifyChange();
         return owned || removed;
+    }
+
+    /**
+     * ローカル登録（A / CNAME / 所有権レコード）が変わったときに呼ばれるリスナーを登録する（M9 / §9.8）。
+     * 戻り値の関数で登録を解除する。`restoreState()` は変更として通知しない。
+     */
+    public onChange(listener: () => void): () => void {
+        this.changeListeners.add(listener);
+        return () => {
+            this.changeListeners.delete(listener);
+        };
+    }
+
+    private notifyChange(): void {
+        for (const listener of [...this.changeListeners]) {
+            try {
+                listener();
+            } catch {
+                // リスナーの失敗で登録の操作を壊さない。
+            }
+        }
     }
 
     /** このサーバーが所有権レコード付きで提供している名前の一覧。 */

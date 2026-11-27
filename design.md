@@ -796,3 +796,28 @@ HTTPClient                                   HTTPServer
 - 無音オーディオの自動再生ポリシー下での状態（この環境では判定できなかった）。
 - リロード後に、リモートのノードから名前が解決されるか（2 ノード以上）。
 - 隣接の再確立（(c)）の有効性。
+
+### 3.42 自動保存（M9 項目 28）: 既定の時間、呼び出し順、検証（サイクル28）
+
+- **方式**: 変更の検知は既存の `EventEmitter` の仕組みに載せた。`TransportLayer` は `listening-changed`（`listen` / `unlisten` の後）を出し、`NameServer` は `onChange(listener)`（ローカル登録の成功時のみ。`restoreState()` は通知しない）を持つ。`WebTCPNetwork.enableAutoPersist()` が両方を購読し、スケジューラ（`core/persistence/AutoPersist.ts`）へ `notify()` を渡す。スケジューラは保存関数 `persistState()` を直列に呼ぶ。
+- **既定値の根拠**（実測: Chromium 158、IndexedDB、200 回ずつ、p50 / p95 ms）:
+
+| 名前の数 | p50 | p95 | 最大 |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.30 | 0.40 | 4.4 |
+| 10 | 0.40 | 0.50 | 2.3 |
+| 100 | 0.40 | 0.50 | 2.3 |
+| 500 | 0.50 | 0.70 | 3.5 |
+| 1000 | 0.80 | 1.00 | 3.6 |
+
+  - `debounceMs = 500`: 名前 1000 件の保存の p95 は 1 ms なので、変更が 1 秒に 1 回の最悪の場合でも保存の占有は約 0.2% に収まる。一方、ポートや名前の登録の連続（例: 11 件の登録と `listen` が 1 件）は 1 回の保存にまとまる（検証で 1 回を確認）。
+  - `maxWaitMs = 5000`: 変更が途切れない場合でも、強制終了で失われる変更の上限を 5 秒にする。
+  - 100 ms にすると、100 ms ごとに変更が続く場合（例: 連続した登録）、保存が毎回走る。最悪の占有は 1 ms / 100 ms ≈ 1% になる。500 ms なら約 0.2%。デバウンスの目的は保存回数と占有を抑えることにあるため、500 ms を選んだ。
+- **退けた案**: (a) 変更のたびに保存（デバウンスなし）: 保存回数が増え、失敗の扱いが複雑になる。(b) `pagehide` だけで保存: 強制終了・クラッシュでは発火しない（§3.41 の測定と同じ理由で不十分）。(c) Service Worker のタイマーで保存: Service Worker は無操作で再起動し、ページの状態を持たないため不可（§3.41）。
+- **呼び出し順（テストで見つけた不具合の修正）**: 当初は `enableAutoPersist()` の時点で 1 回保存していた。その結果、復元より前に有効化すると、空の状態が保存済みの状態を上書きした（再現: `restoreState()` の後に名前が 0 件）。修正として、有効化だけでは保存しないようにし、仕様 §9.8 で「`restoreState()` の後に `enableAutoPersist()`」を定めた。回帰テスト「enabling before restoreState would clobber」と「auto-persist: listen/unlisten and NameServer changes…」で確認する。
+- **`close()` の保存**: `scheduler.stop()` は、トランスポートを閉じる前に保存を同期的に開始する。`persistState()` は `listenPorts` と名前の出力を最初の `await` より前に取り込むため、閉じた後の状態は含まない。テスト「close() saves pending changes before transports close」で、60 秒のデバウンス中でも `close()` の後に保存されることを確認する。
+- **失敗**: 保存の失敗は変更を未保存に戻し、`debounceMs` 後に再試行する。失敗を `listen()` へ伝えない（テスト「a save failure is logged」）。
+- **実ブラウザの検証**（`examples/verify-persistence-browser.mjs`、ページ `examples/verify-persistence/index.html`）: 書き込みページで `restoreState` → `enableAutoPersist` → 登録と `listen`（`persistState` も `close` も呼ばない）。IndexedDB に保存されたことを確認したうえで、ページを遷移させて読み込みページで復元する。結果: 9/9 合格。`enableAutoPersist` を外した版では 7 件が不合格になる（before / after）。
+- **保存される内容の制限**: 復元されるのは名前・所有権レコード・待ち受けポートの一覧のみ。アプリのポートの再待ち受けは行わない（ハンドラの再付与は項目 29）。
+- **公開 API の追加**: `enableAutoPersist`、`NameServer.onChange`、`createAutoPersistScheduler`、`AUTO_PERSIST_DEBOUNCE_MS` / `AUTO_PERSIST_MAX_WAIT_MS`。既存の公開 API は変えない。
+- **残る課題**: 保存のタイミングは、実機の省電力下での挙動は未測定。項目 30 の隣接の保存は未着手。
