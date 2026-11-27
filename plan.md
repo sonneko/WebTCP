@@ -33,7 +33,7 @@
 | **M7** | **生存期間（サービス役の稼働維持）** | **完了（#51）** | `persistState` / `restoreState`（IndexedDB）、`neighbor-*` の再発行、`startBrowserKeepAlive`（Wake Lock・無音オーディオ・前面復帰・pagehide）。仕様 §9 |
 | **M8** | **ブラウザ外 TCP クライアント向けブリッジ** | **完了（#52）** | `examples/bridge.mjs` / `bridge-service.mjs`、ループバック既定・署名必須・アクセスログ（仕様 §19）。UDP・SOCKS・ローカル認証は未実装 |
 | 0.8.1 | M8 の未検証項目の検証と既知バグの修正 | 完了（#54・#63 ほか） | §3.9 |
-| **M9** | **タブ停止・リロードへの耐性（#51 の残課題）** | **実装中（項目 28 完了、サイクル28）** | 調査は実行で実施（仕様 §9.7、設計 §3.41）。自動保存・ハンドラ再付与・隣接の再確立・無音オーディオの実機検証を §3.25 の順に実装する。M8 は #52 で完了済みのため、番号は M9 とした |
+| **M9** | **タブ停止・リロードへの耐性（#51 の残課題）** | **実装中（項目 28・29・30 完了、サイクル30）** | 調査は実行で実施（仕様 §9.7、設計 §3.41）。自動保存・ハンドラ再付与・隣接の再確立・無音オーディオの実機検証を §3.25 の順に実装する。M8 は #52 で完了済みのため、番号は M9 とした |
 
 ## 3. 完了済みマイルストーンのスコープ
 
@@ -553,7 +553,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 | 27 | 調査（実行）と仕様 §9.7 / 設計 §3.41 / 計画 §3.25 | ✅ 文書化（本サイクル） |
 | 28 | 自動 `persistState()`（名前・待ち受けの変更後にデバウンス）。Node（FakeIndexedDB）と実ブラウザの両方で検証 | ✅ 実装（本サイクル）。仕様 §9.8 / 設計 §3.42。Node 12 件（`tests/auto-persist.test.mjs`）、`npm test` 329 件合格。実ブラウザ `examples/verify-persistence-browser.mjs` 9/9 合格（有効化なしでは 7 件不合格）。`/tmp/cy27/measure_save.mjs` は廃止し、同じ計測を `examples/verify-persistence/index.html` の `window.measureSaveCost` で行う（リポジトリに含める理由: 再現可能な計測を残すため）。調査用の他のプローブ（keep-alive・凍結・SW）は sandbox 固有の依存（`@sparticuz/chromium`、puppeteer-core）があるため含めず、結果は設計 §3.41 に残す |
 | 29 | `restoreState({ handlers })` でハンドラを付けられる形の API。リロード後に 7002 への接続が RST にならないことを実行で確認 | ✅ 実装（本サイクル）。仕様 §9.3、設計 §3.43。Node 5 件（`tests/restore-handlers.test.mjs`）、実ブラウザ 2 ノード（`examples/verify-reconnect-browser.mjs`、3 回合格）。対照（ハンドラを 15 秒後に付ける）では RST 49 件、修正では RST 0 件 |
-| 30 | 既知の隣接先の保存と、復元後の `connectToPeer()`。2 タブで実測 | 未着手 |
+| 30 | 既知の隣接先の保存と、復元後の `connectToPeer()`。2 タブで実測 | ✅ 実装（本サイクル）。仕様 §9.9、設計 §3.44。`neighbors` を任意で保存（NodeId のみ、16 件まで）、`reconnectNeighbors()` で再接続。Node 6 件（`tests/neighbor-restore.test.mjs`）、実ブラウザ 2 ノード（`examples/verify-neighbors-browser.mjs`）で再接続 1 回成功（57 ms、112 ms）、エコー `after-reload` 受信。対照（隣接未保存）は 0 件。ピア側の生存リンクは Node で再現できず、実ブラウザでも未検証（§9.9 の限界）。既知の不具合 #92（初回接続の 15 秒停止）、#93（`neighbor-connected` の重複発火）を別 Issue で追跡 |
 | 31 | 無音オーディオ: 実機の自動再生ポリシー下で `AudioContext` の状態と効果を測定し、既定を決める（この環境では判定できなかった） | 未着手 |
 | 32 | 2 ノード以上で、リロード後の名前の解決を検証。Issue #51 を閉じるかの判断 | 未着手 |
 

@@ -9,8 +9,14 @@
  * - 接続（WebRTC・仮想ストリーム）は保存しない。復元後に再接続する（§9.4）。
  */
 import type { NodeId, VirtualPort } from '../types/protocol.js';
+import { isValidNodeId } from '../routing/keys.js';
 
 export const SERVICE_STATE_VERSION = 1;
+
+/**
+ * 保存する隣接先の上限（M9 項目 30）。復元後に再接続する対象のみを保存し、状態を肥大化させない。
+ */
+export const MAX_SAVED_NEIGHBORS = 16;
 
 export interface PersistedNameRecord {
     type: 'A' | 'CNAME';
@@ -33,6 +39,11 @@ export interface PersistedServiceState {
     domainRecords: Record<string, unknown>[];
     /** 保存元ノードの NodeId（復元時の取り違え検出用、任意）。 */
     nodeId?: NodeId;
+    /**
+     * 保存時点の隣接先の NodeId（任意。M9 項目 30）。復元後の `reconnectNeighbors()` で再接続する。
+     * 鍵・アドレス・時刻は含めない。省略された古い状態は空として扱う。
+     */
+    neighbors?: NodeId[];
 }
 
 /** 状態の保存先。IndexedDB 実装は `adapters/persistence` にある。 */
@@ -68,6 +79,10 @@ export function parsePersistedServiceState(value: unknown): PersistedServiceStat
         return null;
     }
     if (!v.listenPorts.every((p) => Number.isInteger(p) && p >= 0 && p <= 65535)) return null;
+    if (v.neighbors !== undefined) {
+        if (!Array.isArray(v.neighbors) || !v.neighbors.every((id) => isValidNodeId(id))) return null;
+        if (v.neighbors.length > MAX_SAVED_NEIGHBORS) return null;
+    }
     for (const n of v.names) {
         if (!n || (n.type !== 'A' && n.type !== 'CNAME')) return null;
         if (typeof n.name !== 'string' || typeof n.target !== 'string') return null;
@@ -80,5 +95,6 @@ export function parsePersistedServiceState(value: unknown): PersistedServiceStat
         names: v.names,
         domainRecords: v.domainRecords as Record<string, unknown>[],
         ...(typeof v.nodeId === 'string' ? { nodeId: v.nodeId } : {}),
+        ...(v.neighbors !== undefined ? { neighbors: [...new Set(v.neighbors)] } : {}),
     };
 }
