@@ -417,7 +417,7 @@ node examples/bridge.mjs webtcp://demo-service:8080 --listen 127.0.0.1:18080 --r
 curl 'http://127.0.0.1:18080/api/echo?x=1'
 ```
 
-- `--rtc-bind` は、非ループバックのインターフェースがリンクローカルのみのホストで必要な場合があります（#61）。`@roamhq/wrtc` は自動バインドでも開通することを確認しています。
+- 非ループバックのインターフェースがリンクローカル（169.254.x.x）のみのホストでは、`node-datachannel` は既定でそのアドレスへバインドします（#61）。ルーティング可能なアドレスがあるホストは既定のままです。`--rtc-bind` を指定すると、それが優先されます。`@roamhq/wrtc` は自動バインドでも開通することを確認しています。
 - ブラウザ上のサービスへの end-to-end 検証（Chromium・実 curl）は `examples/verify-bridge-browser.mjs` です（Playwright と Chromium が必要。`WEBTCP_CHROMIUM_PATH` で既存のブラウザを指定できます）。
 - 接続ごとに JSON のアクセスログが出ます（`open` / `close` / `refused`）。`0.0.0.0` での待ち受けには `--allow-non-loopback` が必要です。
 

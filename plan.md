@@ -477,6 +477,36 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
   - 実 `node-datachannel`（`npm install --no-save node-datachannel@0.33.6`、`package.json` は変更なし）: `icecandidate-bridge-node-datachannel.test.mjs` 2/2 合格（修正後）。
   - `npm test`（`webtcp_jslib`）: 300 合格、0 失敗、7 skip（うち実 `node-datachannel` の 2 件は `npm test` では未導入のため skip。上記で個別に 2/2 合格を確認）。
 
+### 3.22 サイクル24: リンクローカルのみのホストで、node-datachannel の既定バインドを置き換える（#61）
+
+- **依頼**: sonneko（2026-11-26）。Issue #61 の残件。Issue #83 の確認と、#61 の既定バインドの扱いを決める。
+- **#83 の確認**: PR #85（マージ `ce51e5a`）は §19.8 の期待を満たす（再現プローブ 1/1、`icecandidate-bridge.test.mjs` 20/20、実 `node-datachannel` 2/2 を `main` で再実行）。Issue #83 をクローズした。
+- **再現（実行、サイクル24）**: 非ループバックがリンクローカルのみ（`eth0` 169.254.0.21）の sandbox で、実 `node-datachannel` の 2 ノードを接続。自動と `0.0.0.0` は候補 0 件で開かない。`127.0.0.1` と `169.254.0.21` は候補 1 件で開く（設計 §3.40 の表）。ライブラリのログは、自動で IPv6 ソケットのみ（`any`）を開き `No local host candidates gathered` を出すことを示した。
+- **選んだ方式**: (d) リンクローカルのみのホストに限り、既定のバインドをそのリンクローカル IPv4 アドレスへ置き換える（純関数 `chooseNodeDatachannelDefaultBindAddress`、`createNodeNetwork()` で `node-datachannel` のときだけ適用）。
+- **選んだ理由**: 実行で、この候補が出て DataChannel が開くことを確認できた。適用範囲は「既定のままでは候補が 0 件になるホスト」に限られ、ルーティング可能なアドレスがあるホストの既定は変わらない（#61 の懸念を避ける）。明示の `bindAddress` は常に優先される。
+- **退けた方式**:
+  - (a) `127.0.0.1` へ再バインド: 同一ホストでしか成立しない。再収集が必要（§3.40）。
+  - (b) 次のプロバイダへ切り替え: `node-datachannel` は既定の順序の最後で、次が無い（§3.40）。
+  - (c) 警告のみ: 接続は成立しない（0.8.1 の状態）。
+  - 既定を `127.0.0.1` に固定: #61 で却下済み。
+- **変更**:
+  - [x] 仕様 §19.8 の #61 の制約行（リンクローカル規則、ルーティング可能なアドレスがあるホストは不変、明示の優先、`@roamhq/wrtc` 不変、`127.0.0.1` 再バインドなし）
+  - [x] 設計 §3.40（問題の表、観測した原因と推定の区別、(a)〜(d)、判定規則、適用、限界）
+  - [x] 実装: `nodeProvider.ts` に純関数 `chooseNodeDatachannelDefaultBindAddress` と、`createNodeNetwork()` での適用（`node-datachannel` のときだけ、利用者の `bindAddress` が無いときだけ）
+  - [x] テスト: 純関数の表形式テスト 8 件（`tests/default-bind-address.test.mjs`）と、実 `node-datachannel` の既定接続・優先のプローブ 2 件（`tests/default-bind-address-node-datachannel.test.mjs`、子プロセス `tests/helpers/node-datachannel-default-bind-probe.mjs`）
+  - [x] 利用者向け文書: README（`--rtc-bind` の注記）、`webtcp_website` の bridge ガイド（リンクローカルのみのホストの注記）
+  - [x] 既存の関連テスト（`bridge-webrtc`、`webrtc-connect-timeout`、`icecandidate-bridge-node-datachannel`）と `npm test`
+  - [x] 上流への報告文案を Issue #61 のコメントに記録（下書き。外部へは起票しない。Muse の確認後）
+- **検証（実行）**:
+  - 修正前（実 `node-datachannel`、`createNodeNetwork()` の既定、2 ノード）: 接続失敗。`WebRTC connection ... timed out after 6000ms (ICE gathering finished with 0 local candidates ...)`（`/tmp/cy24/red_ndc.log`）。
+  - 修正後: 接続成功、44 ms（`{"connected":true,"elapsedMs":44,"provider":"node-datachannel/polyfill","defaultAppliedWithoutOption":true,"defaultAppliedWithUserBind":false}`）。
+  - 純関数: 修正前は import できず失敗（関数が無い）、修正後 8/8 合格。
+  - 変異試験（実ソースに 1 箇所ずつ適用し、SHA-256 で復元を確認）: M1 既定を適用しない → 実 node-datachannel のテスト 2 件が失敗。M2 ルーティング可能なアドレスを無視 → 純関数のテスト 2 件が失敗（実 node-datachannel のテストは、この sandbox がリンクローカルのみのため通る。想定どおり）。M3 利用者の `bindAddress` による抑止を外す → 優先のテストが失敗。
+  - 既定の順序: `@roamhq/wrtc`（`--no-save`）を入れて既定の順で解決すると、`@roamhq/wrtc` が選ばれ、既定の自動バインドで 47 ms で接続。リンクローカルの既定は適用されない（`defaultAppliedWithoutOption: false`）。`package.json` は変更なし。
+  - `npm test`（`webtcp_jslib`、`@roamhq/wrtc` と `node-datachannel` の両方を導入した状態）: 317 合格、0 失敗、0 skip。`bridge-webrtc` は既定の解決で `@roamhq/wrtc` を使う（`127.0.0.1` 指定のまま）。
+  - 限界: ルーティング可能なアドレスがあるホストは、この sandbox で実行できない（既定のまま、という規則のみ、テストは純関数の表で確認）。上流（libjuice の列挙）は直していない。
+- **版数**: 0.8.1 のまま（指示がない限り据え置き）。
+
 ## 4. 将来課題
 
 ### 4.1 セキュリティ（M3 完了、残課題は未定）
