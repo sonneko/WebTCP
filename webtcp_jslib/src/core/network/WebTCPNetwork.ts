@@ -28,7 +28,7 @@ import { formatWebTCPUrl, parseWebTCPUrl, WebTCPUrl } from '../naming/url.js';
 import { RoutingLayer } from '../routing/RoutingLayer.js';
 import { RoutingTable } from '../routing/RoutingTable.js';
 import { RoutingTableManagerOptions } from '../routing/RoutingTableManager.js';
-import { TransportLayer, TransportLayerOptions } from '../transport/TransportLayer.js';
+import { PortHandler, TransportLayer, TransportLayerOptions } from '../transport/TransportLayer.js';
 import { VirtualStream } from '../transport/VirtualStream.js';
 import { HTTPClient, type FetchURLOptions } from '../http/client.js';
 import type { HTTPResponse } from '../http/message.js';
@@ -139,11 +139,18 @@ export interface BootstrapResult {
 /** `restoreState()` の結果。 */
 export interface RestoredServiceState {
     state: PersistedServiceState;
-    /** 利用者が `listen()` し直すべき仮想ポート（NameServer のポートは含まない）。 */
+    /** 保存されていた待ち受けポート（NameServer のポートは含まない）。 */
     listenPorts: VirtualPort[];
+    /** `handlers` を渡して、復元と同時に待ち受けを開始したポート（M9 項目 29）。 */
+    listeningPorts: VirtualPort[];
+    /** 保存されていたが、ハンドラが無いため待ち受けていないポート。`listen()` するまで接続は拒否（RST）される。 */
+    unhandledPorts: VirtualPort[];
     /** `nameServer` を渡した場合の復元結果。 */
     nameServer: { names: number; domainRecords: number; rejected: number } | null;
 }
+
+/** `restoreState()` に渡すハンドラ。ポート番号をキーにした Map、またはオブジェクト（キーは数字の文字列）。 */
+export type RestoreHandlers = Map<VirtualPort, PortHandler> | Record<number, PortHandler>;
 
 export class WebTCPNetwork extends EventEmitter {
     public readonly localNodeId: NodeId;
@@ -522,7 +529,9 @@ export class WebTCPNetwork extends EventEmitter {
      * `listenPorts` は保存時に待ち受けていたポートで、利用者がハンドラを付けて `listen()` する。
      * 保存された状態が無い・不正な場合は `null`。
      */
-    public async restoreState(options: { nameServer?: NameServer } = {}): Promise<RestoredServiceState | null> {
+    public async restoreState(
+        options: { nameServer?: NameServer; handlers?: RestoreHandlers } = {},
+    ): Promise<RestoredServiceState | null> {
         if (this.closed) throw new Error('WebTCPNetwork is closed');
         if (!this.stateStorage) throw new Error('restoreState requires stateStorage');
         const state = await this.stateStorage.load();
@@ -530,12 +539,30 @@ export class WebTCPNetwork extends EventEmitter {
         if (state.nodeId && state.nodeId !== this.localNodeId) {
             throw new Error(`saved service state belongs to ${state.nodeId}, not ${this.localNodeId}`);
         }
+        const handlers = toHandlerMap(options.handlers);
+        // 副作用の前に検証する。競合があれば、何も待ち受けずに失敗する。
+        const attach = state.listenPorts.filter((port) => handlers.has(port));
+        const alreadyListening = new Set(this.transportLayer.getListeningPorts());
+        for (const port of attach) {
+            if (alreadyListening.has(port)) throw new Error(`Port ${port} is already listening`);
+        }
         let nameServer: RestoredServiceState['nameServer'] = null;
         if (options.nameServer) {
             options.nameServer.listen();
             nameServer = await options.nameServer.restoreState(state);
         }
-        return { state, listenPorts: [...state.listenPorts], nameServer };
+        // ハンドラ付きのポートは、この呼び出しの中で待ち受けを開始する。
+        // 戻り値を受け取った後の利用者のコードの実行順に依存する RST の窓を作らない。
+        for (const port of attach) {
+            this.transportLayer.listen(port, handlers.get(port) as PortHandler);
+        }
+        return {
+            state,
+            listenPorts: [...state.listenPorts],
+            listeningPorts: [...attach],
+            unhandledPorts: state.listenPorts.filter((port) => !handlers.has(port)),
+            nameServer,
+        };
     }
 
     /**
@@ -697,3 +724,20 @@ export class WebTCPNetwork extends EventEmitter {
     }
 }
 
+function toHandlerMap(handlers: RestoreHandlers | undefined): Map<VirtualPort, PortHandler> {
+    const map = new Map<VirtualPort, PortHandler>();
+    if (!handlers) return map;
+    const entries: Array<[unknown, unknown]> =
+        handlers instanceof Map ? [...handlers.entries()] : Object.entries(handlers);
+    for (const [key, handler] of entries) {
+        const port = Number(key);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            throw new Error(`restoreState handler key must be a port number, got ${String(key)}`);
+        }
+        if (typeof handler !== 'function') {
+            throw new Error(`restoreState handler for port ${port} must be a function`);
+        }
+        map.set(port, handler as PortHandler);
+    }
+    return map;
+}

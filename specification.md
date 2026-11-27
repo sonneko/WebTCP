@@ -527,10 +527,16 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 
 - `persistState({ nameServer? })`: 上記の状態を保存ストレージへ書き出す。
   `nameServer` を渡すと、そのローカル登録と所有権レコードを含める。
-- `restoreState({ nameServer? })`: 保存された状態を読み込む。状態が無ければ `null` を返す。
+- `restoreState({ nameServer?, handlers? })`: 保存された状態を読み込む。状態が無ければ `null` を返す。
   `nameServer` を渡すと、その待ち受けを開始（`listen()`）し、名前と所有権レコードを復元する。
-  戻り値の `listenPorts` は、利用者がハンドラを付けて `listen()` し直すべきポートである。
-  ハンドラは保存されないため、復元側は必ず付け直す (MUST)。
+  `handlers` は、保存されていたポート番号をキーにしたハンドラ（`Map` または `{ 7002: handler }`）。
+  `handlers` にあるポートは、**この呼び出しの中で** `listen()` される。戻り値の時点で待ち受けている (MUST)。
+  戻り値の `listeningPorts` は、ハンドラを付けて待ち受けを開始したポート、
+  `unhandledPorts` は、保存されていたがハンドラが無いため待ち受けていないポートである。
+  `unhandledPorts` のポートへの接続は、利用者が `listen()` するまで拒否される（RST）。
+  ハンドラは保存されないため、復元側は必ず付ける (MUST)。`handlers` に無い保存済みのポートは、`listen()` で後から付けられる。
+  `handlers` の鍵が保存されていないポートの場合は無視する。
+  次のいずれかの場合は、待ち受けを開始せずに失敗する (MUST): ハンドラが関数でない、鍵がポート番号でない、保存済みポートが既に待ち受け中である。
 - `stateStorage` が無い状態で `persistState()` / `restoreState()` を呼ぶとエラーになる (MUST)。
 - ブラウザの既定の保存先は IndexedDB のデータベース `webtcp-service`、ストア `state`、キー `local` とする。
   テストや非ブラウザ環境向けにメモリ実装も提供する。
@@ -592,7 +598,7 @@ M2 では RFC 793 に準拠した片方向終了（half-close）をサポート�
 - `MUST NOT`: Service Worker を、ページの代わりに稼働を監視する常駐の役として前提にしない（無操作で再起動し、接続を失うため）。
 - `MUST NOT`: Wake Lock を、非表示のタブを稼働させる根拠にしない（非表示で解放されるため）。
 - `SHOULD`: Wake Lock は前面復帰のたびに取り直す（§9.5 の既存の規定）。
-- `MUST`: 復元された待ち受けポートには、利用者が `listen()` でハンドラを付けるまで接続が届かないことを、利用者向けの文書に書く（§9.3 の既存の規定を強める）。
+- `MUST`: 復元された待ち受けポートには、ハンドラを付けるまで接続が届かないことを、利用者向けの文書に書く。ハンドラは `restoreState({ handlers })` で復元と同時に付けられる（§9.3、M9 項目 29）。
 - `SHOULD`: 名前・待ち受け・所有権レコードを変更したら、`persistState()` を呼ぶ。M9 の実装では、この呼び出しを自動化する方式を設計書 §3.41 で定める。
 - `MAY`: 無音オーディオを補助として使う。ただし、その効果は未検証のため、保証として書いてはならない (MUST NOT)。
 - Service Worker の役割は、静的な資産の配信と、ブラウザが起こしたイベントへの応答に限る。
@@ -1297,7 +1303,7 @@ bootstrap(searcher: IEntranceSearcher, options?: BootstrapOptions): Promise<Boot
 getNeighbors(): NodeId[]
 getRoutingTable(): RoutingTable
 persistState(options?: { nameServer?: NameServer }): Promise<PersistedServiceState>   // M7 / §9.3
-restoreState(options?: { nameServer?: NameServer }): Promise<RestoredServiceState | null>  // M7 / §9.3
+restoreState(options?: { nameServer?: NameServer; handlers?: RestoreHandlers }): Promise<RestoredServiceState | null>  // M7 / §9.3、handlers は M9 項目 29（§9.3）
 close(): void
 ```
 

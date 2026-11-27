@@ -552,7 +552,7 @@ Chromium は次の手順で動かした（環境の記録。repo には含めな
 | :--- | :--- | :--- |
 | 27 | 調査（実行）と仕様 §9.7 / 設計 §3.41 / 計画 §3.25 | ✅ 文書化（本サイクル） |
 | 28 | 自動 `persistState()`（名前・待ち受けの変更後にデバウンス）。Node（FakeIndexedDB）と実ブラウザの両方で検証 | ✅ 実装（本サイクル）。仕様 §9.8 / 設計 §3.42。Node 12 件（`tests/auto-persist.test.mjs`）、`npm test` 329 件合格。実ブラウザ `examples/verify-persistence-browser.mjs` 9/9 合格（有効化なしでは 7 件不合格）。`/tmp/cy27/measure_save.mjs` は廃止し、同じ計測を `examples/verify-persistence/index.html` の `window.measureSaveCost` で行う（リポジトリに含める理由: 再現可能な計測を残すため）。調査用の他のプローブ（keep-alive・凍結・SW）は sandbox 固有の依存（`@sparticuz/chromium`、puppeteer-core）があるため含めず、結果は設計 §3.41 に残す |
-| 29 | `restoreState()` でハンドラを付けられる形の API。リロード後に 7002 への接続が RST にならないことを実行で確認 | 未着手 |
+| 29 | `restoreState({ handlers })` でハンドラを付けられる形の API。リロード後に 7002 への接続が RST にならないことを実行で確認 | ✅ 実装（本サイクル）。仕様 §9.3、設計 §3.43。Node 5 件（`tests/restore-handlers.test.mjs`）、実ブラウザ 2 ノード（`examples/verify-reconnect-browser.mjs`、3 回合格）。対照（ハンドラを 15 秒後に付ける）では RST 49 件、修正では RST 0 件 |
 | 30 | 既知の隣接先の保存と、復元後の `connectToPeer()`。2 タブで実測 | 未着手 |
 | 31 | 無音オーディオ: 実機の自動再生ポリシー下で `AudioContext` の状態と効果を測定し、既定を決める（この環境では判定できなかった） | 未着手 |
 | 32 | 2 ノード以上で、リロード後の名前の解決を検証。Issue #51 を閉じるかの判断 | 未着手 |

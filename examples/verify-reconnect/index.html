@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>WebTCP ハンドラ再付与の検証ページ（M9 項目 29 / #51）</title>
+<body>
+<p>検証用ページ。`examples/verify-reconnect-browser.mjs` が読み込みます。</p>
+<script type="module">
+import {
+    BrowserKeyManager,
+    IndexedDBServiceStateStorage,
+    SignalingAdapterHub,
+    createBrowserNetwork,
+    noopLogger,
+} from '../../webtcp_jslib/dist/index.js';
+
+const PORT = 7002;
+const DB_NAME = 'webtcp-verify-reconnect';
+const params = new URLSearchParams(location.search);
+const phase = params.get('phase');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const echo = (stream) => { stream.on('data', (data) => stream.send(data)); };
+
+async function open() {
+    const keyManager = await BrowserKeyManager.open({ databaseName: `${DB_NAME}-keys` });
+    const storage = new IndexedDBServiceStateStorage({ databaseName: DB_NAME });
+    const signaling = new SignalingAdapterHub({
+        url: location.origin,
+        nodeId: keyManager.nodeId,
+        pollIntervalMs: 50,
+        logger: noopLogger,
+    });
+    const network = createBrowserNetwork({
+        signaling,
+        keyManager,
+        iceServers: [],
+        stateStorage: storage,
+        logger: noopLogger,
+    });
+    await network.start();
+    return { keyManager, storage, network };
+}
+
+/** 1 往復のエコーを待つ。届かなければ reject する。 */
+function roundTrip(stream, text, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('echo timeout')), timeoutMs);
+        stream.on('data', (data) => {
+            clearTimeout(timer);
+            resolve(new TextDecoder().decode(data));
+        });
+        stream.send(text).catch((error) => { clearTimeout(timer); reject(error); });
+    });
+}
+
+function fail(error) {
+    window.verifyError = String(error?.stack ?? error);
+    window.ready = true;
+}
+
+// ---- サーバー役 ----
+if (phase === 'write') {
+    // 初回: 復元なし。待ち受けて自動保存させる（persistState も close も呼ばない）。
+    (async () => {
+        const h = await open();
+        const restored = await h.network.restoreState({ handlers: {} });
+        h.network.enableAutoPersist({ debounceMs: 50, maxWaitMs: 500 });
+        h.network.listen(PORT, echo);
+        window.verify = { nodeId: h.keyManager.nodeId, firstRun: restored === null };
+        window.loadSaved = () => h.storage.load();
+        window.ready = true;
+    })().catch(fail);
+} else if (phase === 'read-handler') {
+    // 修正: ハンドラを restoreState に渡す。戻り値の時点で待ち受けている。
+    (async () => {
+        const h = await open();
+        const restored = await h.network.restoreState({ handlers: { [PORT]: echo } });
+        window.verify = {
+            nodeId: h.keyManager.nodeId,
+            restoredListenPorts: restored?.listenPorts ?? [],
+            listeningPorts: restored?.listeningPorts ?? [],
+            unhandledPorts: restored?.unhandledPorts ?? [],
+            listeningNow: h.network.transportLayer.getListeningPorts(),
+        };
+        window.ready = true;
+    })().catch(fail);
+} else if (phase === 'read-late') {
+    // 対照（修正前の使い方）: ハンドラ無しで復元し、利用者のコードが delay ms 後に listen() する。
+    (async () => {
+        const delayMs = Number(params.get('delay') ?? 4000);
+        const h = await open();
+        const restored = await h.network.restoreState();
+        const verify = {
+            nodeId: h.keyManager.nodeId,
+            restoredListenPorts: restored?.listenPorts ?? [],
+            unhandledPorts: restored?.unhandledPorts ?? [],
+            listeningNow: h.network.transportLayer.getListeningPorts(),
+            delayMs,
+            listenedAfterMs: null,
+        };
+        window.verify = verify;
+        window.ready = true;
+        const started = performance.now();
+        setTimeout(() => {
+            try {
+                h.network.listen(PORT, echo);
+                verify.listenedAfterMs = Math.round(performance.now() - started);
+                verify.listenedAbs = Date.now();
+            } catch (error) {
+                verify.listenError = String(error?.message ?? error);
+            }
+        }, delayMs);
+    })().catch(fail);
+}
+
+// ---- クライアント役（サーバーへ接続を繰り返す） ----
+if (phase === 'run') {
+    (async () => {
+        const serverId = params.get('server');
+        const durationMs = Number(params.get('duration') ?? 30000);
+        const h = await open();
+        const events = [];
+        h.network.on('neighbor-connected', (id) => events.push({ at: Math.round(performance.now() - t0), ev: 'connected', id: id.slice(0, 8) }));
+        h.network.on('neighbor-disconnected', (id) => events.push({ at: Math.round(performance.now() - t0), ev: 'disconnected', id: id.slice(0, 8) }));
+        const t0 = performance.now();
+        const attempts = [];
+        let firstOkAt = null;
+        let firstOkAbs = null;
+        while (performance.now() - t0 < durationMs && firstOkAt === null) {
+            const at = Math.round(performance.now() - t0);
+            try {
+                if (!h.network.getNeighbors().includes(serverId)) {
+                    await h.network.connectToPeer(serverId);
+                }
+                const stream = await h.network.connect(serverId, PORT);
+                const text = await roundTrip(stream, `ping-${attempts.length}`);
+                attempts.push({ at, ok: text.startsWith('ping-') });
+                firstOkAt = Math.round(performance.now() - t0);
+                firstOkAbs = Date.now();
+            } catch (error) {
+                attempts.push({ at, ok: false, error: String(error?.message ?? error) });
+                await sleep(300);
+            }
+        }
+        window.verify = {
+            firstOkAt,
+            firstOkAbs,
+            attempts,
+            events,
+            rstCount: attempts.filter((a) => a.error && /RST/.test(a.error)).length,
+            failedCount: attempts.filter((a) => !a.ok).length,
+        };
+        window.ready = true;
+    })().catch(fail);
+}
+</script>
+</body>
+</html>
