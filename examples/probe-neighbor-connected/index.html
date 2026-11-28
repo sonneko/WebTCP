@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>neighbor-connected の重複発火の計測ページ（Issue #93）</title>
+<body>
+<p>調査用ページ（Issue #93）。`examples/probe-neighbor-connected/run.mjs` が読み込みます。</p>
+<script type="module">
+import {
+    BrowserKeyManager,
+    IndexedDBServiceStateStorage,
+    SignalingAdapterHub,
+    createBrowserNetwork,
+} from '../../webtcp_jslib/dist/index.js';
+
+// ライブラリのログを捨てず、接続関連の行を記録する（計測のため）
+const logs = [];
+const t0 = performance.now();
+const stamp = () => Math.round(performance.now() - t0);
+const keep = (m) => /Neighbor|DataChannel|connect|WebRTC/i.test(String(m));
+const logger = {
+    debug() {},
+    info: (m, ...a) => { if (keep(m)) logs.push([stamp(), 'info', String(m), a.map((x) => String(x?.message ?? x)).join(' ').slice(0, 200)]); },
+    warn: (m, ...a) => logs.push([stamp(), 'warn', String(m), a.map((x) => String(x?.message ?? x)).join(' ').slice(0, 200)]),
+    error: (m, ...a) => logs.push([stamp(), 'error', String(m), a.map((x) => String(x?.message ?? x)).join(' ').slice(0, 200)]),
+};
+
+const PORT = 7002;
+const DB_NAME = `probe-neighbor-connected-${Math.random().toString(16).slice(2)}`;
+const params = new URLSearchParams(location.search);
+const role = params.get('role');
+const pollIntervalMs = Number(params.get('poll') ?? 50);
+const echo = (stream) => { stream.on('data', (data) => stream.send(data)); };
+
+// 発火の記録: neighbor-connected / neighbor-disconnected（利用者が見る API と同じ経路）
+const events = [];
+
+async function open() {
+    const keyManager = await BrowserKeyManager.open({ databaseName: `${DB_NAME}-keys` });
+    const storage = new IndexedDBServiceStateStorage({ databaseName: DB_NAME });
+    const signaling = new SignalingAdapterHub({
+        url: location.origin,
+        nodeId: keyManager.nodeId,
+        pollIntervalMs,
+        logger,
+    });
+    const network = createBrowserNetwork({
+        signaling,
+        keyManager,
+        iceServers: [],
+        stateStorage: storage,
+        logger,
+    });
+    await network.start();
+    return { keyManager, storage, network };
+}
+
+(async () => {
+    const h = await open();
+    h.network.on('neighbor-connected', (peerId) => events.push(['connected', peerId, stamp()]));
+    h.network.on('neighbor-disconnected', (peerId) => events.push(['disconnected', peerId, stamp()]));
+    h.network.listen(9001, () => {});
+    window.nodeId = h.keyManager.nodeId;
+    if (role === 'peer') {
+        h.network.listen(PORT, echo);
+        window.verify = { nodeId: h.keyManager.nodeId };
+    } else {
+        const peer = params.get('peer');
+        const start = performance.now();
+        let error = null;
+        try {
+            await h.network.connectToPeer(peer);
+        } catch (e) {
+            error = String(e?.message ?? e);
+        }
+        window.verify = {
+            nodeId: h.keyManager.nodeId,
+            connected: h.network.getNeighbors().includes(peer),
+            ms: Math.round(performance.now() - start),
+            error,
+        };
+    }
+    // connectToPeer の後、遅れて届く発火も集めるため少し待つ
+    await new Promise((r) => setTimeout(r, 800));
+    window.events = events;
+    window.logs = logs;
+    window.ready = true;
+})().catch((e) => {
+    window.verifyError = String(e?.stack ?? e);
+    window.ready = true;
+});
+</script>
+</body>
+</html>
