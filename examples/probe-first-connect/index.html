@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>初回 WebRTC 接続の計測ページ（Issue #92）</title>
+<body>
+<p>調査用ページ（Issue #92）。`examples/probe-first-connect/run.mjs` が読み込みます。</p>
+<script type="module">
+import {
+    BrowserKeyManager,
+    IndexedDBServiceStateStorage,
+    SignalingAdapterHub,
+    createBrowserNetwork,
+} from '../../webtcp_jslib/dist/index.js';
+
+// 計測のため、ライブラリのログを握りつぶさない（検証ページの noopLogger では見えない失敗を記録する）
+const logs = [];
+const t0 = performance.now();
+const stamp = () => Math.round(performance.now() - t0);
+const logger = {
+    debug() {},
+    info() {},
+    warn: (m, ...a) => logs.push([stamp(), 'warn', String(m), a.map((x) => String(x?.message ?? x)).join(' ').slice(0, 300)]),
+    error: (m, ...a) => logs.push([stamp(), 'error', String(m), a.map((x) => String(x?.message ?? x)).join(' ').slice(0, 300)]),
+};
+
+const PORT = 7002;
+const DB_NAME = `probe-first-connect-${Math.random().toString(16).slice(2)}`;
+const params = new URLSearchParams(location.search);
+const role = params.get('role');
+const echo = (stream) => { stream.on('data', (data) => stream.send(data)); };
+const pollIntervalMs = Number(params.get('poll') ?? 50);
+
+async function open() {
+    const keyManager = await BrowserKeyManager.open({ databaseName: `${DB_NAME}-keys` });
+    const storage = new IndexedDBServiceStateStorage({ databaseName: DB_NAME });
+    const signaling = new SignalingAdapterHub({
+        url: location.origin,
+        nodeId: keyManager.nodeId,
+        pollIntervalMs,
+        logger,
+    });
+    const network = createBrowserNetwork({
+        signaling,
+        keyManager,
+        iceServers: [],
+        stateStorage: storage,
+        logger,
+    });
+    await network.start();
+    return { keyManager, storage, network };
+}
+
+(async () => {
+    const h = await open();
+    await h.network.restoreState();
+    h.network.enableAutoPersist({ debounceMs: 50, maxWaitMs: 500 });
+    h.network.listen(9001, () => {});
+    window.nodeId = h.keyManager.nodeId;
+    if (role === 'peer') {
+        h.network.listen(PORT, echo);
+        window.verify = { nodeId: h.keyManager.nodeId };
+    } else {
+        const peer = params.get('peer');
+        const start = performance.now();
+        let error = null;
+        try {
+            await h.network.connectToPeer(peer);
+        } catch (e) {
+            error = String(e?.message ?? e);
+        }
+        window.verify = {
+            nodeId: h.keyManager.nodeId,
+            connected: h.network.getNeighbors().includes(peer),
+            ms: Math.round(performance.now() - start),
+            error,
+        };
+    }
+    window.logs = logs;
+    window.ready = true;
+})().catch((e) => {
+    window.verifyError = String(e?.stack ?? e);
+    window.ready = true;
+});
+</script>
+</body>
+</html>
