@@ -6,6 +6,7 @@ import { createAbortError, throwIfAborted } from '../util/abort.js';
 import type { IRoutingLayer } from '../routing/RoutingLayer.js';
 import { ManagedStream, SessionManager, SessionManagerOptions } from './SessionManager.js';
 import { TransportContext, VirtualStream, VirtualStreamOptions } from './VirtualStream.js';
+import { SynReplayGuard, SynReplayGuardOptions } from './SynReplayGuard.js';
 
 /** `TransportLayer.connect()` のオプション（#44）。 */
 export interface TransportConnectOptions {
@@ -25,6 +26,8 @@ export interface TransportLayerOptions {
     defaultTtl?: number;
     /** ロガー（任意）。 */
     logger?: Logger;
+    /** `SYN` のリプレイ検知（#48、仕様 §11.6.1）。既定は有効（旧 `SYN` を受理）。 */
+    synReplay?: SynReplayGuardOptions;
 }
 
 /**
@@ -44,6 +47,7 @@ export class TransportLayer extends EventEmitter implements TransportContext {
     private readonly connectTimeoutMs: number;
     private readonly defaultTtl: number;
     private readonly baseLogger: Logger;
+    private readonly synGuard: SynReplayGuard;
     private readonly logger: Logger;
 
     private started = false;
@@ -70,6 +74,7 @@ export class TransportLayer extends EventEmitter implements TransportContext {
         };
         this.connectTimeoutMs = options.connectTimeoutMs ?? 10_000;
         this.defaultTtl = options.defaultTtl ?? 64;
+        this.synGuard = new SynReplayGuard({ logger: baseLogger, ...options.synReplay });
 
         this.routingLayer.setTransportLayer(this);
     }
@@ -260,6 +265,8 @@ export class TransportLayer extends EventEmitter implements TransportContext {
         }
 
         if (packet.flags === 'SYN') {
+            // 既存セッションに一致しない SYN は、再生でないことを確かめてから新しい受動セッションを作る（#48）
+            if (!this.synGuard.check(packet).accepted) return;
             this.handleSynRequest(packet, localPort, remotePort);
             return;
         }

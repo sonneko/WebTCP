@@ -1,4 +1,5 @@
 import { NodeId, SequenceNumber, StreamState, VirtualPort, WebTCPPacket } from '../types/index.js';
+import { createSynExtension } from './SynReplayGuard.js';
 import { EventEmitter, EventListener } from '../util/EventEmitter.js';
 import { Logger, createScopedLogger, defaultLogger } from '../util/Logger.js';
 import { RetransmitQueue } from './RetransmitQueue.js';
@@ -372,7 +373,8 @@ export class VirtualStream extends EventEmitter implements ManagedStream {
         }
 
         // SYN の ackNum は 0（RFC 793 / #31）
-        const syn = this.createPacket('SYN', this.nextSendSeqNum, 0);
+        // #48: 拡張（送信時刻 + Nonce）を載せる。署名対象に含まれ、リプレイ検知で使う（仕様 §11.6.1）
+        const syn = this.createPacket('SYN', this.nextSendSeqNum, 0, createSynExtension());
         this.windowOffered = this.windowNegotiationEnabled;
         if (this.windowOffered) syn.windowFlag = true;
         this.nextSendSeqNum = seqAdd(this.nextSendSeqNum, 1);
