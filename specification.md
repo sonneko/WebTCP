@@ -720,7 +720,7 @@ interface PublicKeyPayload {
 1. 接続を開始する側は `RTCPeerConnection` とデータチャネル（`ordered: true`）を作り、offer を送る。
 2. 受信側は answer を返し、`ondatachannel` でチャネルを受け取る。
 3. 双方は ICE candidate を逐次交換する。
-4. データチャネルが `open` になった時点で `connection-status(true)` を発火する。
+4. データチャネルが `open` になった時点で `connection-status(true)` を発火する。 1 つの接続（`RTCPeerConnection`）につき 1 回だけ発火する (MUST)。ブラウザが同じデータチャネルの `open` を重複して通知しても、2 回目以降は無視する (MUST)。これにより、`neighbor-connected` は 1 回の接続につき 1 回だけ発火する（#93、設計 §3.47）。
 5. **同時接続（Glare）の解決**: 双方が同時に未確立の offer を送り合った場合、`localNodeId < remoteNodeId` を満たす側を **polite ピア**、他方を **impolite ピア** とする。impolite ピアは受信 offer を無視して自身の offer を維持し、polite ピアは自身の待機中 `connect()` Promise を引き継いだまま受信 offer へ応答する。
 6. **インプレース再ネゴシエーション（ICE 再起動）**: 確立済みピアに対して新たな `offer` を受信した場合、既存のデータチャネルを破棄せず同じ `RTCPeerConnection` 上で `setRemoteDescription` → `createAnswer` を実行して ICE 経路を復旧する。
 7. **応答側の DTLS identity 未準備（#92 / #97）**: 応答側は、`setRemoteDescription` / `createAnswer` / `setLocalDescription` のいずれかが identity の無い失敗（`Fingerprint provided but no identity available`）を返したとき、その `RTCPeerConnection` を破棄し、1 000 ms 待ってから、同じ offer を適用した新しい接続を作り直さなければならない (MUST)。作り直しは最初の試行を含めて最大 3 回とする (MUST)。作り直した接続には、開通前にその接続へ届いていた相手の ICE 候補（適用済みのものを含む）を渡し、接続待ちの Promise を引き継ぐ (MUST)。同じ接続に対して再試行してはならない (MUST NOT)。実行で、同じ接続の再試行は回復しないことを確認した。identity の無い失敗以外、または上限に達したときは、従来どおり失敗として破棄する (MUST)。発信側の `connectTimeoutMs`（§8.5）は、作り直しの間も従来どおり適用される。

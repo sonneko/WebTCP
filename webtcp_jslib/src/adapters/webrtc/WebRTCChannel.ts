@@ -511,6 +511,8 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
 
         dataChannel.onopen = () => {
             if (this.peers.get(peerId) !== state) return;
+            // 同じ接続の open が重複して届いても、一度だけ処理する（#93、仕様 §10.3 の 4）
+            if (state.opened) return;
             state.opened = true;
             if (state.openTimer !== null) {
                 clearTimeout(state.openTimer);

@@ -922,3 +922,16 @@ HTTPClient                                   HTTPServer
   - 負荷なし（`PARALLEL=1 N=40 POLL=50`）: タイムアウト 0、p50 57 ms。作り直しは 2 回発生し、2 回とも接続できた（最長 1 067 ms）。負荷なしでも、まれに identity の失敗が起きることを示す。修正前の負荷なしの 0 件（70 試行）は、まれな事象の標本が小さかったためである。
   - Node（`tests/webrtc-identity-rebuild.test.mjs`、3 件）: 修正前の `main` では 2 件が失敗し、修正後は合格する（identity の失敗 1 回で接続できること、上限 3 回で止まること）。identity 以外の失敗は作り直さない（この件は修正前も合格し、過剰な再試行が無いことを守る）。
   - `npm test`: 345 件、336 合格、0 失敗、9 スキップ（既存のスキップと同じ）。`tsc --noEmit` は 0。
+
+### 3.47 `neighbor-connected` の重複発火（#93）: 再現、原因、修正（サイクル34）
+
+- **問題**: 1 回の接続で `neighbor-connected` が 2 回発火することがある（Issue #93）。直接の機能破壊は確認していないが、「1 接続 1 イベント」の契約と異なる。
+- **再現（実行、`main` `e84c1fb`、Chromium 158、1 プロセス・30 試行）**: `examples/probe-neighbor-connected/run.mjs`。応答側（peer）で 2/30 が重複（`neighbor-connected` が 2 回）。発信側（node）は 0/30。
+- **計測（重複した試行のトレース）**: 応答側の同じ `RTCPeerConnection` で、同じリモートのデータチャネルの `open` イベントが 2 回、3 ms の間隔で届いた。ライブラリのログには `Neighbor connected` が 2 回出ている。発信側は `open` が 1 回だった。`datachannel` イベントは 1 回だけなので、チャネルは重複していない。同じチャネルの `open` が重複して通知されている。
+- **原因（計測と読み取り）**: `WebRTCChannel.attachDataChannel` の `dataChannel.onopen` は、状態が現在のものかだけを確かめ、一度開いたかを確かめない。そのため、2 回目の `open` で `connection-status(true)` を再び発火し、`LinkManager` が `neighbor-connected` を再び発火する。どのブラウザ実装が重複させるかは、このサイクルでは特定していない（Chromium 158 で観測）。
+- **採用する修正**: `onopen` の先頭で `state.opened` を確かめ、既に開いていれば何もしない（一度だけ処理する）。`opened` は `false` から `true` へ一度だけ変わる。切断は `destroyPeer` で状態ごと破棄されるため、同じ状態が再び開くことはない。したがって、この保護で正当な再開が妨げられることはない。
+- **採らなかった方式**:
+  - `LinkManager` で接続状態の重複を除く: 上流で二重に発火しているため、利用者に届く前に隠すだけになる。`connection-status` の契約が崩れたまま残る。
+  - 利用者側で `neighbor-connected` を数えない: 契約（1 接続 1 イベント）を守らない。
+- **互換**: 公開 API は変えない。`connection-status` の発火は、接続ごとに 1 回になる（仕様 §10.3 の 4）。
+- **検証**: 修正前は再現ドライバで 2/30（重複）。修正後は同じ条件で重複 0。ネガティブコントロールとして、修正後もトレース上の重複 `open` は観測されることを確認する（ブラウザの挙動は変わらず、ライブラリ側で無視していることの証拠）。Node の回帰テストで、同じ `open` が 2 回届いても `connection-status(true)` は 1 回であることを確認する。
