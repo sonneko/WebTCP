@@ -6,14 +6,13 @@
  *
  * 既定で Ed25519 署名（プロトコル v2 / #28）が有効になる。
  * M4 では NameServer（A/CNAME）と webtcp:// URL 接続のデモを含む。
- * 秘密鍵は IndexedDB に非抽出 CryptoKey として保存され、NodeId は公開鍵の指紋になる。
+ * 秘密鍵は非抽出 CryptoKey で、タブごとに生成して保存しない（2 タブが別ノードになるように）。
+ * NodeId は公開鍵の指紋になる。
  * Web Crypto の Ed25519 が使えないブラウザでは自動的に v1（署名なし）へフォールバックする。
  *
  * クエリパラメータ:
  * - `?stun=1`: パブリック STUN サーバー例（EXAMPLE_STUN_ICE_SERVERS）を有効化
  * - `?insecure=1`: Ed25519 署名を無効化して v1 で動作（比較・デバッグ用）
- * - `?e2e=1`: 一時データベース名の鍵を使う（タブ間で同一鍵を共有しない）。Playwright の各タブと、
- *   「別タブで 2 タブ自動検証」が開くクライアントタブが使う
  * - `?selftest=1`: 起動時に同一タブ内の実 WebRTC 2 ピア自己チェックを自動実行
  * - `?role=server&autostart=1`: サーバーとしてポート 8080 で自動待ち受け
  * - `?role=client&autostart=1`: クライアントとして自動探索・接続・検証を実行
@@ -126,22 +125,18 @@ const SIGNED = params.get('insecure') !== '1';
 let serverMode = true;
 
 /**
- * Ed25519 鍵管理を読み込む（IndexedDB から復元、無ければ生成）。
+ * Ed25519 鍵管理を作る（タブごとに生成し、保存しない）。
  * 利用できないブラウザでは null を返し、v1 へフォールバックする。
  */
 function loadIdentity() {
     if (!identityLoadPromise) {
         identityLoadPromise = (async () => {
             if (!SIGNED) return null;
-            // Playwright の全タブが同一オリジン（同一 IndexedDB）を共有するため、
-            // E2E モードではタブごとに別の DB 名を使い、独立した鍵指紋を持たせる
-            const databaseName =
-                params.get('e2e') === '1'
-                    ? `webtcp-keys-e2e-${Math.random().toString(16).slice(2)}`
-                    : 'webtcp-keys';
+            // 鍵を IndexedDB に保存すると同じオリジンの全タブが同じ鍵（= 同じ NodeId）になり、
+            // 2 タブデモで相手を自分と区別できない。デモではタブごとに保存しない鍵を使う（indexedDB: null）
             try {
                 identity = await BrowserKeyManager.open({
-                    databaseName,
+                    indexedDB: null,
                     logger: currentLogger,
                 });
                 return identity;
@@ -208,6 +203,8 @@ function createSignaling({ keys, logger, pollIntervalMs = 250 }) {
         nodeId: keys?.nodeId ?? randomNodeId(),
         channelName: TWO_TAB_CHANNEL,
         logger,
+        // 待ち受け中のタブだけが探索に応じる（開いているだけのタブを接続先に選ばない）
+        isDiscoverable: () => listening,
     });
 }
 
@@ -1447,10 +1444,7 @@ async function main() {
     els.openClientTabBtn.addEventListener('click', () => {
         onListen();
         const target = network ? `&target=${encodeURIComponent(network.localNodeId)}` : '';
-        // クライアントタブは `e2e=1` で一時データベースの鍵を使う。保存済みの鍵（`webtcp-keys`）は
-        // 同じオリジンの全タブで共有されるため、そのままではこのタブと同じ NodeId になり、
-        // `bootstrap()` が `target` を自分自身として除外して「サーバータブが見つかりませんでした」になる。
-        window.open(`./?role=client&autostart=1&e2e=1${target}`, '_blank');
+        window.open(`./?role=client&autostart=1${target}`, '_blank');
     });
     els.discoverBtn.addEventListener('click', onDiscover);
     els.bootstrapBtn.addEventListener('click', onBootstrap);
