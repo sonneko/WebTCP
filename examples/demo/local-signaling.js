@@ -68,7 +68,7 @@ export function createMemorySignalingBus() {
  * `BroadcastChannel` 上のシグナリングアダプタ。`listen()` の前に届いたメッセージは捨てられるが、
  * デモでは各タブが起動時にネットワークを開始してから相手を探すため問題にならない。
  */
-export function createBroadcastSignaling({ nodeId, channelName, logger } = {}) {
+export function createBroadcastSignaling({ nodeId, channelName, logger, isDiscoverable = () => true } = {}) {
     if (typeof BroadcastChannel !== 'function') {
         throw new Error('BroadcastChannel が使えないため、タブ間シグナリングを作れません');
     }
@@ -80,8 +80,8 @@ export function createBroadcastSignaling({ nodeId, channelName, logger } = {}) {
         const data = typeof event.data === 'string' ? safeParse(event.data) : null;
         if (!data || typeof data !== 'object') return;
         if (data.kind === CHANNEL_KIND.DISCOVER) {
-            // 探索に応じられるのは待ち受けを開始したノードだけ
-            if (callback && typeof data.from === 'string') {
+            // 探索に応じられるのは待ち受けを開始したノードだけ（`isDiscoverable` が true のとき）
+            if (callback && typeof data.from === 'string' && isDiscoverable()) {
                 channel.postMessage(JSON.stringify({ kind: CHANNEL_KIND.HERE, to: data.from, nodeId: localId }));
             }
             return;

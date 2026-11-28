@@ -106,7 +106,7 @@
     <p class="lead">
         このページを 2 つのタブ（または 2 つのブラウザ）で開き、片方で「サーバー」、もう片方で「クライアント」を実行してください。
         下部の「自己チェック」では 1 タブ内で 2 つの実 <code>RTCPeerConnection</code> を使い、自動ブートストラップ・大容量自動分割・Half-Close・HTTP トンネル（<code>serveHTTP</code> + <code>fetchURL</code>）を一括検証できます。
-        パケットは既定で <strong>Ed25519 署名（プロトコル v2）</strong> され、NodeId は公開鍵の指紋です（秘密鍵は IndexedDB に非抽出 CryptoKey として保存）。M4 では <code>NameServer</code> による名前解決と <code>webtcp://</code> URL 接続、M5 では <code>domain.global</code> の<strong>所有権レコード + 追記型台帳の検証</strong>を試せます。
+        パケットは既定で <strong>Ed25519 署名（プロトコル v2）</strong> され、NodeId は公開鍵の指紋です（秘密鍵は非抽出 CryptoKey。2 タブが別ノードになるよう、タブごとに生成して保存しません）。M4 では <code>NameServer</code> による名前解決と <code>webtcp://</code> URL 接続、M5 では <code>domain.global</code> の<strong>所有権レコード + 追記型台帳の検証</strong>を試せます。
     </p>
     <div class="meta mono">
         <div>NodeId: <span id="node-id">(起動中...)</span></div>
