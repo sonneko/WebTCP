@@ -82,7 +82,20 @@ interface PeerState {
     iceDisconnectTimer: ReturnType<typeof setTimeout> | null;
     openResolvers: Array<() => void>;
     openRejecters: Array<(error: Error) => void>;
+    /** 開通前にこの接続へ届いた相手の ICE 候補。identity の失敗で作り直すとき、新しい接続へ渡す（#97）。 */
+    remoteCandidates: RTCIceCandidateInit[];
 }
+
+/** 応答側の接続で、DTLS identity が準備できていない失敗か（#92 / #97）。 */
+function isDtlsIdentityNotReady(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('no identity available');
+}
+
+/** 応答側の接続を作り直す最大回数（最初の試行を含む）（仕様 §10.3 の 7、設計 §3.46）。 */
+const DTLS_IDENTITY_MAX_ATTEMPTS = 3;
+/** 作り直しの前に待つ時間（ms）。待たずに作り直しても回復しなかった（設計 §3.46、測定 2）。 */
+const DTLS_IDENTITY_REBUILD_DELAY_MS = 1000;
 
 /**
  * WebRTC DataChannel を用いた `IChannel` の共通実装。
@@ -349,6 +362,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             iceDisconnectTimer: null,
             openResolvers: [],
             openRejecters: [],
+            remoteCandidates: [],
         };
         this.peers.set(peerId, state);
         this.connectedPeers.set(peerId, false);
@@ -736,25 +750,53 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             return;
         }
 
-        const state = this.createPeer(fromId, false, iceServers);
+        let state = this.createPeer(fromId, false, iceServers);
         state.openResolvers.push(...inheritedResolvers);
         state.openRejecters.push(...inheritedRejecters);
 
-        state.connection.ondatachannel = (event) => {
-            this.attachDataChannel(fromId, state, event.channel);
+        const attachHandlers = (target: PeerState) => {
+            target.connection.ondatachannel = (event) => {
+                this.attachDataChannel(fromId, target, event.channel);
+            };
         };
+        attachHandlers(state);
 
-        try {
-            await state.connection.setRemoteDescription(description);
-            state.remoteDescriptionSet = true;
-            await this.flushCandidates(fromId, state);
+        for (let attempt = 1; ; attempt += 1) {
+            try {
+                await state.connection.setRemoteDescription(description);
+                state.remoteDescriptionSet = true;
+                await this.flushCandidates(fromId, state);
 
-            const answer = await state.connection.createAnswer();
-            await state.connection.setLocalDescription(answer);
-            await this.sendSignal(fromId, 'answer', state.connection.localDescription ?? answer);
-        } catch (error) {
-            this.destroyPeer(fromId, state, false);
-            throw error;
+                const answer = await state.connection.createAnswer();
+                await state.connection.setLocalDescription(answer);
+                await this.sendSignal(fromId, 'answer', state.connection.localDescription ?? answer);
+                return;
+            } catch (error) {
+                if (attempt >= DTLS_IDENTITY_MAX_ATTEMPTS || this.closed || !isDtlsIdentityNotReady(error)) {
+                    this.destroyPeer(fromId, state, false);
+                    throw error;
+                }
+                // identity の無い接続は再利用しない。同じ offer で新しい接続を作る（#97）
+                this.logger.warn(
+                    `Answering connection to ${fromId} has no DTLS identity; rebuilding (attempt ${attempt + 1} of ${DTLS_IDENTITY_MAX_ATTEMPTS})`,
+                );
+                const resolvers = state.openResolvers.splice(0);
+                const rejecters = state.openRejecters.splice(0);
+                const history = state.remoteCandidates;
+                this.destroyPeer(fromId, state, false);
+
+                await new Promise<void>((resolve) => setTimeout(resolve, DTLS_IDENTITY_REBUILD_DELAY_MS));
+                if (this.closed) throw new Error('WebRTCChannel is closed');
+
+                // 作り直す間に届いた候補（orphan）の前に、これまでの候補を並べる
+                const queued = this.orphanCandidates.get(fromId) ?? [];
+                this.orphanCandidates.set(fromId, [...history, ...queued]);
+
+                state = this.createPeer(fromId, false, iceServers);
+                state.openResolvers.push(...resolvers);
+                state.openRejecters.push(...rejecters);
+                attachHandlers(state);
+            }
         }
     }
 
@@ -792,6 +834,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
             return;
         }
 
+        if (!state.opened) state.remoteCandidates.push(candidate);
         try {
             await state.connection.addIceCandidate(candidate);
         } catch (error) {
@@ -804,6 +847,7 @@ export abstract class WebRTCChannel extends EventEmitter implements IChannel {
         this.orphanCandidates.delete(fromId);
 
         for (const candidate of orphans) {
+            if (!state.opened) state.remoteCandidates.push(candidate);
             try {
                 await state.connection.addIceCandidate(candidate);
             } catch (error) {
