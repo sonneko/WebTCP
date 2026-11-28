@@ -12,7 +12,8 @@
  * クエリパラメータ:
  * - `?stun=1`: パブリック STUN サーバー例（EXAMPLE_STUN_ICE_SERVERS）を有効化
  * - `?insecure=1`: Ed25519 署名を無効化して v1 で動作（比較・デバッグ用）
- * - `?e2e=1`: テスト用の一時データベース名を使う（Playwright のタブ間で同一鍵を共有しない）
+ * - `?e2e=1`: 一時データベース名の鍵を使う（タブ間で同一鍵を共有しない）。Playwright の各タブと、
+ *   「別タブで 2 タブ自動検証」が開くクライアントタブが使う
  * - `?selftest=1`: 起動時に同一タブ内の実 WebRTC 2 ピア自己チェックを自動実行
  * - `?role=server&autostart=1`: サーバーとしてポート 8080 で自動待ち受け
  * - `?role=client&autostart=1`: クライアントとして自動探索・接続・検証を実行
@@ -1446,7 +1447,10 @@ async function main() {
     els.openClientTabBtn.addEventListener('click', () => {
         onListen();
         const target = network ? `&target=${encodeURIComponent(network.localNodeId)}` : '';
-        window.open(`./?role=client&autostart=1${target}`, '_blank');
+        // クライアントタブは `e2e=1` で一時データベースの鍵を使う。保存済みの鍵（`webtcp-keys`）は
+        // 同じオリジンの全タブで共有されるため、そのままではこのタブと同じ NodeId になり、
+        // `bootstrap()` が `target` を自分自身として除外して「サーバータブが見つかりませんでした」になる。
+        window.open(`./?role=client&autostart=1&e2e=1${target}`, '_blank');
     });
     els.discoverBtn.addEventListener('click', onDiscover);
     els.bootstrapBtn.addEventListener('click', onBootstrap);
